@@ -134,67 +134,119 @@ public enum CleanDriveScanner {
         }
     }
 
-    public static func clean(categories: Set<CleanDriveCategoryID>) -> CleanDriveResult {
-        var cleanedBytes: UInt64 = 0
-        var failedPaths: [String] = []
+    /// Streams cleanup progress as each item is removed so the UI can stay responsive and
+    /// drain its progress bar live. Emits `.progress` events while deleting and a final
+    /// `.finished` event carrying the byte total and the reason each item was skipped.
+    public static func cleanStream(categories: Set<CleanDriveCategoryID>) -> AsyncStream<CleanDriveEvent> {
+        AsyncStream { continuation in
+            let task = Task.detached(priority: .userInitiated) {
+                let work = workItems(for: categories)
+                let totalBytes = work.reduce(UInt64(0)) { $0 + $1.bytes }
+                let reportStep = max(totalBytes / 200, 1)
 
-        for category in categories {
-            for target in category.targets {
-                for url in resolvedURLs(for: target) {
-                    let bytes = size(of: url, mode: target.mode)
+                var cleanedBytes: UInt64 = 0
+                var skipped: [CleanDriveSkip] = []
+                var lastReportedBytes: UInt64 = 0
+                var lastCategory = ""
 
-                    do {
-                        try clean(url: url, mode: target.mode, emptiesTrash: category == .trash)
-                        cleanedBytes += bytes
-                    } catch {
-                        failedPaths.append(url.path)
+                for item in work {
+                    if Task.isCancelled {
+                        break
+                    }
+
+                    let itemSkips = bestEffortRemove(at: item.url)
+                    // Count what actually left disk: full size on success, or the freed
+                    // portion if a recurse left some stubborn files behind.
+                    let remaining = directorySize(at: item.url)
+                    cleanedBytes += item.bytes > remaining ? item.bytes - remaining : 0
+                    skipped.append(contentsOf: itemSkips)
+
+                    // Throttle UI updates: report on every category change, or once the
+                    // cleaned total advances by a visible step, so large caches don't flood
+                    // the main actor with thousands of tiny updates.
+                    if item.categoryTitle != lastCategory || cleanedBytes - lastReportedBytes >= reportStep {
+                        lastCategory = item.categoryTitle
+                        lastReportedBytes = cleanedBytes
+                        continuation.yield(.progress(cleanedBytes: cleanedBytes, currentItem: item.categoryTitle))
                     }
                 }
-            }
-        }
 
-        return CleanDriveResult(cleanedBytes: cleanedBytes, failedPaths: failedPaths)
+                continuation.yield(.finished(CleanDriveResult(cleanedBytes: cleanedBytes, skipped: skipped)))
+                continuation.finish()
+            }
+
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
-    public static func targetSummary(for categories: Set<CleanDriveCategoryID>) -> (itemCount: Int, includesTrash: Bool) {
-        var itemCount = 0
+    /// Flattens the selected categories into the individual filesystem items to remove,
+    /// each tagged with its size up front so progress can be reported as work proceeds.
+    /// Categories are visited in a stable order so progress reads predictably.
+    private static func workItems(for categories: Set<CleanDriveCategoryID>) -> [CleanDriveWorkItem] {
+        var items: [CleanDriveWorkItem] = []
 
-        for category in categories {
+        for category in CleanDriveCategoryID.allCases where categories.contains(category) {
             for target in category.targets {
                 for url in resolvedURLs(for: target) {
-                    switch target.mode {
+                    let leaves: [URL] = switch target.mode {
                     case .item:
-                        itemCount += FileManager.default.fileExists(atPath: url.path) ? 1 : 0
+                        [url]
                     case .contents:
-                        itemCount += directoryContents(at: url).count
+                        directoryContents(at: url)
+                    }
+
+                    for leaf in leaves where FileManager.default.fileExists(atPath: leaf.path) {
+                        items.append(
+                            CleanDriveWorkItem(
+                                url: leaf,
+                                bytes: directorySize(at: leaf),
+                                categoryTitle: category.title
+                            )
+                        )
                     }
                 }
             }
         }
 
-        return (itemCount, categories.contains(.trash))
+        return items
     }
 
-    private static func clean(url: URL, mode: CleanDriveTarget.Mode, emptiesTrash: Bool) throws {
-        let urls = switch mode {
-        case .item:
-            [url]
-        case .contents:
-            directoryContents(at: url)
-        }
+    /// Permanently removes an item so its space is actually freed. (Moving to Trash just
+    /// relocates the data and frees nothing until the Trash is emptied, and running apps
+    /// regenerate caches immediately — which is why a trash-based clean looks like it did
+    /// nothing.) If a directory can't be removed wholesale because one file inside is locked
+    /// or root-owned, it recurses and deletes everything it can, returning a skip entry only
+    /// for each leaf that genuinely resisted.
+    private static func bestEffortRemove(at url: URL) -> [CleanDriveSkip] {
+        do {
+            try FileManager.default.removeItem(at: url)
+            return []
+        } catch {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            let children = exists && isDirectory.boolValue ? directoryContents(at: url) : []
 
-        for itemURL in urls {
-            guard FileManager.default.fileExists(atPath: itemURL.path) else {
-                continue
+            guard !children.isEmpty else {
+                return [CleanDriveSkip(path: url.path, reason: skipReason(for: error))]
             }
 
-            if emptiesTrash {
-                try FileManager.default.removeItem(at: itemURL)
-            } else {
-                var resultingURL: NSURL?
-                try FileManager.default.trashItem(at: itemURL, resultingItemURL: &resultingURL)
+            var skips: [CleanDriveSkip] = []
+            for child in children {
+                skips.append(contentsOf: bestEffortRemove(at: child))
             }
+
+            // Drop the now-empty directory shell once its deletable contents are gone.
+            try? FileManager.default.removeItem(at: url)
+            return skips
         }
+    }
+
+    private static func skipReason(for error: Error) -> String {
+        let nsError = error as NSError
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return underlying.localizedDescription
+        }
+        return nsError.localizedDescription
     }
 
     private static func resolvedURLs(for target: CleanDriveTarget) -> [URL] {
@@ -260,9 +312,35 @@ public enum CleanDriveScanner {
     }
 }
 
+public struct CleanDriveSkip: Sendable, Equatable {
+    public var path: String
+    public var reason: String
+
+    public init(path: String, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+}
+
 public struct CleanDriveResult: Sendable {
     public var cleanedBytes: UInt64
-    public var failedPaths: [String]
+    public var skipped: [CleanDriveSkip]
+
+    public init(cleanedBytes: UInt64, skipped: [CleanDriveSkip]) {
+        self.cleanedBytes = cleanedBytes
+        self.skipped = skipped
+    }
+}
+
+public enum CleanDriveEvent: Sendable {
+    case progress(cleanedBytes: UInt64, currentItem: String)
+    case finished(CleanDriveResult)
+}
+
+private struct CleanDriveWorkItem: Sendable {
+    var url: URL
+    var bytes: UInt64
+    var categoryTitle: String
 }
 
 public struct CleanDriveWindowView: View {
@@ -272,6 +350,8 @@ public struct CleanDriveWindowView: View {
     @State private var selectedCategories = Set(CleanDriveCategoryID.allCases.filter(\.defaultSelected))
     @State private var isScanning = true
     @State private var isCleaning = false
+    @State private var cleaningTotalBytes: UInt64 = 0
+    @State private var cleanedBytes: UInt64 = 0
     @State private var message = "Scanning..."
     @State private var isShowingSettings = false
     private let layout = CleanDriveLayout.current
@@ -349,7 +429,7 @@ public struct CleanDriveWindowView: View {
 
     private var summary: some View {
         VStack(spacing: layout.summarySpacing) {
-            Text(selectedSize.diskBytesString)
+            Text(displaySize.diskBytesString)
                 .font(.system(size: layout.summaryValueFontSize, weight: .light, design: .rounded))
                 .foregroundStyle(.primary.opacity(0.84))
                 .lineLimit(1)
@@ -378,6 +458,7 @@ public struct CleanDriveWindowView: View {
                         )
                     )
                     .frame(width: proxy.size.width * progressFraction)
+                    .animation(.easeOut(duration: 0.3), value: progressFraction)
             }
         }
         .frame(height: layout.progressHeight)
@@ -423,7 +504,7 @@ public struct CleanDriveWindowView: View {
 
     private var cleanButton: some View {
         Button {
-            confirmAndClean()
+            startCleaning()
         } label: {
             Text(isCleaning ? "Cleaning..." : "Clean Up")
                 .font(.system(size: layout.cleanButtonFontSize, weight: .bold))
@@ -462,9 +543,24 @@ public struct CleanDriveWindowView: View {
         max(items.reduce(UInt64(0)) { $0 + $1.size }, 1)
     }
 
+    /// Bytes still pending: the big counter and the bar both drain toward zero while cleaning.
+    private var remainingBytes: UInt64 {
+        cleaningTotalBytes > cleanedBytes ? cleaningTotalBytes - cleanedBytes : 0
+    }
+
+    private var displaySize: UInt64 {
+        isCleaning ? remainingBytes : selectedSize
+    }
+
     private var progressFraction: Double {
         guard !items.isEmpty else {
             return 0
+        }
+
+        // While cleaning, the orange fill represents what is left to remove and unfills as
+        // data is deleted; otherwise it reflects how much of the drive's junk is selected.
+        if isCleaning {
+            return min(1, Double(remainingBytes) / Double(totalSize))
         }
 
         return max(0.04, min(Double(selectedSize) / Double(totalSize), 1))
@@ -495,47 +591,72 @@ public struct CleanDriveWindowView: View {
         updateMessage()
     }
 
-    private func confirmAndClean() {
-        let summary = CleanDriveScanner.targetSummary(for: selectedCategories)
-        let alert = NSAlert()
-        alert.messageText = "Clean selected items?"
-        alert.informativeText = "Selected cache, log, and temp items will be moved to Trash where possible. \(summary.itemCount) visible and hidden items are currently targeted."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Clean Up")
-        alert.addButton(withTitle: "Cancel")
-
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            return
-        }
-
-        if summary.includesTrash {
-            let trashAlert = NSAlert()
-            trashAlert.messageText = "Permanently empty Trash?"
-            trashAlert.informativeText = "Trash contents cannot be moved to Trash again, so these items will be permanently removed."
-            trashAlert.alertStyle = .critical
-            trashAlert.addButton(withTitle: "Empty Trash")
-            trashAlert.addButton(withTitle: "Cancel")
-
-            guard trashAlert.runModal() == .alertFirstButtonReturn else {
-                return
-            }
-        }
-
+    private func startCleaning() {
         isCleaning = true
+        cleaningTotalBytes = selectedSize
+        cleanedBytes = 0
         message = "Cleaning..."
         let selected = selectedCategories
 
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                CleanDriveScanner.clean(categories: selected)
-            }.value
+            var result = CleanDriveResult(cleanedBytes: 0, skipped: [])
 
+            for await event in CleanDriveScanner.cleanStream(categories: selected) {
+                switch event {
+                case let .progress(bytes, currentItem):
+                    cleanedBytes = bytes
+                    if !currentItem.isEmpty {
+                        message = "Cleaning \(currentItem)..."
+                    }
+                case let .finished(finished):
+                    result = finished
+                    // Snap the bar fully empty even if measured bytes drift from the scan.
+                    cleanedBytes = cleaningTotalBytes
+                }
+            }
+
+            // Rescan while still in the cleaning state so the drained bar stays empty
+            // instead of flashing back to the pre-clean fill during the rescan.
             await reload()
             isCleaning = false
-            message = result.failedPaths.isEmpty
-                ? "Cleaned \(result.cleanedBytes.diskBytesString)"
-                : "Cleaned with \(result.failedPaths.count) skipped"
+            message = summaryMessage(for: result)
+
+            if !result.skipped.isEmpty {
+                presentSkipReport(result.skipped)
+            }
         }
+    }
+
+    private func summaryMessage(for result: CleanDriveResult) -> String {
+        guard !result.skipped.isEmpty else {
+            return "Cleaned \(result.cleanedBytes.diskBytesString)"
+        }
+
+        return "Cleaned \(result.cleanedBytes.diskBytesString) · \(result.skipped.count) skipped"
+    }
+
+    private func presentSkipReport(_ skipped: [CleanDriveSkip]) {
+        let grouped = Dictionary(grouping: skipped, by: \.reason)
+            .sorted { $0.value.count > $1.value.count }
+
+        let details = grouped.map { reason, skips -> String in
+            let examples = skips.prefix(3).map { ($0.path as NSString).abbreviatingWithTildeInPath }
+            var line = "• \(reason) — \(skips.count) item\(skips.count == 1 ? "" : "s")"
+            if !examples.isEmpty {
+                line += "\n    " + examples.joined(separator: "\n    ")
+            }
+            if skips.count > examples.count {
+                line += "\n    …and \(skips.count - examples.count) more"
+            }
+            return line
+        }.joined(separator: "\n")
+
+        let alert = NSAlert()
+        alert.messageText = "\(skipped.count) item\(skipped.count == 1 ? "" : "s") skipped"
+        alert.informativeText = "These items couldn't be removed and were left in place:\n\n\(details)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func requestQuit() {
@@ -585,34 +706,34 @@ private struct CleanDriveLayout {
     }
 
     var windowSize: NSSize { CleanDriveSizing.preferredSize() }
-    var contentSpacing: CGFloat { 18 * scale }
-    var contentHorizontalPadding: CGFloat { 40 * scale }
-    var contentBottomPadding: CGFloat { 26 * scale }
-    var headerButtonSize: CGFloat { 32 * scale }
-    var closeIconSize: CGFloat { 18 * scale }
-    var settingsIconSize: CGFloat { 20 * scale }
-    var titleFontSize: CGFloat { 27 * scale }
-    var headerHorizontalPadding: CGFloat { 24 * scale }
-    var headerTopPadding: CGFloat { 18 * scale }
-    var headerBottomPadding: CGFloat { 12 * scale }
-    var summarySpacing: CGFloat { 8 * scale }
-    var summaryValueFontSize: CGFloat { 56 * scale }
-    var summaryLabelFontSize: CGFloat { 20 * scale }
-    var summaryTopPadding: CGFloat { 12 * scale }
-    var progressHeight: CGFloat { 24 * scale }
-    var progressCornerRadius: CGFloat { 4 * scale }
-    var rowSpacing: CGFloat { 12 * scale }
-    var rowHorizontalSpacing: CGFloat { 14 * scale }
-    var checkboxSize: CGFloat { 24 * scale }
-    var checkmarkFontSize: CGFloat { 15 * scale }
-    var rowTitleFontSize: CGFloat { 19 * scale }
-    var rowValueFontSize: CGFloat { 17 * scale }
-    var cleanButtonFontSize: CGFloat { 18 * scale }
-    var cleanButtonHorizontalPadding: CGFloat { 22 * scale }
-    var cleanButtonHeight: CGFloat { 36 * scale }
+    var contentSpacing: CGFloat { 12 * scale }
+    var contentHorizontalPadding: CGFloat { 24 * scale }
+    var contentBottomPadding: CGFloat { 18 * scale }
+    var headerButtonSize: CGFloat { 30 * scale }
+    var closeIconSize: CGFloat { 16 * scale }
+    var settingsIconSize: CGFloat { 17 * scale }
+    var titleFontSize: CGFloat { 18 * scale }
+    var headerHorizontalPadding: CGFloat { 18 * scale }
+    var headerTopPadding: CGFloat { 14 * scale }
+    var headerBottomPadding: CGFloat { 8 * scale }
+    var summarySpacing: CGFloat { 6 * scale }
+    var summaryValueFontSize: CGFloat { 34 * scale }
+    var summaryLabelFontSize: CGFloat { 13 * scale }
+    var summaryTopPadding: CGFloat { 6 * scale }
+    var progressHeight: CGFloat { 12 * scale }
+    var progressCornerRadius: CGFloat { 3 * scale }
+    var rowSpacing: CGFloat { 10 * scale }
+    var rowHorizontalSpacing: CGFloat { 11 * scale }
+    var checkboxSize: CGFloat { 18 * scale }
+    var checkmarkFontSize: CGFloat { 11 * scale }
+    var rowTitleFontSize: CGFloat { 14 * scale }
+    var rowValueFontSize: CGFloat { 13 * scale }
+    var cleanButtonFontSize: CGFloat { 14 * scale }
+    var cleanButtonHorizontalPadding: CGFloat { 18 * scale }
+    var cleanButtonHeight: CGFloat { 30 * scale }
     var cleanButtonTopPadding: CGFloat { 4 * scale }
-    var buttonCornerRadius: CGFloat { 8 * scale }
-    var storageFontSize: CGFloat { 17 * scale }
+    var buttonCornerRadius: CGFloat { 7 * scale }
+    var storageFontSize: CGFloat { 12 * scale }
 }
 
 private struct CleanDriveSettingsView: View {
