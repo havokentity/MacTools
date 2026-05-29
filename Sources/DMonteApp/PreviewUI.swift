@@ -43,6 +43,7 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
                     onOpenCleanDrive: {},
                     onOpenVideoDownloader: {},
                     onOpenDiskAnalyzer: {},
+                    onOpenClipboard: {},
                     onCheckForUpdates: {},
                     onQuit: {}
                 )

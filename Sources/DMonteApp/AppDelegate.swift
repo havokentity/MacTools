@@ -1,9 +1,17 @@
 import AppKit
 import Combine
+import CoreText
 import DMonteCore
 import Darwin
 import Sparkle
 import SwiftUI
+
+/// A borderless panel returns `canBecomeKey == false` by default, which leaves the SwiftUI
+/// search field unfocusable/unclickable. Overriding it lets the popover take keyboard focus
+/// while `.nonactivatingPanel` keeps it from stealing activation from the user's current app.
+private final class KeyableToolboxPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -12,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let cleanDriveHelperBundleIdentifier = "com.havokentity.mactools.cleandrive"
     private static let videoDownloaderHelperBundleIdentifier = "com.havokentity.mactools.videodownloader"
     private static let diskAnalyzerHelperBundleIdentifier = "com.havokentity.mactools.diskanalyzer"
+    private static let clipboardHelperBundleIdentifier = "com.havokentity.mactools.clipboard"
 
     private static let openHelpersDefaultsKey = "com.havokentity.mactools.toolbox.openHelpers"
 
@@ -27,7 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HelperDescriptor(bundleId: uninstallerHelperBundleIdentifier, appName: "DMonte Uninstaller.app", executableName: "DMonteUninstaller", arguments: ["--open"]),
         HelperDescriptor(bundleId: cleanDriveHelperBundleIdentifier, appName: "DMonte Clean Drive.app", executableName: "DMonteCleanDrive", arguments: ["--open"]),
         HelperDescriptor(bundleId: videoDownloaderHelperBundleIdentifier, appName: "DMonte Video Downloader.app", executableName: "DMonteVideoDownloader", arguments: ["--open"]),
-        HelperDescriptor(bundleId: diskAnalyzerHelperBundleIdentifier, appName: "DMonte Disk Analyzer.app", executableName: "DMonteDiskAnalyzer", arguments: ["--open"])
+        HelperDescriptor(bundleId: diskAnalyzerHelperBundleIdentifier, appName: "DMonte Disk Analyzer.app", executableName: "DMonteDiskAnalyzer", arguments: ["--open"]),
+        HelperDescriptor(bundleId: clipboardHelperBundleIdentifier, appName: "DMonte Clipboard.app", executableName: "DMonteClipboard", arguments: ["--open"])
     ]
 
     private let updaterController = SPUStandardUpdaterController(
@@ -77,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureToolboxPopover() {
         let popoverSize = Self.preferredPopoverSize()
-        let panel = NSPanel(
+        let panel = KeyableToolboxPanel(
             contentRect: NSRect(origin: .zero, size: popoverSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -136,6 +146,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onOpenDiskAnalyzer: { [weak self] in
                 self?.openDiskAnalyzerFromToolbox()
+            },
+            onOpenClipboard: { [weak self] in
+                self?.openClipboardFromToolbox()
             },
             onCheckForUpdates: { [weak self] in
                 self?.updaterController.checkForUpdates(nil)
@@ -208,6 +221,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else if bundleIdentifier == Self.diskAnalyzerHelperBundleIdentifier {
                     DistributedNotificationCenter.default().postNotificationName(
                         HelperNotifications.showDiskAnalyzerWindow,
+                        object: nil,
+                        userInfo: nil,
+                        deliverImmediately: true
+                    )
+                } else if bundleIdentifier == Self.clipboardHelperBundleIdentifier {
+                    DistributedNotificationCenter.default().postNotificationName(
+                        HelperNotifications.showClipboardWindow,
                         object: nil,
                         userInfo: nil,
                         deliverImmediately: true
@@ -362,7 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let size = Self.preferredPopoverSize()
         panel.setContentSize(size)
         panel.setFrame(Self.panelFrame(for: size, anchoredTo: view), display: true)
-        panel.orderFrontRegardless()
+        panel.makeKeyAndOrderFront(nil)
         startOutsideClickMonitorAfterOpeningClick()
     }
 
@@ -415,6 +435,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bundleIdentifier: Self.diskAnalyzerHelperBundleIdentifier,
             appName: "DMonte Disk Analyzer.app",
             executableName: "DMonteDiskAnalyzer",
+            arguments: ["--open"]
+        )
+        closeToolboxPopover()
+    }
+
+    private func openClipboardFromToolbox() {
+        launchHelper(
+            bundleIdentifier: Self.clipboardHelperBundleIdentifier,
+            appName: "DMonte Clipboard.app",
+            executableName: "DMonteClipboard",
             arguments: ["--open"]
         )
         closeToolboxPopover()
@@ -509,48 +539,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     static func toolboxStatusImage() -> NSImage {
-        let image = NSImage(size: NSSize(width: 17, height: 17), flipped: false) { rect in
-            NSColor.labelColor.setFill()
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+            // A toolbox silhouette — solid body + arched handle — with a bold rounded "D"
+            // monogram knocked out of the body.
+            NSColor.black.setFill()
+            NSColor.black.setStroke()
 
-            let mark = NSBezierPath()
-            mark.windingRule = .evenOdd
+            let cx = rect.midX
+            let body = NSRect(x: rect.minX + 1.7, y: rect.minY + 2.4, width: 14.6, height: 9.1)
+            NSBezierPath(roundedRect: body, xRadius: 2.2, yRadius: 2.2).fill()
 
-            mark.append(Self.invertedPentagramPath(in: rect.insetBy(dx: 1.1, dy: 1.1)))
-
-            let dYOffset: CGFloat = -0.2
-            let dLeftExtent: CGFloat = rect.minX + 7.0
-            let dRightExtent: CGFloat = rect.minX + 12.2
-            let dWidth = dRightExtent - dLeftExtent
-            let outerShoulderX = dLeftExtent + (dWidth * 0.28)
-            let innerLeftExtent = dLeftExtent + 1.05
-            let innerShoulderX = outerShoulderX - 0.15
-            let innerRightExtent = dRightExtent - 1.3
-
-            let outerD = NSBezierPath()
-            outerD.move(to: NSPoint(x: dLeftExtent, y: rect.minY + 5.5 + dYOffset))
-            outerD.line(to: NSPoint(x: dLeftExtent, y: rect.maxY - 5.5 + dYOffset))
-            outerD.line(to: NSPoint(x: outerShoulderX, y: rect.maxY - 5.5 + dYOffset))
-            outerD.curve(
-                to: NSPoint(x: outerShoulderX, y: rect.minY + 5.5 + dYOffset),
-                controlPoint1: NSPoint(x: dRightExtent, y: rect.maxY - 5.5 + dYOffset),
-                controlPoint2: NSPoint(x: dRightExtent, y: rect.minY + 5.5 + dYOffset)
+            let handle = NSBezierPath()
+            handle.lineWidth = 1.7
+            handle.lineCapStyle = .round
+            handle.lineJoinStyle = .round
+            let halfWidth: CGFloat = 3.4
+            let handleTop = rect.minY + 15.0
+            let bodyTop = body.maxY - 0.3
+            handle.move(to: NSPoint(x: cx - halfWidth, y: bodyTop))
+            handle.line(to: NSPoint(x: cx - halfWidth, y: handleTop - 1.0))
+            handle.curve(
+                to: NSPoint(x: cx + halfWidth, y: handleTop - 1.0),
+                controlPoint1: NSPoint(x: cx - halfWidth, y: handleTop + 0.8),
+                controlPoint2: NSPoint(x: cx + halfWidth, y: handleTop + 0.8)
             )
-            outerD.close()
-            mark.append(outerD)
+            handle.line(to: NSPoint(x: cx + halfWidth, y: bodyTop))
+            handle.stroke()
 
-            let innerCounter = NSBezierPath()
-            innerCounter.move(to: NSPoint(x: innerLeftExtent, y: rect.minY + 6.55 + dYOffset))
-            innerCounter.line(to: NSPoint(x: innerLeftExtent, y: rect.maxY - 6.55 + dYOffset))
-            innerCounter.line(to: NSPoint(x: innerShoulderX, y: rect.maxY - 6.55 + dYOffset))
-            innerCounter.curve(
-                to: NSPoint(x: innerShoulderX, y: rect.minY + 6.55 + dYOffset),
-                controlPoint1: NSPoint(x: innerRightExtent, y: rect.maxY - 6.55 + dYOffset),
-                controlPoint2: NSPoint(x: innerRightExtent, y: rect.minY + 6.55 + dYOffset)
-            )
-            innerCounter.close()
-            mark.append(innerCounter)
+            guard let context = NSGraphicsContext.current else { return true }
+            let cgContext = context.cgContext
 
-            mark.fill()
+            // Render the "D" glyph large for precision, scale its bounding box to a fraction
+            // of the body height, center it, and knock it out of the body.
+            let font = NSFont.systemFont(ofSize: 100, weight: .heavy).fontDescriptor.withDesign(.rounded)
+                .flatMap { NSFont(descriptor: $0, size: 100) } ?? NSFont.systemFont(ofSize: 100, weight: .heavy)
+            let ctFont = font as CTFont
+            var characters = Array("D".utf16)
+            var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+            guard CTFontGetGlyphsForCharacters(ctFont, &characters, &glyphs, characters.count),
+                  let glyphPath = CTFontCreatePathForGlyph(ctFont, glyphs[0], nil) else {
+                return true
+            }
+
+            let box = glyphPath.boundingBoxOfPath
+            let scale = (body.height * 0.62) / box.height
+            var transform = CGAffineTransform(translationX: cx, y: body.midY)
+                .scaledBy(x: scale, y: scale)
+                .translatedBy(x: -box.midX, y: -box.midY)
+            guard let centered = glyphPath.copy(using: &transform) else { return true }
+
+            cgContext.saveGState()
+            cgContext.setBlendMode(.destinationOut)
+            cgContext.addPath(centered)
+            cgContext.fillPath()
+            cgContext.restoreGState()
 
             return true
         }
@@ -559,31 +601,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         image.accessibilityDescription = "D'Monte's Toolbox"
 
         return image
-    }
-
-    private static func invertedPentagramPath(in rect: NSRect) -> NSBezierPath {
-        let center = NSPoint(x: rect.midX, y: rect.midY)
-        let outerRadius = min(rect.width, rect.height) / 2
-        let innerRadius = outerRadius * 0.42
-        let path = NSBezierPath()
-
-        for index in 0..<10 {
-            let isOuterPoint = index.isMultiple(of: 2)
-            let radius = isOuterPoint ? outerRadius : innerRadius
-            let angle = (-CGFloat.pi / 2) + (CGFloat(index) * CGFloat.pi / 5)
-            let point = NSPoint(
-                x: center.x + cos(angle) * radius,
-                y: center.y + sin(angle) * radius
-            )
-
-            if index == 0 {
-                path.move(to: point)
-            } else {
-                path.line(to: point)
-            }
-        }
-
-        path.close()
-        return path
     }
 }

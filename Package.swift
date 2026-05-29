@@ -35,6 +35,10 @@ let package = Package(
         .executable(
             name: "DMonteDiskAnalyzer",
             targets: ["DMonteDiskAnalyzer"]
+        ),
+        .executable(
+            name: "DMonteClipboard",
+            targets: ["DMonteClipboard"]
         )
     ],
     dependencies: [
@@ -87,6 +91,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteDiskAnalyzerApp"
+        ),
+        .executableTarget(
+            name: "DMonteClipboard",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteClipboardApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

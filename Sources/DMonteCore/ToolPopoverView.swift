@@ -10,6 +10,8 @@ public enum DefaultsKey {
     public static let systemMonitorTemperatureUnit = "tool.systemMonitor.temperatureUnit"
     public static let systemMonitorOpenAtLogin = "tool.systemMonitor.openAtLogin"
     public static let systemMonitorShowsTrayIcon = "tool.systemMonitor.showsTrayIcon"
+    public static let clipboardOpenAtLogin = "tool.clipboard.openAtLogin"
+    public static let clipboardMaxHistory = "tool.clipboard.maxHistory"
 
     static let obsoleteKeys = [
         "tool.systemMonitor.enabled",
@@ -38,7 +40,9 @@ public enum AppDefaults {
             DefaultsKey.videoDownloaderCookieSource: VideoCookieSource.automatic.rawValue,
             DefaultsKey.systemMonitorTemperatureUnit: TemperatureUnitPreference.celsius.rawValue,
             DefaultsKey.systemMonitorOpenAtLogin: false,
-            DefaultsKey.systemMonitorShowsTrayIcon: true
+            DefaultsKey.systemMonitorShowsTrayIcon: true,
+            DefaultsKey.clipboardOpenAtLogin: true,
+            DefaultsKey.clipboardMaxHistory: 200
         ])
     }
 }
@@ -50,6 +54,7 @@ public struct ToolPopoverView: View {
     var onOpenCleanDrive: () -> Void
     var onOpenVideoDownloader: () -> Void
     var onOpenDiskAnalyzer: () -> Void
+    var onOpenClipboard: () -> Void
     var onCheckForUpdates: () -> Void
     var onQuit: () -> Void
 
@@ -63,6 +68,7 @@ public struct ToolPopoverView: View {
         onOpenCleanDrive: @escaping () -> Void,
         onOpenVideoDownloader: @escaping () -> Void,
         onOpenDiskAnalyzer: @escaping () -> Void,
+        onOpenClipboard: @escaping () -> Void,
         onCheckForUpdates: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
@@ -72,6 +78,7 @@ public struct ToolPopoverView: View {
         self.onOpenCleanDrive = onOpenCleanDrive
         self.onOpenVideoDownloader = onOpenVideoDownloader
         self.onOpenDiskAnalyzer = onOpenDiskAnalyzer
+        self.onOpenClipboard = onOpenClipboard
         self.onCheckForUpdates = onCheckForUpdates
         self.onQuit = onQuit
     }
@@ -119,6 +126,8 @@ public struct ToolPopoverView: View {
             onOpenVideoDownloader()
         case .diskAnalyzer:
             onOpenDiskAnalyzer()
+        case .clipboard:
+            onOpenClipboard()
         }
     }
 
@@ -178,6 +187,7 @@ private enum ToolboxTool: String, CaseIterable, Identifiable {
     case uninstaller = "Uninstall Apps"
     case cleanDrive = "Clean Drive"
     case diskAnalyzer = "Disk Usage Analyzer"
+    case clipboard = "Clipboard History"
 
     var id: String { rawValue }
 
@@ -188,6 +198,7 @@ private enum ToolboxTool: String, CaseIterable, Identifiable {
         case .uninstaller: "trash"
         case .cleanDrive: "paintbrush.pointed"
         case .diskAnalyzer: "chart.pie.fill"
+        case .clipboard: "doc.on.clipboard"
         }
     }
 
@@ -198,6 +209,7 @@ private enum ToolboxTool: String, CaseIterable, Identifiable {
         case .uninstaller: .red
         case .cleanDrive: .yellow
         case .diskAnalyzer: .blue
+        case .clipboard: .orange
         }
     }
 }

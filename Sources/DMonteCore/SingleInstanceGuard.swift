@@ -8,6 +8,7 @@ public enum HelperNotifications {
     public static let showCleanDriveWindow = Notification.Name("com.havokentity.mactools.cleandrive.showWindow")
     public static let showVideoDownloaderWindow = Notification.Name("com.havokentity.mactools.videodownloader.showWindow")
     public static let showDiskAnalyzerWindow = Notification.Name("com.havokentity.mactools.diskanalyzer.showWindow")
+    public static let showClipboardWindow = Notification.Name("com.havokentity.mactools.clipboard.showWindow")
 }
 
 public final class SingleInstanceGuard {
