@@ -50,11 +50,49 @@ public enum VideoNonMP4Handling: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum VideoCookieSource: String, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case disabled
+    case safari
+    case chrome
+    case brave
+    case edge
+    case firefox
+
+    public var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .automatic: "Automatic (when a sign-in is required)"
+        case .disabled: "Don't use cookies"
+        case .safari: "Safari"
+        case .chrome: "Chrome"
+        case .brave: "Brave"
+        case .edge: "Edge"
+        case .firefox: "Firefox"
+        }
+    }
+
+    /// The yt-dlp `--cookies-from-browser` identifier for a pinned browser, or
+    /// `nil` for the automatic and disabled modes.
+    var ytDlpBrowser: String? {
+        switch self {
+        case .automatic, .disabled: nil
+        case .safari: "safari"
+        case .chrome: "chrome"
+        case .brave: "brave"
+        case .edge: "edge"
+        case .firefox: "firefox"
+        }
+    }
+}
+
 fileprivate struct VideoDownloaderPreferences: Sendable {
     var quality: VideoQuality
     var nonMP4Handling: VideoNonMP4Handling
     var downloadsSubtitles: Bool
     var saveDirectoryPath: String
+    var cookieSource: VideoCookieSource
 
     @MainActor
     static var current: VideoDownloaderPreferences {
@@ -68,7 +106,9 @@ fileprivate struct VideoDownloaderPreferences: Sendable {
             nonMP4Handling: VideoNonMP4Handling(rawValue: defaults.string(forKey: DefaultsKey.videoDownloaderNonMP4Handling) ?? "")
                 ?? .downloadWithoutConversion,
             downloadsSubtitles: defaults.bool(forKey: DefaultsKey.videoDownloaderDownloadsSubtitles),
-            saveDirectoryPath: defaults.string(forKey: DefaultsKey.videoDownloaderSaveDirectory) ?? downloadsURL.path
+            saveDirectoryPath: defaults.string(forKey: DefaultsKey.videoDownloaderSaveDirectory) ?? downloadsURL.path,
+            cookieSource: VideoCookieSource(rawValue: defaults.string(forKey: DefaultsKey.videoDownloaderCookieSource) ?? "")
+                ?? .automatic
         )
     }
 }
@@ -239,6 +279,26 @@ final class VideoDownloaderModel: ObservableObject {
         launchAvailableDownloads()
     }
 
+    /// Re-queues a failed download from scratch. Triggered by tapping a failed row.
+    func retryDownload(id: UUID) {
+        guard let index = downloads.firstIndex(where: { $0.id == id }),
+              downloads[index].state == .failed else {
+            return
+        }
+
+        retryTasks[id]?.cancel()
+        retryTasks[id] = nil
+
+        downloads[index].retryCount = 0
+        downloads[index].state = .queued
+        downloads[index].status = "Queued"
+        downloads[index].detail = VideoDownloaderPreferences.current.quality.title
+        downloads[index].progressFraction = nil
+        downloads[index].progressDetail = "Waiting"
+        downloads[index].copyText = downloads[index].url
+        launchAvailableDownloads()
+    }
+
     private var trimmedURL: String {
         urlText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -324,7 +384,7 @@ final class VideoDownloaderModel: ObservableObject {
         downloads[index].status = result.title
         downloads[index].detail = result.detail
         downloads[index].progressFraction = result.succeeded ? 1 : nil
-        downloads[index].progressDetail = result.succeeded ? "Done" : "Failed"
+        downloads[index].progressDetail = result.succeeded ? "Done" : ""
         downloads[index].copyText = result.copyText
 
         if result.succeeded {
@@ -456,6 +516,12 @@ enum VideoDownloaderRunner {
         var detail: String
     }
 
+    private struct Attempt {
+        var status: Int32?
+        var output: String
+        var errorMessage: String?
+    }
+
     private final class OutputBuffer: @unchecked Sendable {
         private let lock = NSLock()
         private var text = ""
@@ -503,7 +569,7 @@ enum VideoDownloaderRunner {
 
             let saveURL = URL(fileURLWithPath: preferences.saveDirectoryPath, isDirectory: true)
             let outputTemplate = saveURL.appendingPathComponent("%(title).200B.%(ext)s").path
-            var arguments = command.arguments + [
+            var baseArguments = command.arguments + [
                 "--newline",
                 "--no-playlist",
                 "--no-keep-video",
@@ -514,71 +580,131 @@ enum VideoDownloaderRunner {
             ]
 
             if preferences.downloadsSubtitles {
-                arguments += ["--write-subs", "--write-auto-subs", "--sub-langs", "all"]
+                baseArguments += ["--write-subs", "--write-auto-subs", "--sub-langs", "all"]
             }
 
             switch preferences.nonMP4Handling {
             case .downloadMP4LowerQuality:
-                arguments += ["--merge-output-format", "mp4"]
+                baseArguments += ["--merge-output-format", "mp4"]
             case .downloadWithoutConversion:
                 break
             case .convertToMP4:
-                arguments += ["--recode-video", "mp4"]
+                baseArguments += ["--recode-video", "mp4"]
             }
 
-            arguments.append(url)
+            func runAttempt(cookieBrowser: String?) async -> Attempt {
+                var arguments = baseArguments
+                if let cookieBrowser {
+                    arguments += ["--cookies-from-browser", cookieBrowser]
+                }
+                arguments.append(url)
 
-            let process = Process()
-            process.executableURL = command.executableURL
-            process.arguments = arguments
+                let process = Process()
+                process.executableURL = command.executableURL
+                process.arguments = arguments
 
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            let output = OutputBuffer()
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                output.append(data)
-                if let progress = parseProgress(from: data) {
-                    onProgress(progress)
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+                let output = OutputBuffer()
+                pipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    output.append(data)
+                    if let progress = parseProgress(from: data) {
+                        onProgress(progress)
+                    }
+                }
+                defer {
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    try? pipe.fileHandleForReading.close()
+                }
+
+                do {
+                    let terminationStatus = try await runAndWait(process)
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
+                    output.append(remainingData)
+                    return Attempt(status: terminationStatus, output: output.value, errorMessage: nil)
+                } catch {
+                    return Attempt(status: nil, output: output.value, errorMessage: error.localizedDescription)
                 }
             }
-            defer {
-                pipe.fileHandleForReading.readabilityHandler = nil
-                try? pipe.fileHandleForReading.close()
+
+            func successResult() -> Result {
+                let message = "Download complete. Saved to \(saveURL.path)"
+                return Result(
+                    title: "Download complete",
+                    detail: "Saved to \(saveURL.lastPathComponent)",
+                    copyText: message,
+                    succeeded: true
+                )
             }
 
-            do {
-                let terminationStatus = try await runAndWait(process)
-                pipe.fileHandleForReading.readabilityHandler = nil
-                let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
-                output.append(remainingData)
-
-                if terminationStatus == 0 {
-                    let message = "Download complete. Saved to \(saveURL.path)"
+            func failureResult(from attempt: Attempt, loginGated: Bool) -> Result {
+                if let errorMessage = attempt.errorMessage, attempt.output.isEmpty {
                     return Result(
-                        title: "Download complete",
-                        detail: "Saved to \(saveURL.lastPathComponent)",
-                        copyText: message,
-                        succeeded: true
+                        title: "Download failed",
+                        detail: errorMessage,
+                        copyText: errorMessage,
+                        succeeded: false
                     )
                 }
-            } catch {
+
+                if loginGated {
+                    let hint = "This needs a sign-in. Open the link in a browser where you're logged in, then click to retry."
+                    return Result(
+                        title: "Sign-in required",
+                        detail: hint,
+                        copyText: attempt.output.isEmpty ? hint : "\(attempt.output)\n\n\(hint)",
+                        succeeded: false
+                    )
+                }
+
                 return Result(
                     title: "Download failed",
-                    detail: error.localizedDescription,
-                    copyText: error.localizedDescription,
+                    detail: lastUsefulLine(from: attempt.output),
+                    copyText: attempt.output.isEmpty ? "Download failed. Check the link and try again." : attempt.output,
                     succeeded: false
                 )
             }
 
-            let fullOutput = output.value
-            return Result(
-                title: "Download failed",
-                detail: lastUsefulLine(from: fullOutput),
-                copyText: fullOutput.isEmpty ? "Download failed. Check the link and try again." : fullOutput,
-                succeeded: false
-            )
+            // Cookies disabled: a single plain attempt.
+            if preferences.cookieSource == .disabled {
+                let attempt = await runAttempt(cookieBrowser: nil)
+                return attempt.status == 0 ? successResult() : failureResult(from: attempt, loginGated: false)
+            }
+
+            // A pinned browser: always send its cookies.
+            if let pinnedBrowser = preferences.cookieSource.ytDlpBrowser {
+                let attempt = await runAttempt(cookieBrowser: pinnedBrowser)
+                return attempt.status == 0
+                    ? successResult()
+                    : failureResult(from: attempt, loginGated: isAuthError(attempt.output))
+            }
+
+            // Automatic: try without cookies first so public videos never touch the
+            // browser keychain, then escalate to each signed-in browser on a sign-in error.
+            let firstAttempt = await runAttempt(cookieBrowser: nil)
+            if firstAttempt.status == 0 {
+                return successResult()
+            }
+
+            guard !Task.isCancelled, isAuthError(firstAttempt.output) else {
+                return failureResult(from: firstAttempt, loginGated: false)
+            }
+
+            for browser in installedCookieBrowsers() {
+                if Task.isCancelled {
+                    return failureResult(from: firstAttempt, loginGated: true)
+                }
+
+                let attempt = await runAttempt(cookieBrowser: browser)
+                if attempt.status == 0 {
+                    return successResult()
+                }
+            }
+
+            return failureResult(from: firstAttempt, loginGated: true)
         }.value
     }
 
@@ -718,6 +844,68 @@ enum VideoDownloaderRunner {
             .reversed()
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? "Check the link and try again."
+    }
+
+    /// Heuristic for failures that a signed-in browser session is likely to fix
+    /// (login walls, private/restricted content, rate limits).
+    private static func isAuthError(_ output: String) -> Bool {
+        let lowered = output.lowercased()
+        let needles = [
+            "login required",
+            "log in",
+            "logged in",
+            "sign in",
+            "available to everyone",
+            "requested content is not available",
+            "this content isn",
+            "only available to",
+            "is private",
+            "private video",
+            "private account",
+            "rate-limit",
+            "rate limit",
+            "http error 429",
+            "http error 403",
+            "use --cookies",
+            "cookies-from-browser",
+            "authenticat",
+            "age-restricted",
+            "age restricted",
+            "confirm your age",
+            "you must be 18"
+        ]
+        return needles.contains { lowered.contains($0) }
+    }
+
+    /// yt-dlp browser identifiers for browsers whose profile data exists on this
+    /// Mac, in the order they should be tried for cookies. Safari is last because
+    /// its cookies live in a protected container that needs Full Disk Access.
+    private static func installedCookieBrowsers() -> [String] {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+        let appSupport = home.appendingPathComponent("Library/Application Support", isDirectory: true)
+
+        let candidates: [(browser: String, relativePath: String)] = [
+            ("chrome", "Google/Chrome"),
+            ("brave", "BraveSoftware/Brave-Browser"),
+            ("edge", "Microsoft Edge"),
+            ("vivaldi", "Vivaldi"),
+            ("chromium", "Chromium"),
+            ("firefox", "Firefox")
+        ]
+
+        var browsers = candidates
+            .filter { fileManager.fileExists(atPath: appSupport.appendingPathComponent($0.relativePath).path) }
+            .map(\.browser)
+
+        let safariCookies = home.appendingPathComponent(
+            "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies"
+        )
+        if fileManager.fileExists(atPath: safariCookies.path) {
+            browsers.append("safari")
+        }
+
+        return browsers
     }
 }
 
@@ -885,6 +1073,8 @@ public struct VideoDownloaderWindowView: View {
                     DownloadQueueRow(item: item, layout: layout) {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(item.copyText, forType: .string)
+                    } onRetry: {
+                        model.retryDownload(id: item.id)
                     }
                 }
             }
@@ -932,9 +1122,14 @@ private struct DownloadQueueRow: View {
     var item: VideoDownloaderModel.DownloadItem
     var layout: VideoDownloaderLayout
     var onCopy: () -> Void
+    var onRetry: () -> Void
+
+    private var isFailed: Bool {
+        item.state == .failed
+    }
 
     var body: some View {
-        Button(action: onCopy) {
+        Button(action: isFailed ? onRetry : onCopy) {
             HStack(spacing: layout.queueRowHorizontalSpacing) {
                 Image(systemName: iconName)
                     .font(.system(size: layout.queueIconSize, weight: .bold))
@@ -956,7 +1151,9 @@ private struct DownloadQueueRow: View {
                     }
 
                     HStack(spacing: layout.queueRowHorizontalSpacing) {
-                        if let fraction = item.progressFraction {
+                        if isFailed {
+                            retryPill
+                        } else if let fraction = item.progressFraction {
                             ProgressView(value: fraction)
                                 .progressViewStyle(.linear)
                         } else if item.state == .downloading || item.state == .queued {
@@ -985,7 +1182,24 @@ private struct DownloadQueueRow: View {
             .contentShape(RoundedRectangle(cornerRadius: layout.queueRowCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help("Copy download message")
+        .help(isFailed ? "Click to retry this download" : "Copy download message")
+        .contextMenu {
+            Button("Copy Details") { onCopy() }
+            if isFailed {
+                Button("Retry") { onRetry() }
+            }
+        }
+    }
+
+    private var retryPill: some View {
+        HStack(spacing: 4 * layout.scale) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: layout.queueMetaFontSize, weight: .bold))
+            Text("Retry")
+                .font(.system(size: layout.queueMetaFontSize, weight: .semibold))
+        }
+        .foregroundStyle(Color.accentColor)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var iconName: String {
@@ -1090,6 +1304,7 @@ private struct VideoDownloaderSettingsView: View {
     @AppStorage(DefaultsKey.videoDownloaderPreferredQuality, store: AppDefaults.shared) private var preferredQualityRaw = VideoQuality.maximum.rawValue
     @AppStorage(DefaultsKey.videoDownloaderNonMP4Handling, store: AppDefaults.shared) private var nonMP4HandlingRaw = VideoNonMP4Handling.downloadWithoutConversion.rawValue
     @AppStorage(DefaultsKey.videoDownloaderDownloadsSubtitles, store: AppDefaults.shared) private var downloadsSubtitles = true
+    @AppStorage(DefaultsKey.videoDownloaderCookieSource, store: AppDefaults.shared) private var cookieSourceRaw = VideoCookieSource.automatic.rawValue
     @AppStorage(DefaultsKey.videoDownloaderSaveDirectory, store: AppDefaults.shared) private var saveDirectoryPath = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
         ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
 
@@ -1159,22 +1374,15 @@ private struct VideoDownloaderSettingsView: View {
                 .controlSize(layout.controlSize)
             }
 
-            VStack(alignment: .leading, spacing: layout.controlSpacing) {
-                Text("Safari extension:")
-                    .font(.system(size: layout.labelFontSize, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.76))
+            VStack(alignment: .leading, spacing: layout.captionSpacing) {
+                settingsPicker(
+                    title: "Use browser cookies:",
+                    selection: $cookieSourceRaw,
+                    options: VideoCookieSource.allCases.map { ($0.rawValue, $0.title) },
+                    layout: layout
+                )
 
-                Button("Enabled") {}
-                    .font(.system(size: layout.bodyFontSize, weight: .semibold))
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: layout.pickerHeight)
-                    .background(Color.white.opacity(0.14))
-                    .foregroundStyle(.secondary)
-                    .clipShape(RoundedRectangle(cornerRadius: layout.controlCornerRadius, style: .continuous))
-                    .disabled(true)
-
-                Text("Use this extension to download videos from Safari")
+                Text("For sign-in-only videos, e.g. Instagram.")
                     .font(.system(size: layout.captionFontSize, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1248,14 +1456,14 @@ private struct VideoDownloaderSettingsLayout {
     var width: CGFloat { VideoDownloaderSizing.preferredSize().width }
     var height: CGFloat { VideoDownloaderSizing.preferredSize().height }
     var horizontalPadding: CGFloat { 42 * scale }
-    var topPadding: CGFloat { 34 * scale }
-    var bottomPadding: CGFloat { 30 * scale }
+    var topPadding: CGFloat { 40 * scale }
+    var bottomPadding: CGFloat { 38 * scale }
     var labelFontSize: CGFloat { 20 * scale }
     var bodyFontSize: CGFloat { 18 * scale }
     var captionFontSize: CGFloat { 15 * scale }
     var doneFontSize: CGFloat { 16 * scale }
     var chevronFontSize: CGFloat { 12 * scale }
-    var sectionSpacing: CGFloat { 22 * scale }
+    var sectionSpacing: CGFloat { 16 * scale }
     var controlSpacing: CGFloat { 7 * scale }
     var captionSpacing: CGFloat { 9 * scale }
     var folderSpacing: CGFloat { 8 * scale }

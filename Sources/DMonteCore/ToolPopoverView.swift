@@ -6,6 +6,7 @@ public enum DefaultsKey {
     public static let videoDownloaderNonMP4Handling = "tool.videoDownloader.nonMP4Handling"
     public static let videoDownloaderDownloadsSubtitles = "tool.videoDownloader.downloadsSubtitles"
     public static let videoDownloaderSaveDirectory = "tool.videoDownloader.saveDirectory"
+    public static let videoDownloaderCookieSource = "tool.videoDownloader.cookieSource"
     public static let systemMonitorTemperatureUnit = "tool.systemMonitor.temperatureUnit"
     public static let systemMonitorOpenAtLogin = "tool.systemMonitor.openAtLogin"
     public static let systemMonitorShowsTrayIcon = "tool.systemMonitor.showsTrayIcon"
@@ -34,6 +35,7 @@ public enum AppDefaults {
             DefaultsKey.videoDownloaderDownloadsSubtitles: true,
             DefaultsKey.videoDownloaderSaveDirectory: FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path,
+            DefaultsKey.videoDownloaderCookieSource: VideoCookieSource.automatic.rawValue,
             DefaultsKey.systemMonitorTemperatureUnit: TemperatureUnitPreference.celsius.rawValue,
             DefaultsKey.systemMonitorOpenAtLogin: false,
             DefaultsKey.systemMonitorShowsTrayIcon: true
