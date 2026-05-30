@@ -71,6 +71,18 @@ let package = Package(
         .executable(
             name: "DMonteCalendar",
             targets: ["DMonteCalendar"]
+        ),
+        .executable(
+            name: "DMonteColorPicker",
+            targets: ["DMonteColorPicker"]
+        ),
+        .executable(
+            name: "DMonteGrabText",
+            targets: ["DMonteGrabText"]
+        ),
+        .executable(
+            name: "DMonteFocusTimer",
+            targets: ["DMonteFocusTimer"]
         )
     ],
     dependencies: [
@@ -186,6 +198,27 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteCalendarApp"
+        ),
+        .executableTarget(
+            name: "DMonteColorPicker",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteColorPickerApp"
+        ),
+        .executableTarget(
+            name: "DMonteGrabText",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteGrabTextApp"
+        ),
+        .executableTarget(
+            name: "DMonteFocusTimer",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteFocusTimerApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

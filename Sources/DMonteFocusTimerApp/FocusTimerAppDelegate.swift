@@ -284,35 +284,40 @@ final class FocusTimerAppDelegate: NSObject, NSApplicationDelegate {
     /// Posts a local notification describing the new phase, requesting authorization lazily on first
     /// use. Wrapped so a missing/unavailable notification centre can never crash the helper.
     private func postPhaseNotification() {
-        guard let center = makeNotificationCenter() else { return }
-
-        let deliver: () -> Void = { [weak self] in
-            guard let self else { return }
-            let content = UNMutableNotificationContent()
-            content.title = "Focus Timer"
-            content.body = self.notificationBody(for: self.controller.phase)
-            content.sound = .default
-            let request = UNNotificationRequest(
-                identifier: UUID().uuidString,
-                content: content,
-                trigger: nil
-            )
-            center.add(request, withCompletionHandler: nil)
-        }
+        guard makeNotificationCenter() != nil else { return }
 
         if didRequestNotificationAuth {
             // Authorization already decided once; just attempt delivery (no-op if denied).
-            deliver()
+            deliverPhaseNotification()
             return
         }
 
         didRequestNotificationAuth = true
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+        // The authorization completion runs off the main actor. Hop back with a fresh
+        // @MainActor task instead of capturing a non-Sendable closure (which Swift 6 flags
+        // as a data race), then build and post the notification on the main actor.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             guard granted else { return }
-            DispatchQueue.main.async {
-                deliver()
+            Task { @MainActor in
+                self?.deliverPhaseNotification()
             }
         }
+    }
+
+    /// Builds and posts the notification for the current phase. Main-actor isolated so it can
+    /// safely read `controller` and never sends mutable state across executors.
+    private func deliverPhaseNotification() {
+        guard let center = makeNotificationCenter() else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Focus Timer"
+        content.body = notificationBody(for: controller.phase)
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        center.add(request, withCompletionHandler: nil)
     }
 
     /// `UNUserNotificationCenter.current()` aborts the process when there is no real `.app` bundle

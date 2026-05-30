@@ -57,6 +57,9 @@ public enum ToolboxCatalog {
         ToolboxTool(id: "maintenance", title: "Maintenance", iconName: "wrench.and.screwdriver.fill", tint: .pink, bundleID: prefix + "maintenance", appName: "DMonte Maintenance.app", executableName: "DMonteMaintenance", arguments: ["--open"]),
         ToolboxTool(id: "duplicateFinder", title: "Duplicate Finder", iconName: "doc.on.doc", tint: .mint, bundleID: prefix + "duplicatefinder", appName: "DMonte Duplicate Finder.app", executableName: "DMonteDuplicateFinder", arguments: ["--open"]),
         ToolboxTool(id: "audioSwitcher", title: "Audio Switcher", iconName: "speaker.wave.2.fill", tint: .purple, bundleID: prefix + "audioswitcher", appName: "DMonte Audio Switcher.app", executableName: "DMonteAudioSwitcher", arguments: ["--open"]),
-        ToolboxTool(id: "calendar", title: "Calendar", iconName: "calendar", tint: .red, bundleID: prefix + "calendar", appName: "DMonte Calendar.app", executableName: "DMonteCalendar", arguments: ["--open"])
+        ToolboxTool(id: "calendar", title: "Calendar", iconName: "calendar", tint: .red, bundleID: prefix + "calendar", appName: "DMonte Calendar.app", executableName: "DMonteCalendar", arguments: ["--open"]),
+        ToolboxTool(id: "colorPicker", title: "Color Picker", iconName: "eyedropper.halffull", tint: .mint, bundleID: prefix + "colorpicker", appName: "DMonte Color Picker.app", executableName: "DMonteColorPicker", arguments: ["--open"]),
+        ToolboxTool(id: "grabText", title: "Grab Text", iconName: "text.viewfinder", tint: .green, bundleID: prefix + "grabtext", appName: "DMonte Grab Text.app", executableName: "DMonteGrabText", arguments: ["--open"]),
+        ToolboxTool(id: "focusTimer", title: "Focus Timer", iconName: "timer", tint: .red, bundleID: prefix + "focustimer", appName: "DMonte Focus Timer.app", executableName: "DMonteFocusTimer", arguments: ["--open"])
     ]
 }
