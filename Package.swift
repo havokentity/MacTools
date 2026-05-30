@@ -59,6 +59,10 @@ let package = Package(
         .executable(
             name: "DMonteMaintenance",
             targets: ["DMonteMaintenance"]
+        ),
+        .executable(
+            name: "DMonteDuplicateFinder",
+            targets: ["DMonteDuplicateFinder"]
         )
     ],
     dependencies: [
@@ -153,6 +157,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteMaintenanceApp"
+        ),
+        .executableTarget(
+            name: "DMonteDuplicateFinder",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteDuplicateFinderApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

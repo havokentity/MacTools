@@ -27,6 +27,7 @@ HELPERS=(
   "DMonteKeepAwake|DMonte Keep Awake.app|KeepAwakeInfo.plist"
   "DMonteImageConverter|DMonte Image Converter.app|ImageConverterInfo.plist"
   "DMonteMaintenance|DMonte Maintenance.app|MaintenanceInfo.plist"
+  "DMonteDuplicateFinder|DMonte Duplicate Finder.app|DuplicateFinderInfo.plist"
 )
 
 stamp_version() {

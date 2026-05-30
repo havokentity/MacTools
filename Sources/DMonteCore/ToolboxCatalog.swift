@@ -54,6 +54,7 @@ public enum ToolboxCatalog {
         ToolboxTool(id: "qr", title: "QR Studio", iconName: "qrcode", tint: .indigo, bundleID: prefix + "qr", appName: "DMonte QR.app", executableName: "DMonteQR", arguments: ["--open"]),
         ToolboxTool(id: "keepAwake", title: "Keep Awake", iconName: "cup.and.saucer.fill", tint: .brown, bundleID: prefix + "keepawake", appName: "DMonte Keep Awake.app", executableName: "DMonteKeepAwake", arguments: ["--open"]),
         ToolboxTool(id: "imageConverter", title: "Image Converter", iconName: "photo.on.rectangle.angled", tint: .teal, bundleID: prefix + "imageconverter", appName: "DMonte Image Converter.app", executableName: "DMonteImageConverter", arguments: ["--open"]),
-        ToolboxTool(id: "maintenance", title: "Maintenance", iconName: "wrench.and.screwdriver.fill", tint: .pink, bundleID: prefix + "maintenance", appName: "DMonte Maintenance.app", executableName: "DMonteMaintenance", arguments: ["--open"])
+        ToolboxTool(id: "maintenance", title: "Maintenance", iconName: "wrench.and.screwdriver.fill", tint: .pink, bundleID: prefix + "maintenance", appName: "DMonte Maintenance.app", executableName: "DMonteMaintenance", arguments: ["--open"]),
+        ToolboxTool(id: "duplicateFinder", title: "Duplicate Finder", iconName: "doc.on.doc", tint: .mint, bundleID: prefix + "duplicatefinder", appName: "DMonte Duplicate Finder.app", executableName: "DMonteDuplicateFinder", arguments: ["--open"])
     ]
 }
