@@ -70,7 +70,10 @@ public enum DevToolsKit {
             return .failure(.emptyInput)
         }
 
-        guard let data = Data(base64Encoded: trimmed, options: [.ignoreUnknownCharacters]),
+        // Strip whitespace/newlines from wrapped pastes, then decode strictly so genuinely
+        // invalid input (e.g. "@@@@") fails instead of silently decoding to empty.
+        let cleaned = trimmed.components(separatedBy: .whitespacesAndNewlines).joined()
+        guard let data = Data(base64Encoded: cleaned), !data.isEmpty,
               let string = String(data: data, encoding: .utf8) else {
             return .failure(.invalidBase64)
         }
