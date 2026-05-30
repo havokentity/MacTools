@@ -28,6 +28,8 @@ HELPERS=(
   "DMonteImageConverter|DMonte Image Converter.app|ImageConverterInfo.plist"
   "DMonteMaintenance|DMonte Maintenance.app|MaintenanceInfo.plist"
   "DMonteDuplicateFinder|DMonte Duplicate Finder.app|DuplicateFinderInfo.plist"
+  "DMonteAudioSwitcher|DMonte Audio Switcher.app|AudioSwitcherInfo.plist"
+  "DMonteCalendar|DMonte Calendar.app|CalendarInfo.plist"
 )
 
 stamp_version() {

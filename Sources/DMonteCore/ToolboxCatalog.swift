@@ -55,6 +55,8 @@ public enum ToolboxCatalog {
         ToolboxTool(id: "keepAwake", title: "Keep Awake", iconName: "cup.and.saucer.fill", tint: .brown, bundleID: prefix + "keepawake", appName: "DMonte Keep Awake.app", executableName: "DMonteKeepAwake", arguments: ["--open"]),
         ToolboxTool(id: "imageConverter", title: "Image Converter", iconName: "photo.on.rectangle.angled", tint: .teal, bundleID: prefix + "imageconverter", appName: "DMonte Image Converter.app", executableName: "DMonteImageConverter", arguments: ["--open"]),
         ToolboxTool(id: "maintenance", title: "Maintenance", iconName: "wrench.and.screwdriver.fill", tint: .pink, bundleID: prefix + "maintenance", appName: "DMonte Maintenance.app", executableName: "DMonteMaintenance", arguments: ["--open"]),
-        ToolboxTool(id: "duplicateFinder", title: "Duplicate Finder", iconName: "doc.on.doc", tint: .mint, bundleID: prefix + "duplicatefinder", appName: "DMonte Duplicate Finder.app", executableName: "DMonteDuplicateFinder", arguments: ["--open"])
+        ToolboxTool(id: "duplicateFinder", title: "Duplicate Finder", iconName: "doc.on.doc", tint: .mint, bundleID: prefix + "duplicatefinder", appName: "DMonte Duplicate Finder.app", executableName: "DMonteDuplicateFinder", arguments: ["--open"]),
+        ToolboxTool(id: "audioSwitcher", title: "Audio Switcher", iconName: "speaker.wave.2.fill", tint: .purple, bundleID: prefix + "audioswitcher", appName: "DMonte Audio Switcher.app", executableName: "DMonteAudioSwitcher", arguments: ["--open"]),
+        ToolboxTool(id: "calendar", title: "Calendar", iconName: "calendar", tint: .red, bundleID: prefix + "calendar", appName: "DMonte Calendar.app", executableName: "DMonteCalendar", arguments: ["--open"])
     ]
 }

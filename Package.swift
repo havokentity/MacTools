@@ -63,6 +63,14 @@ let package = Package(
         .executable(
             name: "DMonteDuplicateFinder",
             targets: ["DMonteDuplicateFinder"]
+        ),
+        .executable(
+            name: "DMonteAudioSwitcher",
+            targets: ["DMonteAudioSwitcher"]
+        ),
+        .executable(
+            name: "DMonteCalendar",
+            targets: ["DMonteCalendar"]
         )
     ],
     dependencies: [
@@ -164,6 +172,20 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteDuplicateFinderApp"
+        ),
+        .executableTarget(
+            name: "DMonteAudioSwitcher",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteAudioSwitcherApp"
+        ),
+        .executableTarget(
+            name: "DMonteCalendar",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteCalendarApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",
