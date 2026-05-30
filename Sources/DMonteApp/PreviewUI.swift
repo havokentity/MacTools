@@ -38,12 +38,7 @@ final class PreviewAppDelegate: NSObject, NSApplicationDelegate {
             rootView: FixedPreviewFrame(size: toolboxSize) {
                 ToolPopoverView(
                     popoverSize: toolboxSize,
-                    onOpenSystemMonitor: {},
-                    onOpenUninstaller: {},
-                    onOpenCleanDrive: {},
-                    onOpenVideoDownloader: {},
-                    onOpenDiskAnalyzer: {},
-                    onOpenClipboard: {},
+                    onOpenTool: { _ in },
                     onCheckForUpdates: {},
                     onQuit: {}
                 )

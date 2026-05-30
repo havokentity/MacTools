@@ -15,30 +15,11 @@ private final class KeyableToolboxPanel: NSPanel {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let systemMonitorHelperBundleIdentifier = "com.havokentity.mactools.systemmonitor"
-    private static let uninstallerHelperBundleIdentifier = "com.havokentity.mactools.uninstaller"
-    private static let cleanDriveHelperBundleIdentifier = "com.havokentity.mactools.cleandrive"
-    private static let videoDownloaderHelperBundleIdentifier = "com.havokentity.mactools.videodownloader"
-    private static let diskAnalyzerHelperBundleIdentifier = "com.havokentity.mactools.diskanalyzer"
-    private static let clipboardHelperBundleIdentifier = "com.havokentity.mactools.clipboard"
-
     private static let openHelpersDefaultsKey = "com.havokentity.mactools.toolbox.openHelpers"
 
-    private struct HelperDescriptor {
-        let bundleId: String
-        let appName: String
-        let executableName: String
-        let arguments: [String]
-    }
-
-    private static let helperDescriptors: [HelperDescriptor] = [
-        HelperDescriptor(bundleId: systemMonitorHelperBundleIdentifier, appName: "DMonte System Monitor.app", executableName: "DMonteSystemMonitor", arguments: []),
-        HelperDescriptor(bundleId: uninstallerHelperBundleIdentifier, appName: "DMonte Uninstaller.app", executableName: "DMonteUninstaller", arguments: ["--open"]),
-        HelperDescriptor(bundleId: cleanDriveHelperBundleIdentifier, appName: "DMonte Clean Drive.app", executableName: "DMonteCleanDrive", arguments: ["--open"]),
-        HelperDescriptor(bundleId: videoDownloaderHelperBundleIdentifier, appName: "DMonte Video Downloader.app", executableName: "DMonteVideoDownloader", arguments: ["--open"]),
-        HelperDescriptor(bundleId: diskAnalyzerHelperBundleIdentifier, appName: "DMonte Disk Analyzer.app", executableName: "DMonteDiskAnalyzer", arguments: ["--open"]),
-        HelperDescriptor(bundleId: clipboardHelperBundleIdentifier, appName: "DMonte Clipboard.app", executableName: "DMonteClipboard", arguments: ["--open"])
-    ]
+    // The launcher is driven entirely by the shared ToolboxCatalog, so a new tool needs no
+    // wiring here — just a catalog entry plus its helper target.
+    private static var tools: [ToolboxTool] { ToolboxCatalog.all }
 
     private let updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
@@ -132,23 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toolboxRootView(popoverSize: NSSize) -> some View {
         ToolPopoverView(
             popoverSize: popoverSize,
-            onOpenSystemMonitor: { [weak self] in
-                self?.openSystemMonitorFromToolbox()
-            },
-            onOpenUninstaller: { [weak self] in
-                self?.openUninstallerFromToolbox()
-            },
-            onOpenCleanDrive: { [weak self] in
-                self?.openCleanDriveFromToolbox()
-            },
-            onOpenVideoDownloader: { [weak self] in
-                self?.openVideoDownloaderFromToolbox()
-            },
-            onOpenDiskAnalyzer: { [weak self] in
-                self?.openDiskAnalyzerFromToolbox()
-            },
-            onOpenClipboard: { [weak self] in
-                self?.openClipboardFromToolbox()
+            onOpenTool: { [weak self] tool in
+                self?.openTool(tool)
             },
             onCheckForUpdates: { [weak self] in
                 self?.updaterController.checkForUpdates(nil)
@@ -176,79 +142,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showToolboxPopover(from: statusView)
     }
 
-    private func launchHelper(
-        bundleIdentifier: String,
-        appName: String,
-        executableName: String,
-        arguments: [String] = []
-    ) {
+    private func openTool(_ tool: ToolboxTool) {
+        launchHelper(tool)
+        closeToolboxPopover()
+    }
+
+    private func launchHelper(_ tool: ToolboxTool) {
         // Remember that this tool is open so we can restore it if macOS kills and
         // relaunches the Toolbox (e.g. when applying a Full Disk Access grant).
-        persistHelperOpen(bundleIdentifier)
+        persistHelperOpen(tool.bundleID)
 
-        let runningApplications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+        let runningApplications = NSRunningApplication.runningApplications(withBundleIdentifier: tool.bundleID)
 
         guard runningApplications.isEmpty else {
-            if arguments.contains("--open") {
-                if bundleIdentifier == Self.systemMonitorHelperBundleIdentifier {
-                    DistributedNotificationCenter.default().postNotificationName(
-                        HelperNotifications.showSystemMonitorWindow,
-                        object: nil,
-                        userInfo: nil,
-                        deliverImmediately: true
-                    )
-                } else if bundleIdentifier == Self.uninstallerHelperBundleIdentifier {
-                    DistributedNotificationCenter.default().postNotificationName(
-                        HelperNotifications.showUninstallerWindow,
-                        object: nil,
-                        userInfo: nil,
-                        deliverImmediately: true
-                    )
-                } else if bundleIdentifier == Self.cleanDriveHelperBundleIdentifier {
-                    DistributedNotificationCenter.default().postNotificationName(
-                        HelperNotifications.showCleanDriveWindow,
-                        object: nil,
-                        userInfo: nil,
-                        deliverImmediately: true
-                    )
-                } else if bundleIdentifier == Self.videoDownloaderHelperBundleIdentifier {
-                    DistributedNotificationCenter.default().postNotificationName(
-                        HelperNotifications.showVideoDownloaderWindow,
-                        object: nil,
-                        userInfo: nil,
-                        deliverImmediately: true
-                    )
-                } else if bundleIdentifier == Self.diskAnalyzerHelperBundleIdentifier {
-                    DistributedNotificationCenter.default().postNotificationName(
-                        HelperNotifications.showDiskAnalyzerWindow,
-                        object: nil,
-                        userInfo: nil,
-                        deliverImmediately: true
-                    )
-                } else if bundleIdentifier == Self.clipboardHelperBundleIdentifier {
-                    DistributedNotificationCenter.default().postNotificationName(
-                        HelperNotifications.showClipboardWindow,
-                        object: nil,
-                        userInfo: nil,
-                        deliverImmediately: true
-                    )
-                }
+            // Already running: ask it to reveal its window (the helper observes this name).
+            if tool.arguments.contains("--open") {
+                DistributedNotificationCenter.default().postNotificationName(
+                    tool.showNotification,
+                    object: nil,
+                    userInfo: nil,
+                    deliverImmediately: true
+                )
             }
-
             return
         }
 
-        if let helperAppURL = bundledHelperURL(appName: appName), FileManager.default.fileExists(atPath: helperAppURL.path) {
+        if let helperAppURL = bundledHelperURL(appName: tool.appName), FileManager.default.fileExists(atPath: helperAppURL.path) {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = false
-            configuration.arguments = arguments
+            configuration.arguments = tool.arguments
             NSWorkspace.shared.openApplication(at: helperAppURL, configuration: configuration)
             return
         }
 
-        if let helperExecutableURL = debugHelperExecutableURL(executableName: executableName),
+        if let helperExecutableURL = debugHelperExecutableURL(executableName: tool.executableName),
            FileManager.default.fileExists(atPath: helperExecutableURL.path) {
-            _ = try? Process.run(helperExecutableURL, arguments: arguments)
+            _ = try? Process.run(helperExecutableURL, arguments: tool.arguments)
         }
     }
 
@@ -270,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func helperAppDidTerminate(_ note: Notification) {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               let bundleId = app.bundleIdentifier,
-              Self.helperDescriptors.contains(where: { $0.bundleId == bundleId }) else {
+              Self.tools.contains(where: { $0.bundleID == bundleId }) else {
             return
         }
 
@@ -321,16 +250,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func relaunchHelper(bundleId: String) {
-        guard let descriptor = Self.helperDescriptors.first(where: { $0.bundleId == bundleId }) else {
+        guard let tool = Self.tools.first(where: { $0.bundleID == bundleId }) else {
             return
         }
 
-        launchHelper(
-            bundleIdentifier: descriptor.bundleId,
-            appName: descriptor.appName,
-            executableName: descriptor.executableName,
-            arguments: descriptor.arguments
-        )
+        launchHelper(tool)
     }
 
     private func loadOpenHelpers() -> Set<String> {
@@ -391,64 +315,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopOutsideClickMonitorIfIdle()
     }
 
-    private func openSystemMonitorFromToolbox() {
-        launchHelper(
-            bundleIdentifier: Self.systemMonitorHelperBundleIdentifier,
-            appName: "DMonte System Monitor.app",
-            executableName: "DMonteSystemMonitor"
-        )
-        closeToolboxPopover()
-    }
-
-    private func openUninstallerFromToolbox() {
-        launchHelper(
-            bundleIdentifier: Self.uninstallerHelperBundleIdentifier,
-            appName: "DMonte Uninstaller.app",
-            executableName: "DMonteUninstaller",
-            arguments: ["--open"]
-        )
-        closeToolboxPopover()
-    }
-
-    private func openCleanDriveFromToolbox() {
-        launchHelper(
-            bundleIdentifier: Self.cleanDriveHelperBundleIdentifier,
-            appName: "DMonte Clean Drive.app",
-            executableName: "DMonteCleanDrive",
-            arguments: ["--open"]
-        )
-        closeToolboxPopover()
-    }
-
-    private func openVideoDownloaderFromToolbox() {
-        launchHelper(
-            bundleIdentifier: Self.videoDownloaderHelperBundleIdentifier,
-            appName: "DMonte Video Downloader.app",
-            executableName: "DMonteVideoDownloader",
-            arguments: ["--open"]
-        )
-        closeToolboxPopover()
-    }
-
-    private func openDiskAnalyzerFromToolbox() {
-        launchHelper(
-            bundleIdentifier: Self.diskAnalyzerHelperBundleIdentifier,
-            appName: "DMonte Disk Analyzer.app",
-            executableName: "DMonteDiskAnalyzer",
-            arguments: ["--open"]
-        )
-        closeToolboxPopover()
-    }
-
-    private func openClipboardFromToolbox() {
-        launchHelper(
-            bundleIdentifier: Self.clipboardHelperBundleIdentifier,
-            appName: "DMonte Clipboard.app",
-            executableName: "DMonteClipboard",
-            arguments: ["--open"]
-        )
-        closeToolboxPopover()
-    }
 
     private func startOutsideClickMonitor() {
         guard isToolboxPanelVisible else {

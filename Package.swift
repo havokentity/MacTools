@@ -39,6 +39,26 @@ let package = Package(
         .executable(
             name: "DMonteClipboard",
             targets: ["DMonteClipboard"]
+        ),
+        .executable(
+            name: "DMonteDevTools",
+            targets: ["DMonteDevTools"]
+        ),
+        .executable(
+            name: "DMonteQR",
+            targets: ["DMonteQR"]
+        ),
+        .executable(
+            name: "DMonteKeepAwake",
+            targets: ["DMonteKeepAwake"]
+        ),
+        .executable(
+            name: "DMonteImageConverter",
+            targets: ["DMonteImageConverter"]
+        ),
+        .executable(
+            name: "DMonteMaintenance",
+            targets: ["DMonteMaintenance"]
         )
     ],
     dependencies: [
@@ -98,6 +118,41 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteClipboardApp"
+        ),
+        .executableTarget(
+            name: "DMonteDevTools",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteDevToolsApp"
+        ),
+        .executableTarget(
+            name: "DMonteQR",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteQRApp"
+        ),
+        .executableTarget(
+            name: "DMonteKeepAwake",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteKeepAwakeApp"
+        ),
+        .executableTarget(
+            name: "DMonteImageConverter",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteImageConverterApp"
+        ),
+        .executableTarget(
+            name: "DMonteMaintenance",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteMaintenanceApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

@@ -49,12 +49,7 @@ public enum AppDefaults {
 
 public struct ToolPopoverView: View {
     var popoverSize: NSSize
-    var onOpenSystemMonitor: () -> Void
-    var onOpenUninstaller: () -> Void
-    var onOpenCleanDrive: () -> Void
-    var onOpenVideoDownloader: () -> Void
-    var onOpenDiskAnalyzer: () -> Void
-    var onOpenClipboard: () -> Void
+    var onOpenTool: (ToolboxTool) -> Void
     var onCheckForUpdates: () -> Void
     var onQuit: () -> Void
 
@@ -63,22 +58,12 @@ public struct ToolPopoverView: View {
 
     public init(
         popoverSize: NSSize,
-        onOpenSystemMonitor: @escaping () -> Void,
-        onOpenUninstaller: @escaping () -> Void,
-        onOpenCleanDrive: @escaping () -> Void,
-        onOpenVideoDownloader: @escaping () -> Void,
-        onOpenDiskAnalyzer: @escaping () -> Void,
-        onOpenClipboard: @escaping () -> Void,
+        onOpenTool: @escaping (ToolboxTool) -> Void,
         onCheckForUpdates: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.popoverSize = popoverSize
-        self.onOpenSystemMonitor = onOpenSystemMonitor
-        self.onOpenUninstaller = onOpenUninstaller
-        self.onOpenCleanDrive = onOpenCleanDrive
-        self.onOpenVideoDownloader = onOpenVideoDownloader
-        self.onOpenDiskAnalyzer = onOpenDiskAnalyzer
-        self.onOpenClipboard = onOpenClipboard
+        self.onOpenTool = onOpenTool
         self.onCheckForUpdates = onCheckForUpdates
         self.onQuit = onQuit
     }
@@ -96,7 +81,7 @@ public struct ToolPopoverView: View {
 
                 ToolboxDashboard(
                     searchText: searchText,
-                    onOpenTool: openTool
+                    onOpenTool: onOpenTool
                 )
             }
 
@@ -112,23 +97,6 @@ public struct ToolPopoverView: View {
         }
         .frame(width: popoverSize.width, height: popoverSize.height)
         .frostedPanel(cornerRadius: 18)
-    }
-
-    private func openTool(_ tool: ToolboxTool) {
-        switch tool {
-        case .systemMonitor:
-            onOpenSystemMonitor()
-        case .uninstaller:
-            onOpenUninstaller()
-        case .cleanDrive:
-            onOpenCleanDrive()
-        case .downloadVideo:
-            onOpenVideoDownloader()
-        case .diskAnalyzer:
-            onOpenDiskAnalyzer()
-        case .clipboard:
-            onOpenClipboard()
-        }
     }
 
 }
@@ -178,39 +146,6 @@ struct PreferencesOverlay<Content: View>: View {
                 .padding(18)
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-    }
-}
-
-private enum ToolboxTool: String, CaseIterable, Identifiable {
-    case systemMonitor = "System Monitor"
-    case downloadVideo = "Download Video"
-    case uninstaller = "Uninstall Apps"
-    case cleanDrive = "Clean Drive"
-    case diskAnalyzer = "Disk Usage Analyzer"
-    case clipboard = "Clipboard History"
-
-    var id: String { rawValue }
-
-    var icon: String {
-        switch self {
-        case .systemMonitor: "waveform.path.ecg.rectangle"
-        case .downloadVideo: "play.rectangle.fill"
-        case .uninstaller: "trash"
-        case .cleanDrive: "paintbrush.pointed"
-        case .diskAnalyzer: "chart.pie.fill"
-        case .clipboard: "doc.on.clipboard"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .systemMonitor: .green
-        case .downloadVideo: .purple
-        case .uninstaller: .red
-        case .cleanDrive: .yellow
-        case .diskAnalyzer: .blue
-        case .clipboard: .orange
-        }
     }
 }
 
@@ -267,7 +202,7 @@ private struct DashboardView: View {
     var onOpenTool: (ToolboxTool) -> Void
 
     private var visibleTools: [ToolboxTool] {
-        filtered(ToolboxTool.allCases)
+        filtered(ToolboxCatalog.all)
     }
 
     var body: some View {
@@ -293,7 +228,7 @@ private struct DashboardView: View {
             return tools
         }
 
-        return tools.filter { $0.rawValue.localizedCaseInsensitiveContains(query) }
+        return tools.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
 }
 
@@ -328,13 +263,13 @@ private struct ToolboxIcon: View {
                         .fill(tool.tint.opacity(0.13))
                         .frame(width: 54, height: 54)
 
-                    Image(systemName: tool.icon)
+                    Image(systemName: tool.iconName)
                         .symbolRenderingMode(.hierarchical)
                         .font(.system(size: 25, weight: .semibold))
                         .foregroundStyle(tool.tint)
                 }
 
-                Text(tool.rawValue)
+                Text(tool.title)
                     .font(.system(size: 12, weight: .medium))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
