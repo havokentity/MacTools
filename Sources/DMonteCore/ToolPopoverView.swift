@@ -42,7 +42,12 @@ public enum AppDefaults {
             DefaultsKey.systemMonitorOpenAtLogin: false,
             DefaultsKey.systemMonitorShowsTrayIcon: true,
             DefaultsKey.clipboardOpenAtLogin: true,
-            DefaultsKey.clipboardMaxHistory: 200
+            DefaultsKey.clipboardMaxHistory: 200,
+            "tool.grabText.copyAutomatically": true,
+            "tool.focusTimer.focusMinutes": 25,
+            "tool.focusTimer.shortBreakMinutes": 5,
+            "tool.focusTimer.longBreakMinutes": 15,
+            "tool.focusTimer.longBreakInterval": 4
         ])
     }
 }

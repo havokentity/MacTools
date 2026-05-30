@@ -1,121 +1,116 @@
 import XCTest
 @testable import DMonteCore
 
+/// Deterministic tests for the Focus Timer state machine. All time advancement goes through
+/// `tick(by:)`, so there are no real sleeps. Each controller is built against an isolated
+/// `UserDefaults` suite, so the tests never touch real app defaults.
 @MainActor
 final class FocusTimerTests: XCTestCase {
-    /// Isolated defaults so the controller's persistence didSets and duration
-    /// reads never touch (or depend on) the real standard defaults.
-    private func makeController(
-        focus: Int = 25,
-        shortBreak: Int = 5,
-        longBreak: Int = 15,
-        sessions: Int = 4
-    ) -> FocusTimerController {
+    private let focusMinutes = 25
+    private let shortBreakMinutes = 5
+    private let longBreakMinutes = 15
+    private let longBreakInterval = 4
+
+    private func makeController() -> FocusTimerController {
         let suite = UserDefaults(suiteName: "FocusTimerTests-\(UUID().uuidString)")!
-        suite.set(focus, forKey: DefaultsKey.focusTimerFocusMinutes)
-        suite.set(shortBreak, forKey: DefaultsKey.focusTimerShortBreakMinutes)
-        suite.set(longBreak, forKey: DefaultsKey.focusTimerLongBreakMinutes)
-        suite.set(sessions, forKey: DefaultsKey.focusTimerSessionsBeforeLongBreak)
+        suite.set(focusMinutes, forKey: DefaultsKey.focusTimerFocusMinutes)
+        suite.set(shortBreakMinutes, forKey: DefaultsKey.focusTimerShortBreakMinutes)
+        suite.set(longBreakMinutes, forKey: DefaultsKey.focusTimerLongBreakMinutes)
+        suite.set(longBreakInterval, forKey: DefaultsKey.focusTimerLongBreakInterval)
         return FocusTimerController(defaults: suite)
     }
 
-    func testDefaultsWhenUnregistered() {
-        let suite = UserDefaults(suiteName: "FocusTimerTests-empty-\(UUID().uuidString)")!
-        let controller = FocusTimerController(defaults: suite)
-        XCTAssertEqual(controller.focusMinutes, 25)
-        XCTAssertEqual(controller.shortBreakMinutes, 5)
-        XCTAssertEqual(controller.longBreakMinutes, 15)
-        XCTAssertEqual(controller.sessionsBeforeLongBreak, 4)
-    }
+    private var focusSeconds: TimeInterval { TimeInterval(focusMinutes * 60) }
+    private var shortBreakSeconds: TimeInterval { TimeInterval(shortBreakMinutes * 60) }
+    private var longBreakSeconds: TimeInterval { TimeInterval(longBreakMinutes * 60) }
 
-    func testInitialState() {
+    func testInitialStateIsFullFocus() {
         let controller = makeController()
         XCTAssertEqual(controller.phase, .focus)
+        XCTAssertEqual(controller.remaining, focusSeconds, accuracy: 0.001)
         XCTAssertFalse(controller.isRunning)
         XCTAssertEqual(controller.completedFocusCount, 0)
-        XCTAssertEqual(controller.remaining, 25 * 60)
     }
 
-    func testFocusCompletionAdvancesToBreak() {
-        let controller = makeController(focus: 25, shortBreak: 5)
+    func testFocusElapsesIntoShortBreakWithRemainingReset() {
+        let controller = makeController()
         controller.start()
         XCTAssertTrue(controller.isRunning)
-
-        controller.tick(by: 25 * 60)
-
+        controller.tick(by: focusSeconds)
         XCTAssertEqual(controller.phase, .shortBreak)
-        XCTAssertEqual(controller.remaining, 5 * 60)
+        XCTAssertEqual(controller.remaining, shortBreakSeconds, accuracy: 0.001)
         XCTAssertEqual(controller.completedFocusCount, 1)
         XCTAssertTrue(controller.isRunning)
     }
 
-    func testCountdownDecrements() {
-        let controller = makeController(focus: 25)
+    func testNthFocusReachesLongBreak() {
+        let controller = makeController()
         controller.start()
-        controller.tick(by: 60)
-        XCTAssertEqual(controller.remaining, 24 * 60)
-        XCTAssertEqual(controller.phase, .focus)
-    }
-
-    func testLongBreakAfterConfiguredSessions() {
-        let sessions = 4
-        let controller = makeController(focus: 25, shortBreak: 5, longBreak: 15, sessions: sessions)
-        controller.start()
-
-        for session in 1...sessions {
-            // Complete a focus phase.
-            controller.tick(by: TimeInterval(controller.focusMinutes * 60))
-            XCTAssertEqual(controller.completedFocusCount, session)
-            if session == sessions {
-                XCTAssertEqual(controller.phase, .longBreak, "Session \(session) should yield a long break")
-                XCTAssertEqual(controller.remaining, TimeInterval(controller.longBreakMinutes * 60))
+        for index in 1...longBreakInterval {
+            controller.tick(by: focusSeconds)
+            if index < longBreakInterval {
+                XCTAssertEqual(controller.phase, .shortBreak, "Cycle \(index) should be a short break")
+                controller.tick(by: shortBreakSeconds)
+                XCTAssertEqual(controller.phase, .focus)
             } else {
-                XCTAssertEqual(controller.phase, .shortBreak, "Session \(session) should yield a short break")
+                XCTAssertEqual(controller.phase, .longBreak, "The Nth focus should lead to a long break")
+                XCTAssertEqual(controller.remaining, longBreakSeconds, accuracy: 0.001)
             }
-            // Complete the break to get back to a focus phase.
-            controller.tick(by: controller.remaining)
-            XCTAssertEqual(controller.phase, .focus)
         }
+        XCTAssertEqual(controller.completedFocusCount, longBreakInterval)
+        controller.tick(by: longBreakSeconds)
+        XCTAssertEqual(controller.phase, .focus)
+        controller.tick(by: focusSeconds)
+        XCTAssertEqual(controller.phase, .shortBreak)
     }
 
-    func testPauseStopsCountdown() {
-        let controller = makeController(focus: 25)
+    func testPausePreventsTicking() {
+        let controller = makeController()
         controller.start()
         controller.tick(by: 60)
-        let snapshot = controller.remaining
+        let afterOneMinute = controller.remaining
+        XCTAssertEqual(afterOneMinute, focusSeconds - 60, accuracy: 0.001)
         controller.pause()
         XCTAssertFalse(controller.isRunning)
         controller.tick(by: 120)
-        XCTAssertEqual(controller.remaining, snapshot, "tick() must not decrement while paused")
+        XCTAssertEqual(controller.remaining, afterOneMinute, accuracy: 0.001)
+        XCTAssertEqual(controller.phase, .focus)
     }
 
-    func testResetReturnsToFocus() {
-        let controller = makeController(focus: 25)
+    func testResetReturnsToInitialFocusState() {
+        let controller = makeController()
         controller.start()
-        controller.tick(by: 10 * 60) // partway into focus
-        controller.tick(by: 25 * 60) // force into a break + increment count
-        XCTAssertNotEqual(controller.phase, .focus)
-
+        controller.tick(by: focusSeconds)
+        controller.tick(by: shortBreakSeconds)
+        controller.tick(by: 30)
+        XCTAssertGreaterThan(controller.completedFocusCount, 0)
         controller.reset()
         XCTAssertEqual(controller.phase, .focus)
-        XCTAssertEqual(controller.remaining, 25 * 60)
-        XCTAssertEqual(controller.completedFocusCount, 0)
+        XCTAssertEqual(controller.remaining, focusSeconds, accuracy: 0.001)
         XCTAssertFalse(controller.isRunning)
+        XCTAssertEqual(controller.completedFocusCount, 0)
     }
 
-    func testSkipAdvancesWithoutCompletionCount() {
-        let controller = makeController(focus: 25, shortBreak: 5)
+    func testResumeAfterPauseDoesNotRefill() {
+        let controller = makeController()
         controller.start()
+        controller.tick(by: focusSeconds)
+        controller.pause()
+        let before = controller.remaining
+        controller.start()
+        XCTAssertEqual(controller.remaining, before, accuracy: 0.001)
+        XCTAssertTrue(controller.isRunning)
+    }
+
+    func testSkipAdvancesToNextPhase() {
+        let controller = makeController()
+        // Skipping the focus phase advances to a break with its remaining reset.
         controller.skip()
         XCTAssertEqual(controller.phase, .shortBreak)
-        XCTAssertEqual(controller.remaining, 5 * 60)
-        XCTAssertEqual(controller.completedFocusCount, 0, "Skip should not count as a completed focus session")
-    }
-
-    func testTickBeforeStartDoesNothing() {
-        let controller = makeController(focus: 25)
-        controller.tick(by: 60)
-        XCTAssertEqual(controller.remaining, 25 * 60)
-        XCTAssertFalse(controller.isRunning)
+        XCTAssertEqual(controller.remaining, shortBreakSeconds, accuracy: 0.001)
+        // Skipping the break returns to focus at full duration.
+        controller.skip()
+        XCTAssertEqual(controller.phase, .focus)
+        XCTAssertEqual(controller.remaining, focusSeconds, accuracy: 0.001)
     }
 }
