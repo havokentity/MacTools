@@ -30,6 +30,7 @@ HELPERS=(
   "DMonteDuplicateFinder|DMonte Duplicate Finder.app|DuplicateFinderInfo.plist"
   "DMonteAudioSwitcher|DMonte Audio Switcher.app|AudioSwitcherInfo.plist"
   "DMonteVolumeMixer|DMonte Volume Mixer.app|VolumeMixerInfo.plist"
+  "DMonteAudioRouter|DMonte Audio Router.app|AudioRouterInfo.plist"
   "DMonteCalendar|DMonte Calendar.app|CalendarInfo.plist"
   "DMonteColorPicker|DMonte Color Picker.app|ColorPickerInfo.plist"
   "DMonteGrabText|DMonte Grab Text.app|GrabTextInfo.plist"
@@ -46,6 +47,11 @@ cd "$ROOT_DIR"
 swift build -c release
 
 YTDLP_PATH="$("$ROOT_DIR/Scripts/fetch_yt_dlp.sh")"
+
+# Pool of virtual cables for the Audio Router tool. Non-fatal: if the build
+# fails (offline / no Xcode), the tool still ships and works for mirror/combine —
+# it just can't offer one-click cable install until a pool is present.
+BLACKHOLE_POOL_DIR="$("$ROOT_DIR/Scripts/fetch_blackhole.sh" 2>/dev/null || true)"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
@@ -72,6 +78,23 @@ mkdir -p "$VIDEO_DOWNLOADER_BIN_DIR"
 cp "$YTDLP_PATH" "$VIDEO_DOWNLOADER_BIN_DIR/yt-dlp"
 chmod 755 "$VIDEO_DOWNLOADER_BIN_DIR/yt-dlp"
 xattr -cr "$VIDEO_DOWNLOADER_BIN_DIR/yt-dlp" 2>/dev/null || true
+
+# Audio Router ships the pool of virtual-cable drivers in Resources/Cables, each
+# ready to be copied to /Library/Audio/Plug-Ins/HAL/ by the in-app installer.
+AUDIO_ROUTER_CABLES_DIR="$HELPERS_DIR/DMonte Audio Router.app/Contents/Resources/Cables"
+if [[ -n "$BLACKHOLE_POOL_DIR" && -d "$BLACKHOLE_POOL_DIR" ]] \
+   && compgen -G "$BLACKHOLE_POOL_DIR/*.driver" >/dev/null; then
+  mkdir -p "$AUDIO_ROUTER_CABLES_DIR"
+  for cable in "$BLACKHOLE_POOL_DIR"/*.driver; do
+    dest="$AUDIO_ROUTER_CABLES_DIR/$(basename "$cable")"
+    rm -rf "$dest"
+    cp -R "$cable" "$dest"
+    xattr -cr "$dest" 2>/dev/null || true
+  done
+  echo "Bundled $(find "$AUDIO_ROUTER_CABLES_DIR" -maxdepth 1 -name '*.driver' | wc -l | tr -d ' ') virtual cables" >&2
+else
+  echo "note: no virtual-cable pool bundled; Audio Router cable install will be unavailable" >&2
+fi
 
 if [[ -d "$ROOT_DIR/.build/release/Sparkle.framework" ]]; then
   cp -R "$ROOT_DIR/.build/release/Sparkle.framework" "$FRAMEWORKS_DIR/"
@@ -113,6 +136,7 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 BASE_ENTITLEMENTS="$ROOT_DIR/Packaging/DMonte.entitlements"
 VOLUMEMIXER_ENTITLEMENTS="$ROOT_DIR/Packaging/VolumeMixer.entitlements"
+AUDIOROUTER_ENTITLEMENTS="$ROOT_DIR/Packaging/AudioRouter.entitlements"
 YTDLP_ENTITLEMENTS="$ROOT_DIR/Packaging/ytdlp.entitlements"
 
 # Hardened runtime + secure timestamp are only meaningful with a real identity;
@@ -144,6 +168,18 @@ if [[ -f "$VIDEO_DOWNLOADER_BIN_DIR/yt-dlp" ]]; then
   sign_one "$VIDEO_DOWNLOADER_BIN_DIR/yt-dlp" "$YTDLP_ENTITLEMENTS"
 fi
 
+# 1b. The bundled virtual-cable drivers (re-signed with our Developer ID so the
+# whole app notarizes as one unit). Sign each one's inner Mach-O, then the
+# bundle, before the helper app that contains them is sealed below.
+if [[ -d "$AUDIO_ROUTER_CABLES_DIR" ]]; then
+  for cable in "$AUDIO_ROUTER_CABLES_DIR"/*.driver; do
+    [[ -d "$cable" ]] || continue
+    cable_binary="$(find "$cable/Contents/MacOS" -maxdepth 1 -type f 2>/dev/null | head -n 1)"
+    [[ -n "$cable_binary" ]] && sign_one "$cable_binary" "$BASE_ENTITLEMENTS"
+    sign_one "$cable" "$BASE_ENTITLEMENTS"
+  done
+fi
+
 # 2. Sparkle's nested code, then the framework itself.
 SPARKLE_FW="$FRAMEWORKS_DIR/Sparkle.framework"
 if [[ -d "$SPARKLE_FW" ]]; then
@@ -167,6 +203,9 @@ for entry in "${HELPERS[@]}"; do
   helper_entitlements="$BASE_ENTITLEMENTS"
   if [[ "$exe" == "DMonteVolumeMixer" ]]; then
     helper_entitlements="$VOLUMEMIXER_ENTITLEMENTS"
+  elif [[ "$exe" == "DMonteAudioRouter" ]]; then
+    # Needs the audio-input entitlement for the "listen to an input" monitor.
+    helper_entitlements="$AUDIOROUTER_ENTITLEMENTS"
   fi
   sign_one "$HELPERS_DIR/$app/Contents/MacOS/$exe" "$helper_entitlements"
   sign_one "$HELPERS_DIR/$app" "$helper_entitlements"

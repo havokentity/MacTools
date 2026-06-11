@@ -61,6 +61,7 @@ public enum DefaultsKey {
     public static let volumeMixerIncludedDefaultIgnoredApps = "tool.volumeMixer.includedDefaultIgnoredApps"
     public static let volumeMixerOutputRoutes = "tool.volumeMixer.outputRoutes"
     public static let windowManagerShortcuts = "tool.windowManager.shortcuts"
+    public static let audioRouterPresets = "tool.audioRouter.presets"
     public static let toolboxRecentToolIDs = "toolbox.recentToolIDs"
 
     static let obsoleteKeys = [

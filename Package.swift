@@ -73,6 +73,10 @@ let package = Package(
             targets: ["DMonteVolumeMixer"]
         ),
         .executable(
+            name: "DMonteAudioRouter",
+            targets: ["DMonteAudioRouter"]
+        ),
+        .executable(
             name: "DMonteCalendar",
             targets: ["DMonteCalendar"]
         ),
@@ -206,6 +210,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteVolumeMixerApp"
+        ),
+        .executableTarget(
+            name: "DMonteAudioRouter",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteAudioRouterApp"
         ),
         .executableTarget(
             name: "DMonteCalendar",

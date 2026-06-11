@@ -4,6 +4,27 @@ All notable changes to D'Monte's Tool Box are documented here. This project
 adheres to [Semantic Versioning](https://semver.org) and the
 [Keep a Changelog](https://keepachangelog.com) format.
 
+## [0.9.0] — Unreleased
+
+### Added
+- **Audio Router** — a new menu bar tool for virtual audio routing:
+  - **Virtual cables** for app‑to‑app audio. Ships a pre‑built pool of
+    independent loopback drivers (BlackHole instances, each with its own device
+    identity) that can be installed/removed individually, so several apps can run
+    on isolated cables at once (e.g. Discord, Zoom, OBS, Meet).
+  - **Mirror / aggregate device builder** — combine inputs or mirror playback to
+    several outputs at once, saved as reusable presets.
+  - **Listen to an input** — play any input device (mic, line‑in, or a cable)
+    through a chosen output in real time (macOS equivalent of Windows' "Listen to
+    this device"), with multiple simultaneous monitors and per‑monitor level.
+
+### Fixed
+- **Volume Mixer** no longer silences or distorts an app when routing it to a
+  non‑default output (including HDMI/TV devices). Routing now uses a process‑wide
+  stereo‑mixdown tap instead of a device‑scoped one (which captured silence on
+  some setups), and reconciles the sample rates of the source and routed outputs
+  to a common rate so fixed‑rate outputs no longer drop to silence.
+
 ## [0.8.8] — 2026-06-10
 
 ### Added
