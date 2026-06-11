@@ -355,6 +355,10 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
     /// resolution (`[]` means "System Default"). Keep-alive checks compare
     /// against this, not `activeOutputUIDs`, which always holds resolved UIDs.
     private(set) public var requestedOutputUIDs: [String] = []
+    /// Devices whose nominal sample rate we changed to make the routing
+    /// aggregate work (e.g. forcing 48 kHz so an HDMI/TV output matches the
+    /// source), paired with the rate to put back when we stop.
+    private var restoredSampleRates: [(deviceID: AudioObjectID, rate: Double)] = []
 
     public init() {}
 
@@ -379,63 +383,139 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         let outputUIDs = outputDevices.map(\.uid)
         let sourceOutput = Self.sourceOutputDevice() ?? primaryOutput
 
+        MixerDebug.log("start target='\(target.displayName)' audioObjects=\(target.audioObjectIDs) customRoute=\(hasCustomOutputRoute)")
+        MixerDebug.log("  source: name='\(sourceOutput.name)' uid='\(sourceOutput.uid)' id=\(sourceOutput.deviceID) rate=\(Self.nominalSampleRate(for: sourceOutput.deviceID).map { String($0) } ?? "nil")")
+        for output in outputDevices {
+            MixerDebug.log("  output: name='\(output.name)' uid='\(output.uid)' id=\(output.deviceID) rate=\(Self.nominalSampleRate(for: output.deviceID).map { String($0) } ?? "nil") supported=\(Self.availableNominalSampleRates(for: output.deviceID))")
+        }
+
+        // Reconcile sample rates *before* tapping. The render loop is a raw
+        // byte copy with no resampling, so the tap (source) and every routed
+        // output must share one nominal rate. HDMI/TV outputs typically run at
+        // a fixed 48 kHz that differs from the Mac's default, which otherwise
+        // produces silence. We align everything to a common supported rate
+        // (recording the originals to restore on stop), and create the tap
+        // afterwards so it latches the reconciled source rate.
+        try alignSampleRates(source: sourceOutput, outputs: outputDevices)
+        MixerDebug.log("  afterAlign: sourceRate=\(Self.nominalSampleRate(for: sourceOutput.deviceID).map { String($0) } ?? "nil") changed=\(restoredSampleRates.map { "\($0.deviceID)->\($0.rate)" })")
+
         let state = RenderState(gain: AppVolumeTarget.clampGain(gain))
-        let tap = try Self.createTap(
-            for: target,
-            outputUID: sourceOutput.uid,
-            outputID: sourceOutput.deviceID,
-            preferDeviceScopedTap: true,
-            allowStereoMixdownFallback: !hasCustomOutputRoute
-        )
-        let aggregateID: AudioObjectID
         do {
-            aggregateID = try Self.createAggregateDevice(
-                target: target,
-                tapUUID: tap.description.uuid,
-                outputUIDs: outputUIDs
+            // For a custom output route, use a process-wide stereo-mixdown tap:
+            // it captures the app's audio independent of which device it plays
+            // to, which is exactly what we reproduce on the routed output. A
+            // device-scoped tap (pinned to the source device's stream) was
+            // observed to deliver silence here (render `signal=false`), killing
+            // routed audio. Plain volume changes (no route) keep the
+            // device-scoped tap, with mixdown as a fallback.
+            let tap = try Self.createTap(
+                for: target,
+                outputUID: sourceOutput.uid,
+                outputID: sourceOutput.deviceID,
+                preferDeviceScopedTap: !hasCustomOutputRoute,
+                allowStereoMixdownFallback: true
             )
+            MixerDebug.log("  tap created id=\(tap.id) uuid=\(tap.description.uuid)")
+            let aggregateID: AudioObjectID
+            do {
+                aggregateID = try Self.createAggregateDevice(
+                    target: target,
+                    tapUUID: tap.description.uuid,
+                    outputUIDs: outputUIDs
+                )
+            } catch {
+                // The tap was already created in the HAL; without this it leaks
+                // on every failed aggregate creation — and the 2-second
+                // reconciler retries start(), accumulating leaked tap objects.
+                // (The later failure paths below clean up both the same way.)
+                AppVolumeMixerKit.destroyTap(tap.id)
+                throw error
+            }
+            MixerDebug.log("  aggregate created id=\(aggregateID) rate=\(Self.nominalSampleRate(for: aggregateID).map { String($0) } ?? "nil")")
+            // Best-effort: pin the aggregate itself to the reconciled rate too.
+            if let chosenRate = restoredSampleRates.first?.rate
+                ?? Self.nominalSampleRate(for: sourceOutput.deviceID) {
+                _ = Self.setNominalSampleRate(chosenRate, for: aggregateID)
+            }
+
+            let statePointer = Unmanaged.passRetained(state).toOpaque()
+            var ioProcID: AudioDeviceIOProcID?
+            let createStatus = AudioDeviceCreateIOProcID(
+                aggregateID,
+                Self.ioProc,
+                statePointer,
+                &ioProcID
+            )
+            guard createStatus == noErr, let ioProcID else {
+                Unmanaged<RenderState>.fromOpaque(statePointer).release()
+                Self.destroyAggregateDevice(aggregateID)
+                AppVolumeMixerKit.destroyTap(tap.id)
+                throw AppVolumeMixerError.coreAudioStatus(createStatus)
+            }
+
+            MixerDebug.log("  ioProc create status=\(createStatus)")
+            let startStatus = AudioDeviceStart(aggregateID, ioProcID)
+            MixerDebug.log("  AudioDeviceStart status=\(startStatus) → \(startStatus == noErr ? "RUNNING" : "FAILED")")
+            guard startStatus == noErr else {
+                AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
+                Unmanaged<RenderState>.fromOpaque(statePointer).release()
+                Self.destroyAggregateDevice(aggregateID)
+                AppVolumeMixerKit.destroyTap(tap.id)
+                throw AppVolumeMixerError.coreAudioStatus(startStatus)
+            }
+
+            self.tapID = tap.id
+            self.aggregateID = aggregateID
+            self.ioProcID = ioProcID
+            self.renderState = state
+            self.renderStatePointer = statePointer
+            self.activeTargetID = target.id
+            self.activeAudioObjectIDs = target.audioObjectIDs
+            self.activeOutputUIDs = outputUIDs
+            self.requestedOutputUIDs = requestedOutputUIDs
         } catch {
-            // The tap was already created in the HAL; without this it leaks
-            // on every failed aggregate creation — and the 2-second
-            // reconciler retries start(), accumulating leaked tap objects.
-            // (The later failure paths below clean up both the same way.)
-            AppVolumeMixerKit.destroyTap(tap.id)
+            // Never leave devices on a forced rate (or the app muted) if we
+            // couldn't finish wiring up the route.
+            restoreSampleRates()
             throw error
         }
+    }
 
-        let statePointer = Unmanaged.passRetained(state).toOpaque()
-        var ioProcID: AudioDeviceIOProcID?
-        let createStatus = AudioDeviceCreateIOProcID(
-            aggregateID,
-            Self.ioProc,
-            statePointer,
-            &ioProcID
-        )
-        guard createStatus == noErr, let ioProcID else {
-            Unmanaged<RenderState>.fromOpaque(statePointer).release()
-            Self.destroyAggregateDevice(aggregateID)
-            AppVolumeMixerKit.destroyTap(tap.id)
-            throw AppVolumeMixerError.coreAudioStatus(createStatus)
+    /// Forces the source and every routed output device onto one common nominal
+    /// sample rate so the (non-resampling) render loop produces sound. Throws
+    /// `.incompatibleOutputSampleRate` if the devices share no rate. Originals
+    /// are recorded in `restoredSampleRates` for `stop()` to put back.
+    private func alignSampleRates(
+        source: AppVolumeOutputDevice,
+        outputs: [AppVolumeOutputDevice]
+    ) throws {
+        let deviceIDs = Self.uniqued([source.deviceID] + outputs.map(\.deviceID))
+        let rateSets = deviceIDs.map { Self.availableNominalSampleRates(for: $0) }
+        let preferred = Self.nominalSampleRate(for: source.deviceID)
+        guard let chosen = Self.chooseCommonSampleRate(
+            preferred: preferred,
+            deviceSupportedRates: rateSets
+        ) else {
+            throw AppVolumeMixerError.incompatibleOutputSampleRate
         }
 
-        let startStatus = AudioDeviceStart(aggregateID, ioProcID)
-        guard startStatus == noErr else {
-            AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
-            Unmanaged<RenderState>.fromOpaque(statePointer).release()
-            Self.destroyAggregateDevice(aggregateID)
-            AppVolumeMixerKit.destroyTap(tap.id)
-            throw AppVolumeMixerError.coreAudioStatus(startStatus)
+        var restored: [(deviceID: AudioObjectID, rate: Double)] = []
+        for deviceID in deviceIDs {
+            guard let current = Self.nominalSampleRate(for: deviceID),
+                  abs(current - chosen) > 1 else { continue }
+            if Self.setNominalSampleRate(chosen, for: deviceID) {
+                restored.append((deviceID, current))
+            }
         }
+        restoredSampleRates = restored
+    }
 
-        self.tapID = tap.id
-        self.aggregateID = aggregateID
-        self.ioProcID = ioProcID
-        self.renderState = state
-        self.renderStatePointer = statePointer
-        self.activeTargetID = target.id
-        self.activeAudioObjectIDs = target.audioObjectIDs
-        self.activeOutputUIDs = outputUIDs
-        self.requestedOutputUIDs = requestedOutputUIDs
+    /// Restores any device sample rates we changed in `alignSampleRates`.
+    private func restoreSampleRates() {
+        for entry in restoredSampleRates {
+            _ = Self.setNominalSampleRate(entry.rate, for: entry.deviceID)
+        }
+        restoredSampleRates = []
     }
 
     public func setGain(_ gain: Float) {
@@ -458,6 +538,8 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
                 AppVolumeMixerKit.destroyTap(tapID)
             }
         }
+        // Put back any device sample rates we forced for this route.
+        restoreSampleRates()
 
         tapID = AudioObjectID(kAudioObjectUnknown)
         aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -490,13 +572,16 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
             CATapDescription(processes: target.audioObjectIDs, deviceUID: outputUID, stream: streamIndex),
             name: target.displayName
            ) {
+            MixerDebug.log("  tap path=device-scoped on uid='\(outputUID)' stream=\(streamIndex)")
             return tap
         }
 
         guard allowStereoMixdownFallback else {
+            MixerDebug.log("  tap path=NONE (device-scoped failed, mixdown fallback disabled) → throwing")
             throw AppVolumeMixerError.noRoutableSourceOutput
         }
 
+        MixerDebug.log("  tap path=stereo-mixdown (device-scoped unavailable)")
         return try createTapDescription(
             CATapDescription(stereoMixdownOfProcesses: target.audioObjectIDs),
             name: target.displayName
@@ -632,6 +717,42 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         AudioHardwareDestroyAggregateDevice(aggregateID)
     }
 
+    // MARK: - Sample-rate reconciliation
+    //
+    // Thin forwarders to the shared `CoreAudioSampleRate` helper, kept so the
+    // engine's call sites (and the existing test surface) stay unchanged.
+
+    static func uniqued(_ ids: [AudioObjectID]) -> [AudioObjectID] {
+        CoreAudioSampleRate.uniqued(ids)
+    }
+
+    static func nominalSampleRate(for deviceID: AudioObjectID) -> Double? {
+        CoreAudioSampleRate.nominalSampleRate(for: deviceID)
+    }
+
+    static func availableNominalSampleRates(for deviceID: AudioObjectID) -> [Double] {
+        CoreAudioSampleRate.availableNominalSampleRates(for: deviceID)
+    }
+
+    static func ratesFromRanges(_ ranges: [AudioValueRange]) -> [Double] {
+        CoreAudioSampleRate.ratesFromRanges(ranges)
+    }
+
+    @discardableResult
+    static func setNominalSampleRate(_ rate: Double, for deviceID: AudioObjectID) -> Bool {
+        CoreAudioSampleRate.setNominalSampleRate(rate, for: deviceID)
+    }
+
+    static func chooseCommonSampleRate(
+        preferred: Double?,
+        deviceSupportedRates: [[Double]]
+    ) -> Double? {
+        CoreAudioSampleRate.chooseCommonSampleRate(
+            preferred: preferred,
+            deviceSupportedRates: deviceSupportedRates
+        )
+    }
+
     private static func stringProperty(
         _ selector: AudioObjectPropertySelector,
         for objectID: AudioObjectID
@@ -652,6 +773,9 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         return value as String
     }
 
+    /// Diagnostic-only render callback counter (used by `MixerDebug`).
+    nonisolated(unsafe) private static var renderCallCount: UInt64 = 0
+
     private static let ioProc: AudioDeviceIOProc = { _, _, inputData, _, outputData, _, clientData in
         guard let clientData else {
             return noErr
@@ -668,6 +792,21 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
     ) {
         let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         let outputs = UnsafeMutableAudioBufferListPointer(outputData)
+
+        if MixerDebug.enabled {
+            renderCallCount &+= 1
+            // Log roughly once a second (callbacks fire ~100×/s) to show whether
+            // the IOProc runs and whether the tap is actually delivering signal.
+            if renderCallCount % 100 == 1 {
+                let inBytes = inputs.first?.mDataByteSize ?? 0
+                let peak = (inputs.first?.mData).map {
+                    MixerDebug.peak($0, byteCount: Int(inBytes))
+                } ?? 0
+                let outBytes = outputs.first?.mDataByteSize ?? 0
+                MixerDebug.log("render #\(renderCallCount) inputs=\(inputs.count) inBytes=\(inBytes) peak=\(String(format: "%.3f", peak)) outputs=\(outputs.count) outBytes=\(outBytes) gain=\(gain)")
+            }
+        }
+
         guard !inputs.isEmpty else {
             for outputIndex in 0..<outputs.count {
                 let output = outputs[outputIndex]
@@ -1750,6 +1889,7 @@ public enum AppVolumeMixerError: Error, Equatable, Sendable {
     case noDefaultOutputDevice
     case noActiveAppAudio
     case noRoutableSourceOutput
+    case incompatibleOutputSampleRate
     case unsupportedOS
 
     public var message: String {
@@ -1762,6 +1902,8 @@ public enum AppVolumeMixerError: Error, Equatable, Sendable {
             return "Open the app or play audio before starting processing"
         case .noRoutableSourceOutput:
             return "Cannot route this app from the current output device"
+        case .incompatibleOutputSampleRate:
+            return "This output (e.g. an HDMI TV) shares no sample rate with your other devices, so it can’t be routed"
         case .unsupportedOS:
             return "Requires macOS 14.2 or newer"
         }
