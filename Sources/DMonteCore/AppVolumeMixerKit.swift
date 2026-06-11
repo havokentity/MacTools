@@ -359,6 +359,10 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
     /// aggregate work (e.g. forcing 48 kHz so an HDMI/TV output matches the
     /// source), paired with the rate to put back when we stop.
     private var restoredSampleRates: [(deviceID: AudioObjectID, rate: Double)] = []
+    /// The common rate `alignSampleRates` settled on for the current route —
+    /// NOT the originals in `restoredSampleRates`, which exist only to be put
+    /// back on stop.
+    private var reconciledSampleRate: Double?
 
     public init() {}
 
@@ -433,8 +437,7 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
             }
             MixerDebug.log("  aggregate created id=\(aggregateID) rate=\(Self.nominalSampleRate(for: aggregateID).map { String($0) } ?? "nil")")
             // Best-effort: pin the aggregate itself to the reconciled rate too.
-            if let chosenRate = restoredSampleRates.first?.rate
-                ?? Self.nominalSampleRate(for: sourceOutput.deviceID) {
+            if let chosenRate = reconciledSampleRate {
                 _ = Self.setNominalSampleRate(chosenRate, for: aggregateID)
             }
 
@@ -498,6 +501,7 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         ) else {
             throw AppVolumeMixerError.incompatibleOutputSampleRate
         }
+        reconciledSampleRate = chosen
 
         var restored: [(deviceID: AudioObjectID, rate: Double)] = []
         for deviceID in deviceIDs {
@@ -516,6 +520,7 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
             _ = Self.setNominalSampleRate(entry.rate, for: entry.deviceID)
         }
         restoredSampleRates = []
+        reconciledSampleRate = nil
     }
 
     public func setGain(_ gain: Float) {

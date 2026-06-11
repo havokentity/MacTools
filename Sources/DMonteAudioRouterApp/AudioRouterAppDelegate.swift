@@ -74,6 +74,10 @@ final class AudioRouterAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func cleanup() {
+        // Stop monitors before terminating: each engine restores the device
+        // sample rates it forced and destroys its private aggregate — state
+        // that would otherwise outlive the process.
+        controller?.stopAllMonitors()
         panelHost?.removeOutsideClickMonitor()
         panelHost?.stopObservingShowNotifications()
     }
