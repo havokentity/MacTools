@@ -4,6 +4,13 @@ All notable changes to D'Monte's Tool Box are documented here. This project
 adheres to [Semantic Versioning](https://semver.org) and the
 [Keep a Changelog](https://keepachangelog.com) format.
 
+## [Unreleased]
+
+### Fixed
+- Audio Router input monitoring no longer aborts when microphone permission is
+  unavailable: a build without the usage string now declines with a message
+  instead of crashing (macOS TCC).
+
 ## [0.11.0] — 2026-07-06
 
 ### Added

@@ -7,6 +7,13 @@ import Foundation
 /// input device is treated by macOS as microphone use, so the first monitor
 /// must obtain consent.
 public enum AudioMonitorPermission {
+    /// Whether the running binary declares a microphone usage string. Without it,
+    /// any audio-input access aborts the process via TCC, so input monitoring is
+    /// unavailable (notably in `swift run` builds — use the packaged app).
+    public static var hasUsageDescription: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil
+    }
+
     /// Resolves to `true` when the app may capture audio input, prompting once
     /// if permission has not yet been decided.
     public static func ensureMicrophoneAccess() async -> Bool {
@@ -14,14 +21,12 @@ public enum AudioMonitorPermission {
         case .authorized:
             return true
         case .notDetermined:
-            // `requestAccess` aborts the process if the running binary lacks an
-            // `NSMicrophoneUsageDescription` (e.g. a `swift run` build, which has
-            // no packaged Info.plist). Only prompt when the key is present;
-            // otherwise proceed and let CoreAudio capture (it returns silence
-            // rather than crashing if consent is missing).
-            guard Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil else {
-                return true
-            }
+            // macOS aborts the process (TCC SIGABRT) the moment it accesses the
+            // microphone — via `requestAccess` OR the actual CoreAudio capture —
+            // if the running binary has no `NSMicrophoneUsageDescription`. That
+            // key only exists in the packaged Info.plist, not in a `swift run`
+            // build, so refuse rather than crash when it's absent.
+            guard hasUsageDescription else { return false }
             return await withCheckedContinuation { continuation in
                 AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) }
             }

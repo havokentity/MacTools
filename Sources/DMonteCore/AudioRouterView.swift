@@ -207,7 +207,9 @@ public final class AudioRouterController: ObservableObject {
             let granted = await AudioMonitorPermission.ensureMicrophoneAccess()
             guard let self else { return }
             guard granted else {
-                self.statusMessage = "Microphone access is needed to listen to an input"
+                self.statusMessage = AudioMonitorPermission.hasUsageDescription
+                    ? "Allow microphone access in System Settings ▸ Privacy & Security ▸ Microphone to listen to an input"
+                    : "Input monitoring needs the installed app — microphone permission isn’t available in this build"
                 return
             }
             let engine = AudioMonitorEngine()
