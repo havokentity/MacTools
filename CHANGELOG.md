@@ -7,9 +7,11 @@ adheres to [Semantic Versioning](https://semver.org) and the
 ## [Unreleased]
 
 ### Fixed
-- Audio Router input monitoring no longer aborts when microphone permission is
-  unavailable: a build without the usage string now declines with a message
-  instead of crashing (macOS TCC).
+- Audio Router "listen to an input" no longer crashes (macOS TCC): the
+  microphone usage string now also ships in the main app's Info.plist, since
+  macOS attributes a nested helper's privacy access to the containing app; and a
+  build without any usage string (e.g. `swift run`) declines with a message
+  instead of aborting.
 
 ## [0.11.0] — 2026-07-06
 

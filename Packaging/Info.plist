@@ -30,6 +30,8 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Yahushad Monte</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DMonte uses audio input for the Audio Router's "listen to an input" feature, which plays an input device through an output device on this Mac only.</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>
