@@ -4,7 +4,7 @@ All notable changes to D'Monte's Tool Box are documented here. This project
 adheres to [Semantic Versioning](https://semver.org) and the
 [Keep a Changelog](https://keepachangelog.com) format.
 
-## [Unreleased]
+## [0.12.0] — 2026-07-10
 
 ### Changed
 - **Keep Awake** duration buttons toggle: pressing the running preset again
