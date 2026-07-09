@@ -45,7 +45,8 @@ public enum LoopbackDriverInstaller {
         /// Friendly label shown in our UI, e.g. `DMonte Cable 1`.
         public let displayName: String
         /// How the device appears to other apps (Discord/Zoom/…), e.g.
-        /// `DMonteCable1 2ch`.
+        /// `DMonte Cable 1` — the driver's `kDevice_Name` is built with the
+        /// friendly spaced form.
         public let deviceName: String
         /// Location of the `.driver` bundle inside the app's Resources.
         public let driverURL: URL

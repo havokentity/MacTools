@@ -2,6 +2,7 @@ import Accelerate
 import AVFoundation
 import CoreAudio
 import Foundation
+import os.lock
 
 /// Microphone authorization gate for input monitoring. Capturing a hardware
 /// input device is treated by macOS as microphone use, so the first monitor
@@ -79,9 +80,47 @@ public enum AudioMonitorError: Error, Equatable, Sendable {
 /// monitors. Capturing an input device requires microphone permission, so the UI
 /// requests it before starting.
 public final class AudioMonitorEngine: @unchecked Sendable {
+    /// Gain shared between the main thread (writer, via `setGain`) and the
+    /// realtime IO proc (reader). Same handoff as
+    /// `AppVolumeMixerAudioEngine.RenderState` (see the rationale there): the
+    /// writer locks an `os_unfair_lock` unconditionally, the render thread only
+    /// *tries* it — a realtime thread must never block — and falls back to the
+    /// last gain it successfully read.
     private final class RenderState: @unchecked Sendable {
-        var gain: Float
-        init(gain: Float) { self.gain = gain }
+        private var gain: Float
+        /// Read and written only by the realtime IO proc thread.
+        private var lastRenderGain: Float
+        /// Heap-allocated so the lock has a stable address; an inline struct
+        /// stored property could be moved/copied by Swift value semantics.
+        private let lock: UnsafeMutablePointer<os_unfair_lock>
+
+        init(gain: Float) {
+            self.gain = gain
+            self.lastRenderGain = gain
+            self.lock = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
+            self.lock.initialize(to: os_unfair_lock())
+        }
+
+        deinit {
+            lock.deinitialize(count: 1)
+            lock.deallocate()
+        }
+
+        /// Writer side (main thread).
+        func setGain(_ value: Float) {
+            os_unfair_lock_lock(lock)
+            gain = value
+            os_unfair_lock_unlock(lock)
+        }
+
+        /// Reader side; call only from the realtime IO proc. Never blocks.
+        func renderGain() -> Float {
+            if os_unfair_lock_trylock(lock) {
+                lastRenderGain = gain
+                os_unfair_lock_unlock(lock)
+            }
+            return lastRenderGain
+        }
     }
 
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -166,7 +205,7 @@ public final class AudioMonitorEngine: @unchecked Sendable {
     }
 
     public func setGain(_ gain: Float) {
-        renderState?.gain = Self.clampGain(gain)
+        renderState?.setGain(Self.clampGain(gain))
     }
 
     public func stop() {
@@ -237,7 +276,7 @@ public final class AudioMonitorEngine: @unchecked Sendable {
     private static let ioProc: AudioDeviceIOProc = { _, _, inputData, _, outputData, _, clientData in
         guard let clientData else { return noErr }
         let state = Unmanaged<RenderState>.fromOpaque(clientData).takeUnretainedValue()
-        render(inputData: inputData, outputData: outputData, gain: state.gain)
+        render(inputData: inputData, outputData: outputData, gain: state.renderGain())
         return noErr
     }
 

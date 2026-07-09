@@ -377,7 +377,7 @@ public struct AudioRouterPopoverView: View {
 
     private var header: some View {
         HStack {
-            Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+            Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.system(size: AudioRouterSizing.titleSize, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
             Text("Audio Router")
