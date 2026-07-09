@@ -27,6 +27,11 @@ public final class KeepAwakeController: ObservableObject {
     /// Seconds left in a timed session, or `nil` for an indefinite session / when inactive.
     @Published public private(set) var remaining: TimeInterval?
 
+    /// The duration the current session was started with, or `nil` for an indefinite session /
+    /// when inactive. Unlike `remaining` it doesn't count down, so the UI can mark exactly the
+    /// preset that is running.
+    @Published public private(set) var activeDuration: TimeInterval?
+
     private var assertionID: IOPMAssertionID = IOPMAssertionID(0)
     private var hasAssertion = false
 
@@ -57,8 +62,10 @@ public final class KeepAwakeController: ObservableObject {
         isActive = createAssertionIfNeeded()
 
         if isActive, let duration, duration > 0 {
+            activeDuration = duration
             startCountdown(duration: duration)
         } else {
+            activeDuration = nil
             stopCountdown()
         }
     }
@@ -68,6 +75,7 @@ public final class KeepAwakeController: ObservableObject {
         releaseAssertion()
         stopCountdown()
         isActive = false
+        activeDuration = nil
     }
 
     /// Toggles between active (indefinite) and inactive.

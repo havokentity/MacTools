@@ -183,8 +183,12 @@ public struct KeepAwakePopoverView: View {
 
     private func durationButton(_ preset: DurationPreset) -> some View {
         Button {
-            AppDefaults.shared.set(preset.seconds ?? 0, forKey: DefaultsKey.keepAwakeLastDuration)
-            controller.activate(duration: preset.seconds)
+            if isSelected(preset) {
+                controller.deactivate()
+            } else {
+                AppDefaults.shared.set(preset.seconds ?? 0, forKey: DefaultsKey.keepAwakeLastDuration)
+                controller.activate(duration: preset.seconds)
+            }
         } label: {
             Text(preset.title)
                 .font(.system(size: s(12), weight: .semibold))
@@ -200,14 +204,10 @@ public struct KeepAwakePopoverView: View {
         .buttonStyle(.plain)
     }
 
-    /// A preset is "selected" only while a session matching it is active.
+    /// A preset is "selected" only while a session started with exactly that duration is active
+    /// (`activeDuration` is `nil` for an indefinite session, matching the "Indefinitely" preset).
     private func isSelected(_ preset: DurationPreset) -> Bool {
-        guard controller.isActive else { return false }
-        if preset.seconds == nil {
-            return controller.remaining == nil
-        }
-        // A timed preset is shown selected while any countdown is running.
-        return controller.remaining != nil
+        controller.isActive && controller.activeDuration == preset.seconds
     }
 
     // MARK: - Footer

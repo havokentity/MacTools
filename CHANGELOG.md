@@ -6,7 +6,14 @@ adheres to [Semantic Versioning](https://semver.org) and the
 
 ## [Unreleased]
 
+### Changed
+- **Keep Awake** duration buttons toggle: pressing the running preset again
+  turns Keep Awake off.
+
 ### Fixed
+- **Keep Awake** duration buttons now highlight only the preset that started
+  the session; previously every timed button lit up while any countdown was
+  running.
 - Audio Router "listen to an input" no longer crashes (macOS TCC): the
   microphone usage string now also ships in the main app's Info.plist, since
   macOS attributes a nested helper's privacy access to the containing app; and a

@@ -21,6 +21,7 @@ final class KeepAwakeTests: XCTestCase {
     func testInitialStateIsInactive() {
         XCTAssertFalse(controller.isActive)
         XCTAssertNil(controller.remaining)
+        XCTAssertNil(controller.activeDuration)
     }
 
     func testActivateWithDurationSetsActiveAndRemaining() {
@@ -40,6 +41,19 @@ final class KeepAwakeTests: XCTestCase {
 
         XCTAssertTrue(controller.isActive)
         XCTAssertNil(controller.remaining)
+        XCTAssertNil(controller.activeDuration)
+    }
+
+    func testActiveDurationTracksTheStartedPreset() {
+        controller.activate(duration: 900)
+        XCTAssertEqual(controller.activeDuration, 900, "activeDuration holds the session's original duration")
+
+        // Unlike `remaining` it must not count down, and switching presets replaces it.
+        controller.activate(duration: 1800)
+        XCTAssertEqual(controller.activeDuration, 1800)
+
+        controller.activate(duration: nil)
+        XCTAssertNil(controller.activeDuration, "Indefinite session has no duration")
     }
 
     func testDeactivateClearsState() {
@@ -50,6 +64,7 @@ final class KeepAwakeTests: XCTestCase {
 
         XCTAssertFalse(controller.isActive)
         XCTAssertNil(controller.remaining)
+        XCTAssertNil(controller.activeDuration)
     }
 
     func testToggleFlipsActiveState() {
@@ -89,5 +104,6 @@ final class KeepAwakeTests: XCTestCase {
 
         XCTAssertTrue(controller.isActive)
         XCTAssertNil(controller.remaining)
+        XCTAssertNil(controller.activeDuration)
     }
 }
