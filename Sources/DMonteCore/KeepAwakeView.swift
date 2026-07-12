@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 
 /// The floating Keep Awake popover: a prominent on/off control, a "keep display on" toggle, a row
-/// of duration presets, and a footer with a settings/quit affordance. Content is scaled to match
+/// of duration presets, a one-shot "turn off displays" button, and a footer with a settings/quit
+/// affordance. Content is scaled to match
 /// the menu-bar/display scale so it fits the scaled panel (same approach as the other tools).
 public struct KeepAwakePopoverView: View {
     @ObservedObject var controller: KeepAwakeController
@@ -39,6 +40,8 @@ public struct KeepAwakePopoverView: View {
                 displayToggleRow
                 Divider().opacity(0.6)
                 durationGrid
+                Divider().opacity(0.6)
+                sleepDisplaysRow
                 Spacer(minLength: 0)
                 footer
             }
@@ -208,6 +211,34 @@ public struct KeepAwakePopoverView: View {
     /// (`activeDuration` is `nil` for an indefinite session, matching the "Indefinitely" preset).
     private func isSelected(_ preset: DurationPreset) -> Bool {
         controller.isActive && controller.activeDuration == preset.seconds
+    }
+
+    // MARK: - Sleep displays
+
+    private var sleepDisplaysRow: some View {
+        Button {
+            controller.sleepDisplaysNow()
+        } label: {
+            HStack(spacing: s(8)) {
+                Image(systemName: "moon.zzz.fill")
+                    .font(.system(size: s(13), weight: .semibold))
+                Text("Turn Off Displays")
+                    .font(.system(size: s(13), weight: .semibold))
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity)
+            .frame(height: s(34))
+            .background(
+                RoundedRectangle(cornerRadius: s(8), style: .continuous)
+                    .fill(Color.secondary.opacity(0.14))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: s(8), style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Put the screens to sleep now; the Mac stays awake")
+        .padding(.horizontal, s(16))
+        .padding(.top, s(10))
+        .padding(.bottom, s(10))
     }
 
     // MARK: - Footer

@@ -4,6 +4,13 @@ All notable changes to D'Monte's Tool Box are documented here. This project
 adheres to [Semantic Versioning](https://semver.org) and the
 [Keep a Changelog](https://keepachangelog.com) format.
 
+## [Unreleased]
+
+### Added
+- **Keep Awake** "Turn Off Displays" button: puts the screens to sleep
+  immediately while the Mac — and any running Keep Awake session — stays
+  awake. Any key press or mouse move lights them back up.
+
 ## [0.12.0] — 2026-07-10
 
 ### Changed

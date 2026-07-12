@@ -101,6 +101,16 @@ public final class KeepAwakeController: ObservableObject {
         isActive = createAssertionIfNeeded()
     }
 
+    /// Puts the displays to sleep right now, leaving the system — and any active Keep Awake
+    /// session — running. Forced display sleep works even while a display assertion is held
+    /// (assertions only block *idle* sleep); the next key press or mouse move relights the
+    /// screens.
+    public func sleepDisplaysNow() {
+        Task.detached(priority: .userInitiated) {
+            _ = MaintenanceKit.runShell("/usr/bin/pmset", ["displaysleepnow"])
+        }
+    }
+
     // MARK: - Assertion management
 
     private var assertionType: String {

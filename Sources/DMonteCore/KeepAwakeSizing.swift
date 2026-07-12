@@ -3,7 +3,7 @@ import AppKit
 public enum KeepAwakeSizing {
     public static func preferredSize() -> NSSize {
         let scale = currentScale
-        return NSSize(width: (320 * scale).rounded(), height: (430 * scale).rounded())
+        return NSSize(width: (320 * scale).rounded(), height: (485 * scale).rounded())
     }
 
     static var currentScale: CGFloat {
