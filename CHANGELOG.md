@@ -4,7 +4,7 @@ All notable changes to D'Monte's Tool Box are documented here. This project
 adheres to [Semantic Versioning](https://semver.org) and the
 [Keep a Changelog](https://keepachangelog.com) format.
 
-## [Unreleased]
+## [0.13.0] — 2026-07-12
 
 ### Added
 - **Keep Awake** "Turn Off Displays" button: puts the screens to sleep
