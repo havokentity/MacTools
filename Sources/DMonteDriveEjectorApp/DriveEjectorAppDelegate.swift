@@ -11,7 +11,12 @@ enum DriveEjectorNotifications {
 
 @MainActor
 final class DriveEjectorAppDelegate: NSObject, NSApplicationDelegate {
-    private let controller = DriveEjectorController()
+    /// Built lazily, on the first access in `applicationDidFinishLaunching` — i.e. *after*
+    /// `AppDefaults.registerDefaults()`. The controller reads the Eject All confirmation
+    /// preference in `init`, and a registration domain only exists once registered in this
+    /// process, so an eagerly-created controller would read `false` and silently ship the one
+    /// destructive action here with its confirmation turned off.
+    private lazy var controller = DriveEjectorController()
 
     private var statusItem: HelperStatusItem?
     private var panelHost: HelperPanelHost?
@@ -39,6 +44,9 @@ final class DriveEjectorAppDelegate: NSObject, NSApplicationDelegate {
         // impossible to see even if a notification was missed.
         host.onWillShow = { [controller] in
             controller.clearStatus()
+            // An armed Eject All must not survive the panel closing: reopening minutes later onto a
+            // primed "Eject 3 Volumes" button is one stray click from unmounting everything.
+            controller.cancelEjectAll()
             controller.refresh()
         }
 

@@ -32,8 +32,9 @@ public final class DriveEjectorController: NSObject, ObservableObject {
     /// The inline status line: progress while ejecting, then the honest result.
     @Published public private(set) var statusMessage: String?
 
-    /// Mount points with an eject in flight, so their rows can show progress and refuse a
-    /// second press instead of racing a duplicate unmount.
+    /// Mount points whose rows must read as in-progress and refuse a press: the union of the
+    /// ejects this tool started and the unmounts someone else announced. Derived — never assigned
+    /// directly — so the two sources can expire on their own schedules.
     @Published public private(set) var busyVolumeIDs: Set<String> = []
 
     /// `true` once Eject All has been requested and is waiting for the confirming press.
@@ -41,6 +42,19 @@ public final class DriveEjectorController: NSObject, ObservableObject {
 
     /// Persisted preference: require a second press for Eject All.
     @Published public private(set) var confirmsEjectAll: Bool
+
+    /// Mount points with an eject *this tool* started. Cleared only by the completion handler,
+    /// which always runs, so a refresh mid-eject cannot re-enable a button that is still working.
+    private var ejectingVolumeIDs: Set<String> = []
+
+    /// Mount points someone else (Finder, `diskutil`) announced an unmount for, against the moment
+    /// the announcement arrived. Expired by `DriveEjectorKit.liveUnmountAnnouncements`.
+    private var announcedUnmounts: [String: Date] = [:]
+
+    /// How long a foreign unmount announcement keeps a row busy before it is presumed denied.
+    /// Generous enough to cover a slow unmount of a large disk, short enough that a row which was
+    /// vetoed un-sticks itself without the user having to relaunch the tool.
+    private static let unmountAnnouncementGrace: TimeInterval = 15
 
     public override init() {
         confirmsEjectAll = AppDefaults.shared.bool(forKey: DefaultsKey.driveEjectorConfirmsEjectAll)
@@ -56,15 +70,31 @@ public final class DriveEjectorController: NSObject, ObservableObject {
 
     /// Re-reads the mount table. Cheap enough to call on every mount notification.
     public func refresh() {
+        let previousIDs = Set(volumes.map(\.id))
         volumes = DriveEjectorKit.ejectableVolumes()
+        recomputeBusyVolumeIDs()
 
-        // Drop busy markers for volumes that are gone; otherwise a successful eject would leave
-        // a phantom entry that suppresses a later eject of a disk remounted at the same point.
-        let liveIDs = Set(volumes.map(\.id))
-        busyVolumeIDs.formIntersection(liveIDs)
-
-        if volumes.isEmpty {
+        // An armed Eject All authorises the set of volumes the user was looking at when they armed
+        // it. If a disk has appeared or vanished since, the confirming press would act on a list
+        // they never saw, so the arming is dropped and has to be repeated deliberately.
+        if isConfirmingEjectAll, Set(volumes.map(\.id)) != previousIDs {
             isConfirmingEjectAll = false
+        }
+    }
+
+    /// Rebuilds `busyVolumeIDs` from its two sources, expiring foreign unmount announcements that
+    /// have outlived their grace period.
+    private func recomputeBusyVolumeIDs(now: Date = Date()) {
+        announcedUnmounts = DriveEjectorKit.liveUnmountAnnouncements(
+            announcedUnmounts,
+            mountedIDs: Set(volumes.map(\.id)),
+            now: now,
+            grace: Self.unmountAnnouncementGrace
+        )
+
+        let combined = ejectingVolumeIDs.union(announcedUnmounts.keys)
+        if combined != busyVolumeIDs {
+            busyVolumeIDs = combined
         }
     }
 
@@ -103,7 +133,8 @@ public final class DriveEjectorController: NSObject, ObservableObject {
             return
         }
 
-        busyVolumeIDs.insert(volume.id)
+        ejectingVolumeIDs.insert(volume.id)
+        recomputeBusyVolumeIDs()
         statusMessage = "Ejecting “\(volume.name)”…"
 
         let request = EjectRequest(id: volume.id, name: volume.name, url: volume.url)
@@ -142,7 +173,8 @@ public final class DriveEjectorController: NSObject, ObservableObject {
             return
         }
 
-        targets.forEach { busyVolumeIDs.insert($0.id) }
+        targets.forEach { ejectingVolumeIDs.insert($0.id) }
+        recomputeBusyVolumeIDs()
         statusMessage = "Ejecting \(targets.count) volume\(targets.count == 1 ? "" : "s")…"
 
         Task.detached(priority: .userInitiated) {
@@ -189,7 +221,18 @@ public final class DriveEjectorController: NSObject, ObservableObject {
         guard let url = notification.volumeURL else {
             return
         }
-        busyVolumeIDs.insert(url.path)
+
+        // Standardised because the row IDs come from `mountedVolumeURLs`, and a marker keyed on a
+        // differently-spelled path for the same mount point would silently match nothing.
+        announcedUnmounts[url.standardizedFileURL.path] = Date()
+        recomputeBusyVolumeIDs()
+
+        // A denied unmount posts nothing further, so this is the only thing that will release the
+        // marker. Without it a vetoed unmount disables the row until the tool is relaunched.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.unmountAnnouncementGrace))
+            self?.refresh()
+        }
     }
 
     @objc private func volumeDidUnmount(_ notification: Notification) {
@@ -203,13 +246,13 @@ public final class DriveEjectorController: NSObject, ObservableObject {
     // MARK: - Private
 
     private func finish(_ request: EjectRequest, outcome: EjectionOutcome) {
-        busyVolumeIDs.remove(request.id)
+        ejectingVolumeIDs.remove(request.id)
         statusMessage = message(for: outcome, volumeName: request.name)
         refresh()
     }
 
     private func finishBatch(_ results: [(EjectRequest, EjectionOutcome)]) {
-        results.forEach { busyVolumeIDs.remove($0.0.id) }
+        results.forEach { ejectingVolumeIDs.remove($0.0.id) }
 
         let failures = results.filter { $0.1 != .ejected }
 

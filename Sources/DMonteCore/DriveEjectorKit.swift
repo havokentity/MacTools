@@ -115,17 +115,33 @@ public enum DriveEjectorKit {
         .volumeAvailableCapacityKey
     ]
 
+    /// The directory macOS reserves for the running system's own volume group — the Data volume,
+    /// `VM`, `Preboot`, `Update`, `xarts`, `iSCPreboot`, `Hardware`.
+    ///
+    /// The enumeration keeps these off the list via `.skipHiddenVolumes`, but that is an option on
+    /// one call site rather than a property of the rule, and `eject(volumeAt:)` re-derives its
+    /// verdict from a bare mount point without going near it. On a Mac booted from external media
+    /// every one of these reports `isInternal == false` plus removable and ejectable, and only
+    /// `/System/Volumes/Data` also carries the root-filesystem flag — so the siblings would clear
+    /// the rule outright. Stated here so both paths inherit the same guarantee.
+    private static let systemVolumeGroupRoot = "/System/Volumes"
+
     /// Decides whether a volume may be ejected. Deliberately biased towards refusing.
     ///
-    /// Order matters: the catastrophic case is checked first and by two independent signals, so
-    /// a filesystem that vends nothing useful still cannot get the startup disk onto the list.
+    /// Order matters: the catastrophic case is checked first and by three independent signals, so
+    /// a filesystem that vends nothing useful still cannot get a system volume onto the list.
     public static func verdict(for descriptor: VolumeDescriptor) -> VolumeEjectionVerdict {
         // A mount point of "/" is a fact no missing resource key can hide, and the root-filesystem
         // flag catches the same volume when it is reached through a symlinked or relative URL.
         // Checked before the removable flags because a Mac booted from an external USB disk reports
         // that disk as removable *and* ejectable — exactly the combination that would otherwise
         // wave the startup disk straight through.
-        if descriptor.url.standardizedFileURL.path == "/" || descriptor.isRootFileSystem == true {
+        let path = descriptor.url.standardizedFileURL.path
+        if path == "/" || descriptor.isRootFileSystem == true {
+            return .bootVolume
+        }
+
+        if path == systemVolumeGroupRoot || path.hasPrefix(systemVolumeGroupRoot + "/") {
             return .bootVolume
         }
 
@@ -203,6 +219,27 @@ public enum DriveEjectorKit {
             totalBytes: total,
             freeBytes: free
         )
+    }
+
+    // MARK: - Foreign unmount announcements
+
+    /// Filters "someone else started unmounting this" markers down to the ones still worth honouring.
+    ///
+    /// `NSWorkspace.willUnmountNotification` is an announcement, not a promise: any app holding the
+    /// volume can dissent, in which case the unmount is abandoned and no `didUnmountNotification`
+    /// ever arrives. A marker kept on that basis alone would disable its row — and exclude it from
+    /// Eject All — for the lifetime of the process, so a volume that is *still mounted* once `grace`
+    /// has elapsed is released. A marker whose volume has gone is dropped immediately: the unmount
+    /// succeeded and there is no row left to protect.
+    static func liveUnmountAnnouncements(
+        _ announcements: [String: Date],
+        mountedIDs: Set<String>,
+        now: Date,
+        grace: TimeInterval
+    ) -> [String: Date] {
+        announcements.filter { id, announcedAt in
+            mountedIDs.contains(id) && now.timeIntervalSince(announcedAt) < grace
+        }
     }
 
     // MARK: - Ejection

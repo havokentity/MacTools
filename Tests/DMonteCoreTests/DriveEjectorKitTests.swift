@@ -165,10 +165,55 @@ final class DriveEjectorKitTests: XCTestCase {
         XCTAssertEqual(DriveEjectorKit.verdict(for: messyRoot), .bootVolume)
     }
 
+    /// The external-boot case one level deeper than the startup volume itself. When a Mac boots
+    /// from a USB SSD, the firmlinked members of the running system's volume group sit on that same
+    /// external medium: `isInternal` is false, removable and ejectable are true, and only the Data
+    /// volume carries the root flag. `VM` and `Preboot` therefore clear every other check, and the
+    /// enumeration's `.skipHiddenVolumes` does not protect `eject(volumeAt:)`, which re-derives its
+    /// verdict from a bare mount point.
+    func testSystemVolumeGroupIsBlockedOnAnExternallyBootedMac() {
+        for path in ["/System/Volumes/Data", "/System/Volumes/VM", "/System/Volumes/Preboot", "/System/Volumes/Update"] {
+            let onExternalBootMedia = descriptor(
+                path: path,
+                name: (path as NSString).lastPathComponent,
+                isRootFileSystem: false,
+                isInternal: false,
+                isRemovable: true,
+                isEjectable: true
+            )
+
+            XCTAssertEqual(
+                DriveEjectorKit.verdict(for: onExternalBootMedia),
+                .bootVolume,
+                "\(path) belongs to the running system and must never be offered"
+            )
+        }
+    }
+
+    /// The system-volume guard is a path-prefix rule, so it must match on path *components* and not
+    /// swallow an ordinary user disk whose mount point merely starts with the same characters.
+    func testUserVolumesNamedLikeSystemPathsAreStillOffered() {
+        for path in ["/Volumes/System", "/Volumes/System Volumes Backup"] {
+            let userDisk = descriptor(
+                path: path,
+                name: "Backup",
+                isRootFileSystem: false,
+                isInternal: false,
+                isRemovable: true,
+                isEjectable: true
+            )
+            XCTAssertEqual(DriveEjectorKit.verdict(for: userDisk), .eligible, "\(path) is an ordinary external disk")
+        }
+    }
+
     func testInternalDisksAreBlockedEvenWhenEjectable() {
         // Internal drive bays report ejectable; "internal" must veto it.
         XCTAssertEqual(DriveEjectorKit.verdict(for: internalSecondDisk), .internalDisk)
-        XCTAssertEqual(DriveEjectorKit.verdict(for: dataVolume), .internalDisk)
+
+        // The Data volume is caught earlier, by the system-volume-group rule, so it stays blocked
+        // even on a Mac where "internal" would be false. Either way it is never offered.
+        XCTAssertEqual(DriveEjectorKit.verdict(for: dataVolume), .bootVolume)
+        XCTAssertFalse(DriveEjectorKit.isEligibleForEjection(dataVolume))
     }
 
     func testFixedExternalVolumesAreBlocked() {
@@ -249,6 +294,59 @@ final class DriveEjectorKitTests: XCTestCase {
     func testEjectingAnUninspectablePathIsRefused() {
         let missing = URL(fileURLWithPath: "/Volumes/\(UUID().uuidString)")
         XCTAssertEqual(DriveEjectorKit.eject(volumeAt: missing), .blocked(.undetermined))
+    }
+
+    // MARK: - Foreign unmount announcements
+
+    /// The bug this guards: `willUnmountNotification` fires, the unmount is then *denied* by an app
+    /// holding the volume, and no further notification ever arrives. Keeping the marker on the
+    /// grounds that the volume is still mounted would disable its Eject button — and drop it from
+    /// Eject All — until the tool was relaunched.
+    func testStillMountedAnnouncementIsReleasedAfterTheGracePeriod() {
+        let announced = Date()
+        let announcements = ["/Volumes/USB Stick": announced]
+        let mounted: Set<String> = ["/Volumes/USB Stick"]
+
+        XCTAssertEqual(
+            DriveEjectorKit.liveUnmountAnnouncements(announcements, mountedIDs: mounted, now: announced.addingTimeInterval(5), grace: 15).keys.sorted(),
+            ["/Volumes/USB Stick"],
+            "An unmount still in progress must keep the row busy"
+        )
+
+        XCTAssertTrue(
+            DriveEjectorKit.liveUnmountAnnouncements(announcements, mountedIDs: mounted, now: announced.addingTimeInterval(15), grace: 15).isEmpty,
+            "A volume still mounted after the grace period had its unmount denied; the row must become pressable again"
+        )
+    }
+
+    /// The unmount succeeded, so there is no row left to protect and the marker must not linger to
+    /// suppress a disk later remounted at the same point.
+    func testAnnouncementForAVanishedVolumeIsDroppedImmediately() {
+        let announced = Date()
+        XCTAssertTrue(
+            DriveEjectorKit.liveUnmountAnnouncements(
+                ["/Volumes/USB Stick": announced],
+                mountedIDs: [],
+                now: announced.addingTimeInterval(1),
+                grace: 15
+            ).isEmpty
+        )
+    }
+
+    func testAnnouncementsAreFilteredIndependently() {
+        let now = Date()
+        let live = DriveEjectorKit.liveUnmountAnnouncements(
+            [
+                "/Volumes/Slow": now.addingTimeInterval(-2),
+                "/Volumes/Vetoed": now.addingTimeInterval(-99),
+                "/Volumes/Gone": now.addingTimeInterval(-1)
+            ],
+            mountedIDs: ["/Volumes/Slow", "/Volumes/Vetoed"],
+            now: now,
+            grace: 15
+        )
+
+        XCTAssertEqual(live.keys.sorted(), ["/Volumes/Slow"])
     }
 
     // MARK: - Descriptors and formatting
