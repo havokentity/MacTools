@@ -95,6 +95,10 @@ let package = Package(
         .executable(
             name: "DMonteWindowManager",
             targets: ["DMonteWindowManager"]
+        ),
+        .executable(
+            name: "DMonteScratchpad",
+            targets: ["DMonteScratchpad"]
         )
     ],
     dependencies: [
@@ -252,6 +256,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteWindowManagerApp"
+        ),
+        .executableTarget(
+            name: "DMonteScratchpad",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteScratchpadApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

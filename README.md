@@ -42,6 +42,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Keep Awake** | Prevent sleep, optionally for a set duration |
 | **Maintenance** | Handy Finder/system toggles and cache/index refreshes |
 | **Dev Tools** | JSON, Base64, URL, hashing, UUID, timestamp, and case utilities |
+| **Scratchpad** | Always‑there plain‑text notepad with named notes, autosave, and a live word count |
 
 ### Permissions
 

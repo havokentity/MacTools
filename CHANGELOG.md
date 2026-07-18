@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org) and the
   and runs the full test suite on a pinned macOS runner, using the same
   toolchain the release workflow ships with. Previously only version tags ran
   CI, so a branch could go unverified until release day.
+- **Scratchpad** — a new menu bar tool: an always-there plain-text notepad with
+  multiple named notes, autosave (debounced while typing, flushed when the panel
+  closes and at quit, one atomically written file per note), a live
+  word/character/line count, copy-all, and an undoable clear.
 
 ## [0.13.0] — 2026-07-12
 
