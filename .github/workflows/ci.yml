@@ -6,12 +6,19 @@ name: CI
 
 on:
   push:
-    # Every branch: feature work is reviewed as a PR, but a push to a branch
-    # with no PR open yet should still be verified.
+    # Only main. `pull_request` below already verifies every branch that has a
+    # PR open, and listing every branch here as well meant each PR commit paid
+    # for two identical runs — macOS minutes are the scarcest quota on the
+    # account. A push to a branch with no PR yet is unverified by design: open
+    # the PR and it gets checked.
     # Naming a branch filter also excludes tag pushes, which is what we want:
     # a "v*.*.*" tag already triggers release.yml on the same commit.
-    branches: ["**"]
+    branches: [main]
   pull_request:
+  # Manual trigger. Without it, an open PR whose base only just gained this
+  # workflow has no way to get a result short of pushing a throwaway commit —
+  # a base-branch update does not emit `synchronize`.
+  workflow_dispatch:
 
 # Read-only: this workflow deliberately consumes no secrets and writes nothing
 # back, so it runs identically on a fork PR (where secrets are unavailable).
