@@ -66,6 +66,12 @@ public struct SnippetsPopoverView: View {
         .frostedPanel(cornerRadius: 18)
         .onAppear { searchFocused = true }
         .onChange(of: controller.showToken) { _, _ in
+            // An open editor deliberately survives a reopen, and its overlay covers the search
+            // field — so refocusing search here would send the user's next keystrokes into a
+            // control they cannot see, silently filtering the list instead of typing the snippet.
+            // The panel is only ordered out, never torn down, so leaving focus alone restores the
+            // editor field the window already had as its first responder.
+            guard controller.editorSession == nil else { return }
             searchFocused = true
         }
     }
@@ -304,7 +310,7 @@ private struct SnippetRow: View {
                 .fill(Color.accentColor.opacity(0.16))
                 .frame(width: s(28), height: s(28))
                 .overlay(
-                    Image(systemName: snippet.expandsPlaceholders && snippet.body.contains("{") ? "calendar.badge.clock" : "text.alignleft")
+                    Image(systemName: snippet.pastesADifferentValueEachTime ? "calendar.badge.clock" : "text.alignleft")
                         .font(.system(size: s(12), weight: .semibold))
                         .foregroundStyle(Color.accentColor)
                 )

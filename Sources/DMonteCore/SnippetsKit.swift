@@ -41,21 +41,39 @@ public struct Snippet: Identifiable, Codable, Equatable, Sendable {
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 
+    /// Whether pasting this snippet resolves a placeholder, i.e. whether its text depends on when
+    /// it is pasted. The list row badges these differently, and the badge is driven off this
+    /// rather than off "has braces" so the icon and `pasteText(for:)` cannot disagree.
+    public var pastesADifferentValueEachTime: Bool {
+        expandsPlaceholders && SnippetsKit.containsPlaceholder(body)
+    }
+
+    /// How much of the body the two single-line row labels ever look at. A snippet body is
+    /// whatever the user pasted into the editor — potentially a whole document — and both labels
+    /// are `lineLimit(1)`, so scanning or laying out past this is work for text nobody can see.
+    private static let previewCharacterLimit = 200
+
+    /// The body with leading blank space skipped, capped at the preview limit. Every read is
+    /// bounded: `drop(while:)` walks only the leading whitespace and `prefix` stops at the cap,
+    /// so neither row label is ever proportional to a megabyte-long snippet.
+    private var previewSource: Substring {
+        body.drop { $0.isWhitespace }.prefix(Self.previewCharacterLimit)
+    }
+
     /// The name shown in the list. A snippet saved without a title would otherwise render as a
     /// blank row the user cannot aim at, so fall back to the first line of its text.
     public var displayTitle: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
-        let firstLine = body.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? ""
-        let trimmedLine = firstLine.trimmingCharacters(in: .whitespaces)
-        return trimmedLine.isEmpty ? "Untitled" : trimmedLine
+        let firstLine = previewSource.prefix { $0 != "\n" }.trimmingCharacters(in: .whitespaces)
+        return firstLine.isEmpty ? "Untitled" : firstLine
     }
 
     /// One-line flattened preview of the text for the list row.
     public var previewText: String {
-        body
+        previewSource
             .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: .whitespaces)
     }
 }
 
@@ -101,8 +119,17 @@ public enum SnippetsKit {
     /// Unknown braces are left exactly as typed: silently eating `{foo}` would corrupt code and
     /// templates that legitimately contain braces, and there is no error channel here to report
     /// it through.
+    /// Whether `text` holds a token that expansion would actually replace. A bare `contains("{")`
+    /// test is not the same question: a snippet whose only braces are `{foo}` expands to itself,
+    /// so anything driven off "does this expand?" — the row's date badge — must ask this instead
+    /// or it promises a substitution that never happens.
+    public static func containsPlaceholder(_ text: String) -> Bool {
+        guard text.contains("{") else { return false }
+        return placeholders.contains { text.contains($0.token) }
+    }
+
     public static func expandPlaceholders(in text: String, date: Date = Date(), locale: Locale = .current, timeZone: TimeZone = .current) -> String {
-        guard text.contains("{") else { return text }
+        guard containsPlaceholder(text) else { return text }
 
         let dateText = string(from: date, dateStyle: .medium, timeStyle: .none, locale: locale, timeZone: timeZone)
         let timeText = string(from: date, dateStyle: .none, timeStyle: .short, locale: locale, timeZone: timeZone)
@@ -166,7 +193,8 @@ public enum SnippetsKit {
     /// can simply skip a bad write instead of surfacing an error the user cannot act on.
     public static func encode(_ snippets: [Snippet]) -> Data? {
         let encoder = JSONEncoder()
-        // Stable key order keeps the file diffable and its byte-identical-write check meaningful.
+        // Stable key order so two saves of an unchanged library produce identical bytes, which
+        // keeps the file diffable and backup-friendly instead of churning on every write.
         encoder.outputFormatting = [.sortedKeys]
         return try? encoder.encode(snippets)
     }

@@ -134,6 +134,59 @@ final class SnippetsKitTests: XCTestCase {
         }
     }
 
+    /// The row badge promises "this pastes a fresh date/time". Driving it off a bare `contains("{")`
+    /// made that promise for any braces at all, so a pure code template was badged as date-bearing
+    /// while pasting byte-for-byte what was typed. Badge and expansion must answer the same way.
+    func testTheDateBadgeAgreesWithWhatExpansionActuallyDoes() {
+        let cases = [
+            makeSnippet("Log", "Filed {date}", expands: true),
+            makeSnippet("Template", "let x = {foo};", expands: true),
+            makeSnippet("Literal", "Filed {date}", expands: false),
+            makeSnippet("Plain", "Kind regards", expands: true)
+        ]
+
+        for snippet in cases {
+            let pasteChangesTheText = SnippetsKit.pasteText(for: snippet, date: fixedDate) != snippet.body
+            XCTAssertEqual(
+                snippet.pastesADifferentValueEachTime, pasteChangesTheText,
+                "\(snippet.title): badge says \(snippet.pastesADifferentValueEachTime) but pasting changed the text: \(pasteChangesTheText)"
+            )
+        }
+    }
+
+    func testContainsPlaceholderIgnoresBracesThatAreNotTokens() {
+        XCTAssertFalse(SnippetsKit.containsPlaceholder("let x = {foo};"))
+        XCTAssertFalse(SnippetsKit.containsPlaceholder("no braces here"))
+        XCTAssertTrue(SnippetsKit.containsPlaceholder("Filed {date}"))
+        XCTAssertTrue(SnippetsKit.containsPlaceholder("At {datetime}"))
+    }
+
+    // MARK: - Row labels
+
+    func testDisplayTitleFallsBackToTheFirstMeaningfulLineOfTheBody() {
+        XCTAssertEqual(makeSnippet("", "12 Baker St\nLondon").displayTitle, "12 Baker St")
+        XCTAssertEqual(makeSnippet("   ", "12 Baker St").displayTitle, "12 Baker St")
+        // Leading blank lines are skipped rather than reported as an untitled snippet.
+        XCTAssertEqual(makeSnippet("", "\n\n12 Baker St").displayTitle, "12 Baker St")
+        XCTAssertEqual(makeSnippet("", "   ").displayTitle, "Untitled")
+        XCTAssertEqual(makeSnippet("", "").displayTitle, "Untitled")
+    }
+
+    func testPreviewFlattensNewlinesIntoOneLine() {
+        XCTAssertEqual(makeSnippet("Address", "12 Baker St\nLondon").previewText, "12 Baker St London")
+    }
+
+    /// Both row labels are single-line and the body is whatever the user pasted in, so a snippet
+    /// holding a whole document must not hand a megabyte of text to a `lineLimit(1)` label.
+    func testRowLabelsAreBoundedForAHugeBody() {
+        let huge = String(repeating: "a", count: 2_000_000)
+        let snippet = makeSnippet("", huge)
+
+        XCTAssertLessThanOrEqual(snippet.previewText.count, 200)
+        XCTAssertLessThanOrEqual(snippet.displayTitle.count, 200)
+        XCTAssertTrue(snippet.previewText.hasPrefix("aaa"))
+    }
+
     // MARK: - Reordering
 
     func testMovedShiftsTheSnippetWithinTheLibrary() {
