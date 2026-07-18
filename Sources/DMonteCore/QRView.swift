@@ -8,6 +8,7 @@ public struct QRWindowView: View {
     private enum Mode: String, CaseIterable, Identifiable {
         case generate
         case scan
+        case file
 
         var id: String { rawValue }
 
@@ -15,6 +16,7 @@ public struct QRWindowView: View {
             switch self {
             case .generate: "Generate"
             case .scan: "Scan"
+            case .file: "File"
             }
         }
     }
@@ -22,13 +24,20 @@ public struct QRWindowView: View {
     @State private var mode: Mode = .generate
 
     // Generate state
-    @State private var inputText = ""
+    @AppStorage(DefaultsKey.qrTemplate, store: AppDefaults.shared) private var template: QRTemplate = .text
+    @State private var draft = QRTemplateDraft()
     @State private var qrImage: NSImage?
 
     // Scan state
     @State private var isScanning = false
     @State private var scannedPayloads: [String] = []
     @State private var scanMessage = "Scan a QR code or barcode from anywhere on screen."
+
+    // Decode-from-file state
+    @State private var isDecodingFile = false
+    @State private var isDropTargeted = false
+    @State private var decodedPayloads: [String] = []
+    @State private var fileMessage = "Open or drop an image to read the codes inside it."
 
     private let layout = QRLayout.current
 
@@ -48,6 +57,8 @@ public struct QRWindowView: View {
                     generateSection
                 case .scan:
                     scanSection
+                case .file:
+                    fileSection
                 }
 
                 Spacer(minLength: 0)
@@ -104,9 +115,11 @@ public struct QRWindowView: View {
 
     private var generateSection: some View {
         VStack(spacing: layout.contentSpacing) {
+            templatePicker
+
             qrPreview
 
-            inputField
+            templateFields
 
             HStack(spacing: layout.buttonRowSpacing) {
                 actionButton(title: "Copy", systemImage: "doc.on.doc", isEnabled: qrImage != nil) {
@@ -116,6 +129,128 @@ public struct QRWindowView: View {
                     saveGeneratedImage()
                 }
             }
+        }
+        // The template choice is persisted, so a restored non-text template needs its preview
+        // rebuilt from the (empty) draft rather than showing the previous session's code.
+        .onAppear { regenerate() }
+        .onChange(of: draft) { _, _ in regenerate() }
+        .onChange(of: template) { _, _ in regenerate() }
+    }
+
+    private var templatePicker: some View {
+        Picker("", selection: $template) {
+            ForEach(QRTemplate.allCases) { template in
+                Label(template.title, systemImage: template.iconName).tag(template)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+    }
+
+    @ViewBuilder
+    private var templateFields: some View {
+        switch template {
+        case .text:
+            inputField
+        case .url:
+            formRows {
+                labelledField("URL", placeholder: "example.com", text: $draft.url)
+            }
+        case .wifi:
+            formRows {
+                labelledField("Network", placeholder: "SSID", text: $draft.wifiSSID)
+                // Shown in the clear on purpose: the password is about to be encoded into a
+                // code anyone can scan, so masking it would hide typos and protect nothing.
+                labelledField("Password", placeholder: "Password", text: $draft.wifiPassword)
+                    .disabled(draft.wifiSecurity == .none)
+                    .opacity(draft.wifiSecurity == .none ? 0.45 : 1)
+                labelledControl("Security") {
+                    Picker("", selection: $draft.wifiSecurity) {
+                        ForEach(QRWiFiSecurity.allCases) { security in
+                            Text(security.title).tag(security)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+                labelledControl("Hidden") {
+                    Toggle("", isOn: $draft.wifiIsHidden)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        case .email:
+            formRows {
+                labelledField("To", placeholder: "name@example.com", text: $draft.emailAddress)
+                labelledField("Subject", placeholder: "Optional", text: $draft.emailSubject)
+                labelledField("Body", placeholder: "Optional", text: $draft.emailBody)
+            }
+        case .sms:
+            formRows {
+                labelledField("Number", placeholder: "+1 555 0100", text: $draft.smsNumber)
+                labelledField("Message", placeholder: "Optional", text: $draft.smsMessage)
+            }
+        case .phone:
+            formRows {
+                labelledField("Number", placeholder: "+1 555 0100", text: $draft.phoneNumber)
+            }
+        case .contact:
+            formRows {
+                labelledField("First", placeholder: "Given name", text: $draft.contact.firstName)
+                labelledField("Last", placeholder: "Family name", text: $draft.contact.lastName)
+                labelledField("Company", placeholder: "Optional", text: $draft.contact.organization)
+                labelledField("Title", placeholder: "Optional", text: $draft.contact.jobTitle)
+                labelledField("Phone", placeholder: "Optional", text: $draft.contact.phone)
+                labelledField("Email", placeholder: "Optional", text: $draft.contact.email)
+                labelledField("Website", placeholder: "Optional", text: $draft.contact.url)
+                labelledField("Note", placeholder: "Optional", text: $draft.contact.note)
+            }
+        }
+    }
+
+    /// Templates have between one and eight fields, so the form scrolls inside a fixed frame
+    /// rather than resizing the window every time the template changes.
+    private func formRows<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(spacing: layout.formRowSpacing) {
+                content()
+            }
+            .padding(.vertical, 2)
+        }
+        .frame(height: layout.fieldHeight)
+    }
+
+    private func labelledField(_ title: String, placeholder: String, text: Binding<String>) -> some View {
+        labelledControl(title) {
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: layout.fieldFontSize, weight: .regular))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, layout.fieldHorizontalPadding)
+                .frame(height: layout.formRowHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: layout.fieldCornerRadius, style: .continuous)
+                        .fill(Color.black.opacity(0.22))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: layout.fieldCornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
+                }
+        }
+    }
+
+    private func labelledControl<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: layout.buttonRowSpacing) {
+            Text(title)
+                .font(.system(size: layout.formLabelFontSize, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: layout.formLabelWidth, alignment: .leading)
+
+            content()
         }
     }
 
@@ -139,7 +274,7 @@ public struct QRWindowView: View {
                     Image(systemName: "qrcode")
                         .font(.system(size: layout.placeholderIconSize, weight: .regular))
                         .foregroundStyle(.black.opacity(0.18))
-                    Text("Enter text or a URL")
+                    Text(previewPlaceholder)
                         .font(.system(size: layout.placeholderFontSize, weight: .medium))
                         .foregroundStyle(.black.opacity(0.32))
                 }
@@ -159,7 +294,7 @@ public struct QRWindowView: View {
                         .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
                 }
 
-            if inputText.isEmpty {
+            if draft.text.isEmpty {
                 Text("https://example.com")
                     .font(.system(size: layout.fieldFontSize, weight: .regular))
                     .foregroundStyle(.secondary.opacity(0.6))
@@ -168,15 +303,12 @@ public struct QRWindowView: View {
                     .allowsHitTesting(false)
             }
 
-            TextEditor(text: $inputText)
+            TextEditor(text: $draft.text)
                 .font(.system(size: layout.fieldFontSize, weight: .regular))
                 .foregroundStyle(.primary)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, layout.fieldHorizontalPadding)
                 .padding(.vertical, layout.fieldVerticalPadding)
-                .onChange(of: inputText) { _, newValue in
-                    regenerate(from: newValue)
-                }
         }
         .frame(height: layout.fieldHeight)
     }
@@ -214,7 +346,7 @@ public struct QRWindowView: View {
                 ScrollView {
                     VStack(spacing: layout.contentSpacing) {
                         ForEach(Array(scannedPayloads.enumerated()), id: \.offset) { _, payload in
-                            scanResultCard(payload)
+                            payloadCard(payload)
                         }
                     }
                 }
@@ -222,8 +354,85 @@ public struct QRWindowView: View {
         }
     }
 
-    private func scanResultCard(_ payload: String) -> some View {
+    // MARK: - Decode from file
+
+    private var fileSection: some View {
+        VStack(spacing: layout.contentSpacing) {
+            dropTarget
+
+            if decodedPayloads.isEmpty {
+                Text(fileMessage)
+                    .font(.system(size: layout.fieldFontSize, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, layout.contentSpacing)
+            } else {
+                // A photo of a page can hold several codes; every one of them is shown.
+                ScrollView {
+                    VStack(spacing: layout.contentSpacing) {
+                        ForEach(Array(decodedPayloads.enumerated()), id: \.offset) { _, payload in
+                            payloadCard(payload)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var dropTarget: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: layout.previewCornerRadius, style: .continuous)
+                .fill(Color.accentColor.opacity(isDropTargeted ? 0.22 : 0.10))
+
+            RoundedRectangle(cornerRadius: layout.previewCornerRadius, style: .continuous)
+                .strokeBorder(
+                    Color.accentColor.opacity(isDropTargeted ? 0.9 : 0.45),
+                    style: StrokeStyle(lineWidth: 1.4, dash: [6, 4])
+                )
+
+            VStack(spacing: layout.buttonRowSpacing) {
+                Image(systemName: isDecodingFile ? "hourglass" : "photo.on.rectangle.angled")
+                    .font(.system(size: layout.dropIconSize, weight: .regular))
+                    .foregroundStyle(Color.accentColor.opacity(0.9))
+
+                Text(isDecodingFile ? "Decoding…" : "Drop an image here")
+                    .font(.system(size: layout.primaryButtonFontSize, weight: .bold))
+                    .foregroundStyle(.primary.opacity(0.85))
+
+                Button(action: presentOpenPanel) {
+                    Text("Open…")
+                        .font(.system(size: layout.secondaryButtonFontSize, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, layout.dropButtonHorizontalPadding)
+                        .frame(height: layout.secondaryButtonHeight)
+                        .background(Color.accentColor)
+                        .clipShape(RoundedRectangle(cornerRadius: layout.buttonCornerRadius, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: layout.buttonCornerRadius, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isDecodingFile)
+                .opacity(isDecodingFile ? 0.5 : 1)
+            }
+        }
+        .frame(height: layout.dropHeight)
+        .padding(.top, layout.previewTopPadding)
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers)
+            return true
+        }
+    }
+
+    private func payloadCard(_ payload: String) -> some View {
         VStack(alignment: .leading, spacing: layout.buttonRowSpacing) {
+            // A WIFI:/vCard payload is unreadable as raw text, so name what it is above it.
+            if let summary = QRKit.payloadSummary(payload) {
+                Text(summary)
+                    .font(.system(size: layout.formLabelFontSize, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
             Text(payload)
                 .font(.system(size: layout.fieldFontSize, weight: .medium, design: .monospaced))
                 .foregroundStyle(.primary)
@@ -286,8 +495,20 @@ public struct QRWindowView: View {
 
     // MARK: - Actions
 
-    private func regenerate(from text: String) {
-        qrImage = QRKit.generate(text, scale: 12)
+    private var previewPlaceholder: String {
+        switch template {
+        case .text: "Enter text or a URL"
+        case .url: "Enter a URL"
+        case .wifi: "Enter the network name"
+        case .email: "Enter an email address"
+        case .sms: "Enter a phone number"
+        case .phone: "Enter a phone number"
+        case .contact: "Enter contact details"
+        }
+    }
+
+    private func regenerate() {
+        qrImage = QRKit.generate(QRKit.payload(for: template, draft: draft), scale: 12)
     }
 
     private func copyGeneratedImage() {
@@ -360,6 +581,76 @@ public struct QRWindowView: View {
                     scanMessage = "No QR code or barcode found in that region. Try again."
                 } else {
                     scannedPayloads = payloads
+                }
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) {
+        guard !isDecodingFile,
+              let provider = providers.first(where: {
+                  $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+              }) else {
+            return
+        }
+
+        // Only the first file is decoded: the result list already shows every code found in
+        // one image, and a queue of files would need a picker this panel has no room for.
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else {
+                return
+            }
+            Task { @MainActor in
+                decodeFile(at: url)
+            }
+        }
+    }
+
+    private func presentOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image]
+        panel.prompt = "Decode"
+        panel.message = "Choose an image containing a QR code or barcode"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        decodeFile(at: url)
+    }
+
+    private func decodeFile(at url: URL) {
+        guard !isDecodingFile else {
+            return
+        }
+
+        isDecodingFile = true
+        decodedPayloads = []
+        fileMessage = "Reading \(url.lastPathComponent)…"
+
+        Task {
+            // A full-resolution photo can keep Vision busy for seconds; detaching keeps the
+            // window responsive instead of freezing mid-drop.
+            let outcome = await Task.detached(priority: .userInitiated) {
+                QRKit.decodeResult(imageAt: url)
+            }.value
+
+            // Back on the main actor here — safe to touch @State.
+            isDecodingFile = false
+
+            switch outcome {
+            case .unreadable:
+                fileMessage = "Couldn't read “\(url.lastPathComponent)”. It may have moved or be unreadable."
+            case .notAnImage:
+                fileMessage = "“\(url.lastPathComponent)” isn't an image file."
+            case let .payloads(payloads):
+                if payloads.isEmpty {
+                    fileMessage = "No QR code or barcode found in “\(url.lastPathComponent)”."
+                } else {
+                    decodedPayloads = payloads
                 }
             }
         }
@@ -440,14 +731,16 @@ private struct QRLayout {
 
     var pickerTopPadding: CGFloat { 2 * scale }
 
-    var previewSize: CGFloat { 240 * scale }
+    // Smaller than the old 240 so the template form fits below it without a taller window.
+    var previewSize: CGFloat { 208 * scale }
     var previewCornerRadius: CGFloat { 12 * scale }
     var previewInset: CGFloat { 14 * scale }
     var previewTopPadding: CGFloat { 6 * scale }
     var placeholderIconSize: CGFloat { 56 * scale }
     var placeholderFontSize: CGFloat { 12 * scale }
 
-    var fieldHeight: CGFloat { 64 * scale }
+    // Tall enough for four rows; the contact template scrolls the rest.
+    var fieldHeight: CGFloat { 132 * scale }
     var fieldCornerRadius: CGFloat { 8 * scale }
     var fieldHorizontalPadding: CGFloat { 10 * scale }
     var fieldVerticalPadding: CGFloat { 8 * scale }
@@ -463,4 +756,13 @@ private struct QRLayout {
     var secondaryButtonFontSize: CGFloat { 13 * scale }
 
     var cardPadding: CGFloat { 12 * scale }
+
+    var formRowSpacing: CGFloat { 6 * scale }
+    var formRowHeight: CGFloat { 26 * scale }
+    var formLabelWidth: CGFloat { 68 * scale }
+    var formLabelFontSize: CGFloat { 11 * scale }
+
+    var dropHeight: CGFloat { 150 * scale }
+    var dropIconSize: CGFloat { 34 * scale }
+    var dropButtonHorizontalPadding: CGFloat { 18 * scale }
 }
