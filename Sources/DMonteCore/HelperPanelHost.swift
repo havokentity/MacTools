@@ -461,7 +461,7 @@ public final class HelperPanelHost: NSObject {
             // not been laid out reports a zero-sized frame at the screen origin, and anchoring to
             // that puts the panel in a corner of the wrong display. Centred is the honest answer
             // until the real frame is available.
-            if let anchor, Self.isAnchorReady(anchor), let window = anchor.window,
+            if let anchor, StatusItemAnchor.isPlaced(anchor), let window = anchor.window,
                let screen = window.screen ?? NSScreen.main {
                 frame = HelperPanelPlacement.anchoredFrame(
                     for: size,
@@ -536,97 +536,20 @@ public final class HelperPanelHost: NSObject {
         return window.convertToScreen(viewFrameInWindow)
     }
 
-    /// How many consecutive identical samples count as "the status item has stopped moving".
-    private static let requiredStableAnchorSamples = 3
-
-    /// The anchor's screen frame if it is currently sitting in a menu bar, otherwise `nil`.
-    ///
-    /// Size alone is not the signal: a status item's button reports its real size immediately
-    /// while its window still sits at the screen origin, so a frame that looks perfectly valid
-    /// can describe a point nowhere near the menu bar. Position is the test — a status item
-    /// lives *above* its screen's visible frame, in the menu bar strip.
-    static func placedAnchorFrame(_ view: NSView?) -> NSRect? {
-        guard let view, let window = view.window else { return nil }
-        let frame = anchorFrameOnScreen(for: view, in: window)
-        guard frame.width > 0, frame.height > 0 else { return nil }
-
-        let screen = window.screen
-            ?? NSScreen.screens.first(where: { $0.frame.intersects(frame) })
-            ?? NSScreen.main
-        guard let screen else { return nil }
-        return frame.midY > screen.visibleFrame.maxY ? frame : nil
-    }
-
     static func isAnchorReady(_ view: NSView?) -> Bool {
-        placedAnchorFrame(view) != nil
+        StatusItemAnchor.isPlaced(view)
     }
 
-    /// `show()`, but only once the status item has stopped moving.
-    ///
-    /// "Is it in the menu bar yet" is not enough. Measured on a cold `--open` launch, the item
-    /// takes three distinct positions before it is done:
-    ///
-    ///     t=0.00  (0, -13)      not placed
-    ///     t=0.00  (2536, 1410)  placed — top right
-    ///     t=0.10  (0, -30)      back to the origin
-    ///     t=0.20  (1393, 1484)  final
-    ///
-    /// Showing at the first placed frame anchors the panel to the top-right corner and leaves it
-    /// there while the icon moves elsewhere. So poll until the frame repeats unchanged a few
-    /// times over, and only then show.
-    ///
-    /// The poll is a timer rather than a re-dispatch: `async` hops elapse in microseconds and
-    /// would expire long before the status bar has finished, which is the same as not waiting.
-    /// After `timeout` it shows regardless — an unanchored panel is a cosmetic problem, a panel
-    /// that never appears is a broken tool.
+    /// `show()`, but only once the status item has stopped moving. See `StatusItemAnchor` for why
+    /// neither "it exists" nor "it is in the menu bar" is a sufficient signal on its own.
     public func showWhenAnchored(timeout: TimeInterval = 2, pollInterval: TimeInterval = 0.05) {
-        showWhenAnchorSettles(
-            remaining: timeout,
-            pollInterval: pollInterval,
-            lastFrame: nil,
-            stableSamples: 0
-        )
-    }
-
-    private func showWhenAnchorSettles(
-        remaining: TimeInterval,
-        pollInterval: TimeInterval,
-        lastFrame: NSRect?,
-        stableSamples: Int
-    ) {
-        let frame = Self.placedAnchorFrame(anchorView())
-
-        if let frame, frame == lastFrame {
-            let samples = stableSamples + 1
-            if samples >= Self.requiredStableAnchorSamples {
-                show()
-                return
-            }
-            scheduleAnchorSettleCheck(remaining: remaining, pollInterval: pollInterval, lastFrame: frame, stableSamples: samples)
-            return
-        }
-
-        guard remaining > 0 else {
-            show()
-            return
-        }
-        // Frame changed (or is not placed yet): restart the stability count from this sample.
-        scheduleAnchorSettleCheck(remaining: remaining, pollInterval: pollInterval, lastFrame: frame, stableSamples: 0)
-    }
-
-    private func scheduleAnchorSettleCheck(
-        remaining: TimeInterval,
-        pollInterval: TimeInterval,
-        lastFrame: NSRect?,
-        stableSamples: Int
-    ) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + pollInterval) { [weak self] in
-            self?.showWhenAnchorSettles(
-                remaining: remaining - pollInterval,
-                pollInterval: pollInterval,
-                lastFrame: lastFrame,
-                stableSamples: stableSamples
-            )
+        StatusItemAnchor.whenSettled(
+            { [weak self] in self?.anchorView() },
+            timeout: timeout,
+            pollInterval: pollInterval
+        ) { [weak self] in
+            self?.show()
         }
     }
+
 }
