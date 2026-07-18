@@ -522,6 +522,15 @@ final class CalendarKitTests: XCTestCase {
         XCTAssertEqual(url?.pathComponents.last, "acct/one:evt")
     }
 
+    func testEventShowURLEscapesAPercentInTheIdentifier() {
+        // `%` is the escape marker itself, so an identifier that already looks escaped — `%2F` reading
+        // as a slash — must survive as literal text rather than decoding into a different address.
+        let url = CalendarKit.eventShowURL(eventIdentifier: "id%2Fother", occurrenceDate: nil)
+        XCTAssertEqual(url?.absoluteString, "ical://ekevent/id%252Fother?method=show&options=more")
+        XCTAssertEqual(url?.pathComponents.count, 2, "Expected / and the identifier.")
+        XCTAssertEqual(url?.pathComponents.last, "id%2Fother")
+    }
+
     func testEventShowURLRoundTripsAUnicodeIdentifier() {
         let identifier = "café-日程-🎉"
         let url = CalendarKit.eventShowURL(eventIdentifier: identifier, occurrenceDate: nil)
