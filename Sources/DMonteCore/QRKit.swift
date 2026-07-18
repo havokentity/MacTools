@@ -442,10 +442,17 @@ public extension QRKit {
         // semicolons are separators, so only the escaped values go between them.
         lines.append("N:\(escapedVCardValue(lastName));\(escapedVCardValue(firstName));;;")
 
-        // FN is mandatory in 3.0. Fall back to the organisation so a company-only card is
-        // still a valid vCard rather than one importers reject.
+        // FN is mandatory in 3.0 and an empty one imports as a nameless card, so it falls back
+        // through everything that can stand in for a label: company, then the contact details
+        // themselves. Only a phone number or an email is enough to make a card worth sharing.
         let fullName = [firstName, lastName].filter { !$0.isEmpty }.joined(separator: " ")
-        lines.append("FN:\(escapedVCardValue(fullName.isEmpty ? organization : fullName))")
+        let displayName = [
+            fullName,
+            organization,
+            contact.email.trimmingCharacters(in: .whitespacesAndNewlines),
+            contact.phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        ].first { !$0.isEmpty } ?? ""
+        lines.append("FN:\(escapedVCardValue(displayName))")
 
         if !organization.isEmpty {
             lines.append("ORG:\(escapedVCardValue(organization))")
@@ -635,19 +642,23 @@ private extension QRKit {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
-    /// Reduces a typed phone number to what a dialler accepts: digits plus a leading "+".
-    /// Spaces, dashes and brackets are how people write numbers but are not valid in a
-    /// `tel:` URI, and stripping them beats emitting a URI scanners refuse to act on.
+    /// Reduces a typed phone number to what a dialler accepts: digits, a leading "+", and the
+    /// "*"/"#" keys. Spaces, dashes and brackets are how people write numbers but are not valid
+    /// in a `tel:` URI, and stripping them beats emitting a URI scanners refuse to act on.
+    ///
+    /// "*" and "#" are kept because RFC 3966 counts them as digits: dropping them turned "*611"
+    /// into "611" and silently produced a code that dials a different number.
     static func dialableNumber(_ number: String) -> String {
         var result = ""
         for character in number {
-            if character.isASCII, character.isNumber {
+            if character.isASCII, character.isNumber || character == "*" || character == "#" {
                 result.append(character)
             } else if character == "+", result.isEmpty {
                 result.append(character)
             }
         }
-        return result == "+" ? "" : result
+        // Punctuation alone ("+", "**") is not a number; requiring a digit keeps `tel:*` out.
+        return result.contains(where: { $0.isASCII && $0.isNumber }) ? result : ""
     }
 
     /// Maps a `T:` token onto a security mode. Writers in the wild emit WPA2/WPA3 even though
@@ -668,7 +679,13 @@ private extension QRKit {
         guard let first = scheme.first, first.isLetter else {
             return false
         }
-        return scheme.allSatisfy { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" || $0 == "." }
+        // RFC 3986 permits "." inside a scheme, but nobody types one: what actually looks like
+        // this is a host and port ("example.com:8080", "nas.local:5000"). Reading that as a
+        // scheme emitted a code no scanner would open, so a dotted prefix means host, not scheme.
+        guard !scheme.contains(".") else {
+            return false
+        }
+        return scheme.allSatisfy { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" }
     }
 
     static func appendVCardLine(_ lines: inout [String], name: String, value: String) {

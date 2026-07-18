@@ -420,7 +420,6 @@ public struct QRWindowView: View {
         .padding(.top, layout.previewTopPadding)
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
-            return true
         }
     }
 
@@ -547,14 +546,24 @@ public struct QRWindowView: View {
         pasteboard.setString(string, forType: .string)
     }
 
+    /// The URL the Open button should hand to the system, or `nil` to hide the button.
+    ///
+    /// An allow-list rather than "anything with a host": payloads now arrive from image files
+    /// that came from anywhere, so one click must not be able to launch an arbitrary registered
+    /// handler (`smb:`, `vnc:`, some other app's private scheme) off the back of a code someone
+    /// else generated. Copy still works for everything, so nothing is unreachable.
     private func openableURL(from payload: String) -> URL? {
         guard let url = URL(string: payload.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let scheme = url.scheme,
-              !scheme.isEmpty,
-              url.host != nil || scheme == "mailto" || scheme == "tel" else {
+              let scheme = url.scheme?.lowercased() else {
             return nil
         }
-        return url
+
+        switch scheme {
+        // A web link with no host is malformed, and "http:///" opens a blank window.
+        case "http", "https": return url.host == nil ? nil : url
+        case "mailto", "tel", "sms", "facetime": return url
+        default: return nil
+        }
     }
 
     private func startScan() {
@@ -586,24 +595,33 @@ public struct QRWindowView: View {
         }
     }
 
-    private func handleDrop(_ providers: [NSItemProvider]) {
-        guard !isDecodingFile,
-              let provider = providers.first(where: {
-                  $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
-              }) else {
-            return
+    /// Returns whether the drop was taken, so a drag carrying no file lands with the standard
+    /// rejection animation instead of being swallowed with no result and no explanation.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !isDecodingFile else {
+            return false
+        }
+        guard let provider = providers.first(where: {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }) else {
+            decodedPayloads = []
+            fileMessage = "That isn't a file. Drop an image, or use Open… to pick one."
+            return false
         }
 
         // Only the first file is decoded: the result list already shows every code found in
         // one image, and a queue of files would need a picker this panel has no room for.
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
-            guard let url else {
-                return
-            }
             Task { @MainActor in
+                guard let url else {
+                    decodedPayloads = []
+                    fileMessage = "Couldn't read the dropped item."
+                    return
+                }
                 decodeFile(at: url)
             }
         }
+        return true
     }
 
     private func presentOpenPanel() {

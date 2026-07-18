@@ -167,6 +167,54 @@ final class QRKitTests: XCTestCase {
         }
     }
 
+    func testWiFiPayloadRoundTripsEveryCombinationOfReservedCharacters() {
+        // Hand-picked awkward values only prove the cases someone thought of. This walks every
+        // three-character string over the reserved alphabet (plus a space, a newline, unicode
+        // and a hex digit, which triggers the quoting rule) through build → parse.
+        let alphabet = ["a", "\\", ";", ",", ":", "\"", " ", "☕️", "网", "\n", "0", "F"]
+
+        for first in alphabet {
+            for second in alphabet {
+                for third in alphabet {
+                    let ssid = first + second + third
+                    let password = third + second + first
+                    let payload = QRKit.wifiPayload(
+                        ssid: ssid,
+                        password: password,
+                        security: .wpa,
+                        isHidden: true
+                    )
+                    XCTAssertEqual(
+                        QRKit.parseWiFiPayload(payload),
+                        QRWiFiNetwork(ssid: ssid, password: password, security: .wpa, isHidden: true),
+                        "Lost data for ssid \(ssid.debugDescription) / password "
+                            + "\(password.debugDescription) via \(payload.debugDescription)"
+                    )
+                }
+            }
+        }
+    }
+
+    func testVCardEscapingRoundTripsEveryCombinationOfReservedCharacters() {
+        let alphabet = ["a", "\\", ";", ",", ":", "\"", " ", "☕️", "\n", "\r\n", "n", "N"]
+
+        for first in alphabet {
+            for second in alphabet {
+                for third in alphabet {
+                    let value = first + second + third
+                    // CRLF legitimately normalises to LF: the vCard escape is a single "\n".
+                    let expected = value.replacingOccurrences(of: "\r\n", with: "\n")
+                    XCTAssertEqual(
+                        QRKit.unescapedVCardValue(QRKit.escapedVCardValue(value)),
+                        expected,
+                        "Lost data for \(value.debugDescription) via "
+                            + "\(QRKit.escapedVCardValue(value).debugDescription)"
+                    )
+                }
+            }
+        }
+    }
+
     func testParseWiFiPayloadRejectsNonWiFiPayloads() {
         XCTAssertNil(QRKit.parseWiFiPayload("https://example.com"))
         XCTAssertNil(QRKit.parseWiFiPayload("WIFI:"))
@@ -275,6 +323,38 @@ final class QRKitTests: XCTestCase {
         XCTAssertTrue(payload.contains("FN:Acme"), "FN is mandatory in vCard 3.0. Payload: \(payload)")
     }
 
+    func testContactPayloadNeverEmitsAnEmptyFullName() {
+        // A nameless card imports as a blank contact, so FN falls through to whatever identifies
+        // the card. Every partially filled contact must still name itself somehow.
+        let cases: [(QRContact, String)] = [
+            (QRContact(phone: "5550100"), "FN:5550100"),
+            (QRContact(email: "ada@example.com"), "FN:ada@example.com"),
+            (QRContact(email: "ada@example.com", note: "met at the conference"), "FN:ada@example.com"),
+            (QRContact(organization: "Acme", email: "ada@example.com"), "FN:Acme"),
+            (QRContact(firstName: "Ada", organization: "Acme"), "FN:Ada")
+        ]
+
+        for (contact, expected) in cases {
+            let payload = QRKit.contactPayload(contact)
+            XCTAssertTrue(
+                payload.contains(expected),
+                "Expected \(expected) in payload:\n\(payload)"
+            )
+            XCTAssertFalse(
+                payload.contains("FN:\r\n"),
+                "FN must never be empty. Payload:\n\(payload)"
+            )
+        }
+    }
+
+    func testContactPayloadWithOnlyANoteStillNamesItself() {
+        // A note is the one field that cannot stand in for a name; the card is still valid,
+        // but this pins the behaviour rather than leaving it accidental.
+        let payload = QRKit.contactPayload(QRContact(note: "hello"))
+        XCTAssertTrue(payload.contains("NOTE:hello"))
+        XCTAssertTrue(payload.hasPrefix("BEGIN:VCARD"))
+    }
+
     func testContactPayloadIsEmptyForEmptyContact() {
         XCTAssertEqual(QRKit.contactPayload(QRContact()), "")
         XCTAssertEqual(QRKit.contactPayload(QRContact(firstName: "   ", note: "\n")), "")
@@ -291,6 +371,17 @@ final class QRKitTests: XCTestCase {
         XCTAssertEqual(QRKit.urlPayload("ftp://example.com"), "ftp://example.com")
         XCTAssertEqual(QRKit.urlPayload(""), "")
         XCTAssertEqual(QRKit.urlPayload("   "), "")
+    }
+
+    func testURLPayloadTreatsHostAndPortAsAHostNotAScheme() {
+        // "." is legal in a scheme, so "example.com:8080" parsed as one and shipped a code no
+        // scanner would open. A dotted prefix is a host.
+        XCTAssertEqual(QRKit.urlPayload("example.com:8080"), "https://example.com:8080")
+        XCTAssertEqual(QRKit.urlPayload("nas.local:5000/photos"), "https://nas.local:5000/photos")
+        XCTAssertEqual(QRKit.urlPayload("192.168.1.5:8080"), "https://192.168.1.5:8080")
+        // Real schemes must keep working, including the ones whose body is all digits.
+        XCTAssertEqual(QRKit.urlPayload("tel:5550100"), "tel:5550100")
+        XCTAssertEqual(QRKit.urlPayload("https://example.com:8080"), "https://example.com:8080")
     }
 
     func testEmailPayloadPercentEncodesQueryItems() {
@@ -323,6 +414,18 @@ final class QRKitTests: XCTestCase {
         XCTAssertEqual(QRKit.phonePayload(""), "")
         // A "+" that isn't leading is punctuation, not a country-code marker.
         XCTAssertEqual(QRKit.phonePayload("555+0100"), "tel:5550100")
+    }
+
+    func testPhonePayloadKeepsStarAndHashKeys() {
+        // RFC 3966 counts "*" and "#" as digits. Dropping them silently rewrote "*611" to the
+        // entirely different number "611".
+        XCTAssertEqual(QRKit.phonePayload("*611"), "tel:*611")
+        XCTAssertEqual(QRKit.phonePayload("*#06#"), "tel:*#06#")
+        XCTAssertEqual(QRKit.smsPayload(number: "*611", message: "hi"), "SMSTO:*611:hi")
+        // Punctuation with no digit at all is not a number.
+        XCTAssertEqual(QRKit.phonePayload("*"), "")
+        XCTAssertEqual(QRKit.phonePayload("#"), "")
+        XCTAssertEqual(QRKit.phonePayload("*#"), "")
     }
 
     func testTextPayloadIsVerbatim() {
