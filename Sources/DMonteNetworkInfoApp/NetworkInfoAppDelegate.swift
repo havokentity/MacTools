@@ -50,12 +50,13 @@ final class NetworkInfoAppDelegate: NSObject, NSApplicationDelegate {
 
         // The distributed notification above only covers a *second* launch. On the first one this
         // process is the primary instance, so nothing posts it and the Toolbox tile would appear
-        // to do nothing — reveal the panel here instead. Deferred a runloop turn so the status
-        // item has a button to anchor to.
+        // to do nothing — reveal the panel here instead.
+        //
+        // `showWhenAnchored` rather than a one-turn `async`: the status item's button has a window
+        // before the status bar has sized it, so showing too early anchors the panel to a
+        // zero-sized rect at the screen origin and it opens in the corner of another display.
         if CommandLine.arguments.contains("--open") {
-            DispatchQueue.main.async { [weak self] in
-                self?.panelHost?.show()
-            }
+            panelHost?.showWhenAnchored()
         }
     }
 
