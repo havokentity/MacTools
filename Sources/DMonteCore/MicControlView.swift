@@ -190,10 +190,6 @@ public struct MicControlPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Text(MicControlKit.actionTitle(for: controller.state))
-                .font(.system(size: s(12), weight: .semibold))
-                .foregroundStyle(.secondary)
-
             Spacer()
 
             Button {

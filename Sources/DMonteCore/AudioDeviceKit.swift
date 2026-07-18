@@ -95,9 +95,9 @@ public enum AudioDeviceKit {
     /// device exposes no readable volume control there. Tries the main element
     /// first, then averages per-channel scalars as a fallback.
     ///
-    /// `scope` defaults to output because that was this function's only behaviour
-    /// before input devices needed it; input gain lives on a genuinely different
-    /// property, so a device can answer for one scope and not the other.
+    /// Playback volume is the overwhelmingly common ask, so `scope` defaults to
+    /// output. The two scopes are separate CoreAudio properties even on one
+    /// device, so a device can answer for one direction and not the other.
     public static func volume(
         for deviceID: AudioDeviceID,
         scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput

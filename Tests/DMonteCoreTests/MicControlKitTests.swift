@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import CoreAudio
 @testable import DMonteCore
 
@@ -153,17 +154,46 @@ final class MicControlKitTests: XCTestCase {
 
     // MARK: - Registration
 
-    func testMicControlIsRegisteredInTheCatalog() {
-        let tool = ToolboxCatalog.all.first { $0.id == "micControl" }
-        let micControl = try? XCTUnwrap(tool)
-        XCTAssertEqual(micControl?.executableName, "DMonteMicControl")
-        XCTAssertEqual(micControl?.bundleID, "com.havokentity.mactools.miccontrol")
-        XCTAssertEqual(micControl?.appName, "DMonte Mic Control.app")
+    func testMicControlIsRegisteredInTheCatalog() throws {
+        // `try XCTUnwrap`, not `try?`: if the catalog entry ever disappears the
+        // test must fail here, rather than silently degrading into a series of
+        // comparisons against `nil`.
+        let micControl = try XCTUnwrap(ToolboxCatalog.all.first { $0.id == "micControl" })
+        XCTAssertEqual(micControl.executableName, "DMonteMicControl")
+        XCTAssertEqual(micControl.bundleID, "com.havokentity.mactools.miccontrol")
+        XCTAssertEqual(micControl.appName, "DMonte Mic Control.app")
         // The helper's own observer registers exactly this name; if the two ever
         // drift, "Open" from the Toolbox silently does nothing.
         XCTAssertEqual(
-            micControl?.showNotification.rawValue,
+            micControl.showNotification.rawValue,
             "com.havokentity.mactools.miccontrol.showWindow"
+        )
+    }
+
+    // MARK: - Glyph resolution
+
+    func testEveryTrayGlyphResolvesToARealSFSymbol() throws {
+        // `trayGlyphName` returns names resolved at runtime. A typo or a symbol
+        // that does not exist on the deployment target does not crash — AppKit
+        // just hands back nil and the menu bar item renders blank, which is the
+        // one failure this tool cannot afford. Pin the names against the real
+        // symbol catalogue so a bad one fails here instead of in the menu bar.
+        for state in MicControlKit.MicState.allCases {
+            let name = MicControlKit.trayGlyphName(for: state)
+            XCTAssertNotNil(
+                NSImage(systemSymbolName: name, accessibilityDescription: nil),
+                "\(state) maps to \"\(name)\", which is not a resolvable SF Symbol"
+            )
+        }
+    }
+
+    func testCatalogIconResolvesToARealSFSymbol() throws {
+        // Same failure mode in the Toolbox grid: an unresolvable icon name leaves
+        // a blank tile rather than raising anything.
+        let micControl = try XCTUnwrap(ToolboxCatalog.all.first { $0.id == "micControl" })
+        XCTAssertNotNil(
+            NSImage(systemSymbolName: micControl.iconName, accessibilityDescription: nil),
+            "Catalog icon \"\(micControl.iconName)\" is not a resolvable SF Symbol"
         )
     }
 
