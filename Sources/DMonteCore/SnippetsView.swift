@@ -306,30 +306,38 @@ private struct SnippetRow: View {
 
     var body: some View {
         HStack(spacing: s(10)) {
-            RoundedRectangle(cornerRadius: s(6), style: .continuous)
-                .fill(Color.accentColor.opacity(0.16))
-                .frame(width: s(28), height: s(28))
-                .overlay(
-                    Image(systemName: snippet.pastesADifferentValueEachTime ? "calendar.badge.clock" : "text.alignleft")
-                        .font(.system(size: s(12), weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                )
+            // The paste tap covers the icon, the labels and the gap — but deliberately NOT the
+            // action buttons. A tap gesture on the whole row swallowed the reorder and delete
+            // buttons nested inside it, so pressing Move Up pasted the snippet and dismissed the
+            // panel instead of moving anything.
+            HStack(spacing: s(10)) {
+                RoundedRectangle(cornerRadius: s(6), style: .continuous)
+                    .fill(Color.accentColor.opacity(0.16))
+                    .frame(width: s(28), height: s(28))
+                    .overlay(
+                        Image(systemName: snippet.pastesADifferentValueEachTime ? "calendar.badge.clock" : "text.alignleft")
+                            .font(.system(size: s(12), weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    )
 
-            VStack(alignment: .leading, spacing: s(1)) {
-                Text(snippet.displayTitle)
-                    .font(.system(size: s(12.5), weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                VStack(alignment: .leading, spacing: s(1)) {
+                    Text(snippet.displayTitle)
+                        .font(.system(size: s(12.5), weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
 
-                Text(snippet.previewText)
-                    .font(.system(size: s(10)))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    Text(snippet.previewText)
+                        .font(.system(size: s(10)))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: s(4))
             }
-
-            Spacer(minLength: s(4))
+            .contentShape(Rectangle())
+            .onTapGesture { onPaste() }
 
             if isHovered {
                 rowActions
@@ -345,9 +353,7 @@ private struct SnippetRow: View {
             RoundedRectangle(cornerRadius: s(8), style: .continuous)
                 .strokeBorder(Color.accentColor.opacity(isSelected ? 0.5 : 0), lineWidth: 1)
         )
-        .contentShape(RoundedRectangle(cornerRadius: s(8), style: .continuous))
         .onHover { isHovered = $0 }
-        .onTapGesture { onPaste() }
         .contextMenu {
             Button("Paste") { onPaste() }
             Button("Edit…") { onEdit() }

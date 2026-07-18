@@ -37,6 +37,9 @@ final class SnippetsAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDefaults.registerDefaults()
 
+        // The snippet editor is a text field, and without a main menu ⌘C/⌘V/⌘A/⌘Z do not reach it.
+        HelperMainMenu.installEditMenuIfNeeded()
+
         controller.onRequestClose = { [weak self] in
             self?.panelHost?.close()
         }

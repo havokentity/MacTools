@@ -108,6 +108,15 @@ public final class SnippetsController: ObservableObject {
 
     /// Copies the snippet (placeholders resolved) and pastes it into the app the user came from.
     public func paste(_ snippet: Snippet) {
+        // Checked *before* dismissing. Closing first and reporting afterwards means the banner is
+        // set on a panel the user can no longer see, so a missing permission looks exactly like
+        // "pressing Return just closes the window" — the failure is invisible and unexplained.
+        guard ClipboardPaste.hasAccessibilityPermission else {
+            needsAccessibility = true
+            ClipboardPaste.promptForAccessibilityPermission()
+            return
+        }
+
         let text = SnippetsKit.pasteText(for: snippet)
         let target = pasteTarget
         // Dismiss first so focus is back in the target app before ⌘V is synthesized.
