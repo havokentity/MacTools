@@ -34,12 +34,16 @@ concurrency:
   # different `github.ref`, so a per-tag group would let exactly the two runs
   # that most need serializing race each other.
   #
-  # Known cost of the single group: GitHub keeps only the newest PENDING run per
-  # group, so three tags pushed back-to-back drop the middle one. That failure is
-  # safe (nothing is published and the tag still exists) and is recovered by
-  # re-running this workflow manually with version/tag_name set for the tag that
-  # was skipped — the tag exists, so the run rebuilds from it and publishes
-  # normally without needing force_republish.
+  # Known cost of the single group: the default queue depth is one, and
+  # `cancel-in-progress: false` does not deepen it. Per GitHub's workflow-syntax
+  # reference, “any existing pending job or workflow in the same concurrency
+  # group will be canceled and the new queued job or workflow will take its
+  # place.” So of three tags pushed back-to-back the first runs, the second goes
+  # pending, and the third cancels the second. That failure is safe (nothing is
+  # published and the tag still exists) and is recovered by re-running this
+  # workflow manually with version/tag_name set for the tag that was skipped —
+  # the tag exists, so the run rebuilds from it and publishes normally without
+  # needing force_republish.
   group: ${{ github.workflow }}
   # NEVER cancel a release that is already running. Between `gh release create`
   # and the asset uploads there is a window where the release exists with no (or
