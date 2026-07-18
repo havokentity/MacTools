@@ -75,24 +75,28 @@ public final class AppVolumeMixerController: ObservableObject {
         // The debounced gain write has to survive quit, and the `deinit` flush
         // below cannot carry it: the delegate holds this controller for the life
         // of the process and `NSApp.terminate` exits without unwinding it, so
-        // deinit never runs in the shipping app. No token is kept — the observer
-        // holds `self` weakly and outlives nothing, so there is nothing to undo.
+        // deinit never runs in the shipping app.
         //
-        // `queue: nil` is load-bearing, not an omission: it is the only
-        // documented way to get the block run *synchronously on the posting
-        // thread*. Handing this an OperationQueue risks the block being
-        // enqueued rather than run, and nothing drains the main queue after
-        // `willTerminate` — the write would be dropped exactly when it matters,
-        // silently. AppKit always posts this on the main thread, so the block
-        // is already on the main actor and `assumeIsolated` holds.
-        _ = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.flushPendingGainPersistence()
-            }
+        // Selector-based rather than block-based because the delivery has to be
+        // *synchronous on the posting thread* — nothing drains the main queue
+        // after `willTerminate`, so an enqueued write would be dropped exactly
+        // when it matters, silently. Selector observers are always called
+        // synchronously, and unlike a block observer the registration can be
+        // undone in `deinit` without keeping a token alive.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationWillTerminate),
+            name: NSApplication.willTerminateNotification,
+            object: nil
+        )
+    }
+
+    /// `nonisolated` so the hop is explicit: AppKit always posts this on the
+    /// main thread, which `assumeIsolated` asserts rather than assumes.
+    @objc
+    private nonisolated func handleApplicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            flushPendingGainPersistence()
         }
     }
 
@@ -108,6 +112,12 @@ public final class AppVolumeMixerController: ObservableObject {
         for engine in audioEngines.values {
             engine.stop()
         }
+        // Last: passing `self` out of a deinit bars every later property read.
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSApplication.willTerminateNotification,
+            object: nil
+        )
     }
 
     public func refresh() {

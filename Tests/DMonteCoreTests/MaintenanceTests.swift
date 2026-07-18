@@ -6,13 +6,22 @@ final class MaintenanceTests: XCTestCase {
     /// `defaults` accepts a plist PATH in place of a domain name, and that form
     /// bypasses cfprefsd entirely — it edits the file directly.
     ///
-    /// A named domain cannot be used here. cfprefsd applies a write
-    /// asynchronously, so `defaults write` exits 0 before the value is
-    /// readable; the very next `defaults read` then reports "the domain/default
-    /// pair does not exist" and the assertion fails. Measured at roughly one
-    /// run in three locally, which on CI is an unexplainable red build. A
-    /// per-test temp file also keeps the suite out of the real preferences
-    /// directory, so a test run leaves nothing behind on the machine.
+    /// A named domain cannot be used here, for two separate reasons, both
+    /// measured:
+    ///
+    /// 1. cfprefsd applies a write asynchronously, so `defaults write` exits 0
+    ///    before the value is readable; the very next `defaults read` then
+    ///    reports "the domain/default pair does not exist" and the assertion
+    ///    fails. Roughly one run in three locally.
+    /// 2. A named domain is shared process-wide, so two concurrent `swift test`
+    ///    runs — parallel worktrees, or a local run alongside CI on the same
+    ///    machine — write and delete the same key underneath each other.
+    ///    Reproduced at one to seven failures per run.
+    ///
+    /// A per-test temp file fixes both: it bypasses cfprefsd, and the UUID in
+    /// the path gives every run its own domain. It also keeps the suite out of
+    /// the real preferences directory, so a test run leaves nothing behind on
+    /// the machine.
     private var testDomain = ""
     private let testKey = "MaintenanceUnitTestFlag"
     private var tempDirectory: URL?
