@@ -156,8 +156,8 @@ final class VideoDownloaderTests: XCTestCase {
     }
 
     func testVideoModeArgumentsAreJustTheQualitySelector() {
-        // Audio-only is the only mode that adds flags; video mode must keep producing
-        // exactly what it did before the mode switch existed.
+        // Video mode emits the quality selector and nothing else — every other flag
+        // here belongs to the extract-audio pipeline.
         XCTAssertEqual(
             VideoDownloaderKit.mediaSelectionArguments(mode: .video, quality: .high, audioFormat: .mp3),
             ["-f", VideoQuality.high.ytDlpFormat]
@@ -165,50 +165,68 @@ final class VideoDownloaderTests: XCTestCase {
     }
 
     func testAudioOnlyArgumentsUseExtractAudioWithTheChosenFormat() {
-        for format in VideoAudioFormat.allCases {
-            let arguments = VideoDownloaderKit.mediaSelectionArguments(
-                mode: .audioOnly,
-                quality: .maximum,
-                audioFormat: format
-            )
+        // Pinned as whole arrays: these are what gets handed to a process, and an
+        // assertion that only spot-checks membership would pass on a flag emitted
+        // with the wrong value beside it.
+        XCTAssertEqual(
+            VideoDownloaderKit.mediaSelectionArguments(mode: .audioOnly, quality: .maximum, audioFormat: .m4a),
+            ["-f", "bestaudio[ext=m4a]/bestaudio/best", "-x", "--audio-format", "m4a", "--audio-quality", "0"]
+        )
+        XCTAssertEqual(
+            VideoDownloaderKit.mediaSelectionArguments(mode: .audioOnly, quality: .low, audioFormat: .mp3),
+            ["-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "0"]
+        )
+    }
 
-            XCTAssertTrue(arguments.contains("-x"), format.rawValue)
-            guard let formatIndex = arguments.firstIndex(of: "--audio-format") else {
-                return XCTFail("no --audio-format for \(format.rawValue)")
+    func testAudioOnlyIgnoresTheVideoQualityTier() {
+        // A height-capped video selector in an audio run would pull down a video
+        // stream that the extract step then throws away.
+        for quality in VideoQuality.allCases {
+            for format in VideoAudioFormat.allCases {
+                let arguments = VideoDownloaderKit.mediaSelectionArguments(
+                    mode: .audioOnly,
+                    quality: quality,
+                    audioFormat: format
+                )
+
+                XCTAssertFalse(arguments.contains(quality.ytDlpFormat), "\(quality.rawValue)/\(format.rawValue)")
+                XCTAssertEqual(
+                    arguments,
+                    VideoDownloaderKit.mediaSelectionArguments(mode: .audioOnly, quality: .maximum, audioFormat: format)
+                )
             }
-            XCTAssertEqual(arguments[formatIndex + 1], format.rawValue)
-
-            // The video quality tier must not leak into an audio-only run: it would
-            // pull down a video stream that the extract step throws away.
-            XCTAssertFalse(arguments.contains(VideoQuality.maximum.ytDlpFormat), format.rawValue)
         }
     }
 
-    func testAudioOnlySelectsAnAudioOnlyStreamAndPrefersM4ANatively() {
-        // M4A can be remuxed straight from YouTube's m4a stream; asking for the best
-        // audio outright would land on Opus and force a pointless re-encode.
+    func testOnlyM4APinsAContainerInItsFormatSelector() {
+        // M4A leads with YouTube's native m4a stream so the extract step can remux.
+        // MP3 must *not* do the same: it re-encodes whatever it gets, so pinning m4a
+        // would throw away a better Opus source for nothing.
         XCTAssertTrue(VideoAudioFormat.m4a.ytDlpFormat.hasPrefix("bestaudio[ext=m4a]"))
-        XCTAssertTrue(VideoAudioFormat.mp3.ytDlpFormat.hasPrefix("bestaudio"))
+        XCTAssertFalse(VideoAudioFormat.mp3.ytDlpFormat.contains("ext="))
 
         for format in VideoAudioFormat.allCases {
-            // Sources with no audio-only stream still have to work.
+            // Sources with no audio-only stream still have to work: the extractor
+            // strips the video track off a premuxed file.
             XCTAssertTrue(format.ytDlpFormat.hasSuffix("/best"), format.rawValue)
         }
     }
 
-    func testAudioOnlyRequestsBestQualityForTheTranscode() {
-        let arguments = VideoDownloaderKit.mediaSelectionArguments(mode: .audioOnly, quality: .low, audioFormat: .mp3)
-        guard let index = arguments.firstIndex(of: "--audio-quality") else {
-            return XCTFail("no --audio-quality")
-        }
-        XCTAssertEqual(arguments[index + 1], "0")
-    }
-
     func testOutputTemplateLeavesTheExtensionToYTDLP() {
-        // yt-dlp's extract-audio step renames the file to the audio format itself, so
-        // the template stays extension-agnostic in both modes.
         let template = VideoDownloaderKit.outputTemplate(saveDirectory: temporaryDirectory)
-        XCTAssertEqual(template, temporaryDirectory.appendingPathComponent("%(title).200B.%(ext)s").path)
+
+        XCTAssertTrue(template.hasPrefix(temporaryDirectory.path + "/"))
+
+        // yt-dlp's extract-audio step renames the file to the audio format itself, so
+        // naming any extension here would only fight it.
+        XCTAssertTrue(template.hasSuffix(".%(ext)s"))
+        for format in VideoAudioFormat.allCases {
+            XCTAssertFalse(template.contains(format.fileExtension), format.rawValue)
+        }
+
+        // .200B caps the title in *bytes*, not characters: a CJK or emoji title would
+        // otherwise sail past the filesystem's 255-byte name limit.
+        XCTAssertTrue(template.contains("%(title).200B"))
     }
 
     func testExtractedAudioPathSwapsTheExtension() {
@@ -227,6 +245,40 @@ final class VideoDownloaderTests: XCTestCase {
         XCTAssertEqual(
             VideoDownloaderKit.extractedAudioPath(fromDownloadedPath: "/tmp/Clip", audioFormat: .mp3),
             "/tmp/Clip"
+        )
+    }
+
+    func testExtractedAudioPathKeepsARelativePathRelative() {
+        // downloadedFileURL resolves a bare name against the save directory. Deriving
+        // through URL(fileURLWithPath:) would anchor it to the process working
+        // directory instead and point the lookup somewhere else entirely.
+        XCTAssertEqual(
+            VideoDownloaderKit.extractedAudioPath(fromDownloadedPath: "Song.webm", audioFormat: .mp3),
+            "Song.mp3"
+        )
+    }
+
+    func testExtractedAudioPathHandlesDottedAndUnicodeTitles() {
+        XCTAssertEqual(
+            VideoDownloaderKit.extractedAudioPath(fromDownloadedPath: "/tmp/Vol. 2 — Ünïcodé 🎵.webm", audioFormat: .m4a),
+            "/tmp/Vol. 2 — Ünïcodé 🎵.m4a"
+        )
+    }
+
+    func testDownloadedFileURLResolvesADerivedRelativePathAgainstTheSaveDirectory() throws {
+        let audioURL = temporaryDirectory.appendingPathComponent("Song.mp3")
+        FileManager.default.createFile(atPath: audioURL.path, contents: Data())
+
+        // yt-dlp logged a bare file name, and the extract-audio line never arrived.
+        let output = "[download] Destination: Song.webm"
+
+        XCTAssertEqual(
+            VideoDownloaderRunner.downloadedFileURL(
+                from: output,
+                saveDirectory: temporaryDirectory,
+                audioFormat: .mp3
+            ),
+            audioURL
         )
     }
 
@@ -280,6 +332,56 @@ final class VideoDownloaderTests: XCTestCase {
 
         XCTAssertEqual(progress?.detail, "Extracting audio")
         XCTAssertNil(progress?.fraction)
+    }
+
+    func testProgressPhaseIsTakenFromTheLastLineOfTheChunk() {
+        // A whole download of a short track can land in one pipe read. Every earlier
+        // phase in the chunk is already over by the time it is parsed, so matching any
+        // of them would park the row on a stale label for the entire postprocess.
+        let wholeRun = """
+        [download] Destination: /tmp/Talk.webm
+        [download]  42.0% of 4.00MiB at 1.20MiB/s ETA 00:02
+        [download] 100% of 4.00MiB
+        [ExtractAudio] Destination: /tmp/Talk.mp3
+        """
+
+        XCTAssertEqual(VideoDownloaderRunner.parseProgress(from: wholeRun)?.detail, "Extracting audio")
+
+        // Same masking, video side: yt-dlp prints a Destination line per stream, so a
+        // merge is always preceded by one.
+        let merge = """
+        [download] Destination: /tmp/Clip.f251.webm
+        [download] 100% of 9.00MiB
+        [Merger] Merging formats into "/tmp/Clip.mp4"
+        """
+
+        XCTAssertEqual(VideoDownloaderRunner.parseProgress(from: merge)?.detail, "Merging")
+
+        // And a second stream starting after the first one finished reports that
+        // stream's progress, not the previous stream's completion.
+        let secondStream = """
+        [download] 100% of 9.00MiB
+        [download] Destination: /tmp/Clip.f140.m4a
+        [download]   7.0% of 300.00KiB at 500.00KiB/s ETA 00:01
+        """
+        let progress = VideoDownloaderRunner.parseProgress(from: secondStream)
+
+        XCTAssertEqual(progress?.fraction, 0.07)
+        XCTAssertEqual(progress?.detail, "at 500.00KiB/s  ETA 00:01")
+    }
+
+    func testProgressStillReportsPreparingAndFinishing() {
+        XCTAssertEqual(
+            VideoDownloaderRunner.parseProgress(from: "[download] Destination: /tmp/Clip.mp4")?.detail,
+            "Preparing file"
+        )
+
+        let finishing = VideoDownloaderRunner.parseProgress(from: "[download] 100% of 4.00MiB in 00:03")
+        XCTAssertEqual(finishing?.detail, "Finishing")
+        XCTAssertEqual(finishing?.fraction, 1)
+
+        XCTAssertNil(VideoDownloaderRunner.parseProgress(from: ""))
+        XCTAssertNil(VideoDownloaderRunner.parseProgress(from: "[youtube] Extracting URL: https://example.com"))
     }
 
     func testProgressStillReportsDownloadPercentInAudioMode() {

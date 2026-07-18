@@ -1125,34 +1125,40 @@ enum VideoDownloaderRunner {
             return nil
         }
 
-        if text.localizedCaseInsensitiveContains("[download] destination:") {
-            return Progress(fraction: nil, detail: "Preparing file")
-        }
-
-        // Post-processing is checked before the 100% line because it runs *after* it,
-        // and a single pipe read can carry both: an audio extraction or merge that
-        // takes a minute would otherwise sit on "Finishing" the whole time, and — for
-        // audio — the extract step's own "100%" would be the last thing shown.
-        if text.localizedCaseInsensitiveContains("[ExtractAudio]") {
-            return Progress(fraction: nil, detail: "Extracting audio")
-        }
-
-        if text.localizedCaseInsensitiveContains("[Merger]") {
-            return Progress(fraction: nil, detail: "Merging")
-        }
-
-        if text.localizedCaseInsensitiveContains("[download] 100%") {
-            return Progress(fraction: 1, detail: "Finishing")
-        }
-
+        // yt-dlp narrates a run in order and one pipe read can carry many of its lines,
+        // so only the *last* line that says anything about progress is still true.
+        // Matching phase keywords against the whole chunk instead lets an earlier line
+        // mask a later one: a postprocessor starts after both the "Destination:" line
+        // and the 100% line, so the row would sit on "Preparing file" or "Finishing"
+        // for the whole of a transcode or a merge — precisely the stretch that is slow
+        // enough to need a label of its own.
         let lines = text
             .split(separator: "\n")
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.hasPrefix("[download]") }
 
         for line in lines.reversed() {
+            if line.localizedCaseInsensitiveContains("[ExtractAudio]") {
+                return Progress(fraction: nil, detail: "Extracting audio")
+            }
+
+            if line.localizedCaseInsensitiveContains("[Merger]") {
+                return Progress(fraction: nil, detail: "Merging")
+            }
+
+            guard line.hasPrefix("[download]") else {
+                continue
+            }
+
+            if line.localizedCaseInsensitiveContains("destination:") {
+                return Progress(fraction: nil, detail: "Preparing file")
+            }
+
             guard let percent = downloadPercent(in: line) else {
                 continue
+            }
+
+            guard percent < 100 else {
+                return Progress(fraction: 1, detail: "Finishing")
             }
 
             let speed = capture(in: line, pattern: #" at\s+(.+?)(?:\s+ETA|$)"#)

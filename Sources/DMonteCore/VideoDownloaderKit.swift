@@ -50,13 +50,19 @@ public enum VideoDownloaderKit {
         fromDownloadedPath downloadedPath: String,
         audioFormat: VideoAudioFormat
     ) -> String {
-        let url = URL(fileURLWithPath: downloadedPath)
+        // Rewritten lexically rather than through URL: yt-dlp can log a bare file name,
+        // and `URL(fileURLWithPath:)` would resolve that against the *process* working
+        // directory, handing back an absolute path pointing outside the save directory
+        // the caller then looks in.
+        let path = downloadedPath as NSString
+
         // A path with no extension is left alone: appending one would invent a file
         // name yt-dlp never wrote.
-        guard !url.pathExtension.isEmpty else {
+        guard !path.pathExtension.isEmpty else {
             return downloadedPath
         }
 
-        return url.deletingPathExtension().appendingPathExtension(audioFormat.fileExtension).path
+        return (path.deletingPathExtension as NSString)
+            .appendingPathExtension(audioFormat.fileExtension) ?? downloadedPath
     }
 }
