@@ -91,17 +91,24 @@ public enum AudioDeviceKit {
 
     // MARK: - Volume
 
-    /// The output volume of a device in `0...1`, or `nil` if the device exposes
-    /// no readable volume control. Tries the main element first, then averages
-    /// per-channel scalars as a fallback.
-    public static func volume(for deviceID: AudioDeviceID) -> Float? {
-        if let main = volumeScalar(deviceID, element: kAudioObjectPropertyElementMain) {
+    /// The volume of a device in `0...1` for the given direction, or `nil` if the
+    /// device exposes no readable volume control there. Tries the main element
+    /// first, then averages per-channel scalars as a fallback.
+    ///
+    /// `scope` defaults to output because that was this function's only behaviour
+    /// before input devices needed it; input gain lives on a genuinely different
+    /// property, so a device can answer for one scope and not the other.
+    public static func volume(
+        for deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput
+    ) -> Float? {
+        if let main = volumeScalar(deviceID, scope: scope, element: kAudioObjectPropertyElementMain) {
             return clamp01(main)
         }
         // Fall back to per-channel: average channels 1 and 2 if present.
         var values: [Float] = []
         for channel: AudioObjectPropertyElement in [1, 2] {
-            if let v = volumeScalar(deviceID, element: channel) {
+            if let v = volumeScalar(deviceID, scope: scope, element: channel) {
                 values.append(v)
             }
         }
@@ -110,18 +117,22 @@ public enum AudioDeviceKit {
         return clamp01(avg)
     }
 
-    /// Sets the output volume of a device, clamped to `0...1`. Writes to the main
-    /// element if settable, otherwise writes each settable per-channel scalar.
-    /// Returns `true` if at least one element was updated.
+    /// Sets the volume of a device for the given direction, clamped to `0...1`.
+    /// Writes to the main element if settable, otherwise writes each settable
+    /// per-channel scalar. Returns `true` if at least one element was updated.
     @discardableResult
-    public static func setVolume(_ value: Float, for deviceID: AudioDeviceID) -> Bool {
+    public static func setVolume(
+        _ value: Float,
+        for deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput
+    ) -> Bool {
         let target = clamp01(value)
-        if setVolumeScalar(target, deviceID: deviceID, element: kAudioObjectPropertyElementMain) {
+        if setVolumeScalar(target, deviceID: deviceID, scope: scope, element: kAudioObjectPropertyElementMain) {
             return true
         }
         var didSet = false
         for channel: AudioObjectPropertyElement in [1, 2] {
-            if setVolumeScalar(target, deviceID: deviceID, element: channel) {
+            if setVolumeScalar(target, deviceID: deviceID, scope: scope, element: channel) {
                 didSet = true
             }
         }
@@ -130,11 +141,18 @@ public enum AudioDeviceKit {
 
     // MARK: - Mute
 
-    /// Whether the device's output is muted, or `nil` if no mute control exists.
-    public static func isMuted(_ deviceID: AudioDeviceID) -> Bool? {
+    /// Whether the device is muted in the given direction, or `nil` if no mute
+    /// control exists there. A `nil` answer is the honest "this device cannot be
+    /// muted" signal — plenty of USB interfaces and aggregate devices expose no
+    /// input mute at all — and callers are expected to disable their control
+    /// rather than pretend the write succeeded.
+    public static func isMuted(
+        _ deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput
+    ) -> Bool? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioObjectPropertyScopeOutput,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
         guard AudioObjectHasProperty(deviceID, &address) else { return nil }
@@ -145,12 +163,37 @@ public enum AudioDeviceKit {
         return muted != 0
     }
 
-    /// Sets the device's output mute state. Returns `true` on success.
-    @discardableResult
-    public static func setMuted(_ muted: Bool, for deviceID: AudioDeviceID) -> Bool {
+    /// Whether the device's mute state for the given direction can actually be
+    /// *written*. A device can advertise a readable mute property that is
+    /// nonetheless read-only, in which case a UI that only checked `isMuted`
+    /// would offer a mute button that silently does nothing.
+    public static func isMuteSettable(
+        _ deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput
+    ) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioObjectPropertyScopeOutput,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectHasProperty(deviceID, &address) else { return false }
+        var isSettable: DarwinBoolean = false
+        guard AudioObjectIsPropertySettable(deviceID, &address, &isSettable) == noErr else { return false }
+        return isSettable.boolValue
+    }
+
+    /// Sets the device's mute state for the given direction. Returns `true` on
+    /// success. Setting the mute property is a device-control write, not audio
+    /// capture, so it needs no microphone TCC grant even in the input scope.
+    @discardableResult
+    public static func setMuted(
+        _ muted: Bool,
+        for deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput
+    ) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
         guard AudioObjectHasProperty(deviceID, &address) else { return false }
@@ -274,10 +317,14 @@ public enum AudioDeviceKit {
         return status == noErr
     }
 
-    private static func volumeScalar(_ deviceID: AudioDeviceID, element: AudioObjectPropertyElement) -> Float? {
+    private static func volumeScalar(
+        _ deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope,
+        element: AudioObjectPropertyElement
+    ) -> Float? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioObjectPropertyScopeOutput,
+            mScope: scope,
             mElement: element
         )
         guard AudioObjectHasProperty(deviceID, &address) else { return nil }
@@ -289,10 +336,15 @@ public enum AudioDeviceKit {
     }
 
     @discardableResult
-    private static func setVolumeScalar(_ value: Float, deviceID: AudioDeviceID, element: AudioObjectPropertyElement) -> Bool {
+    private static func setVolumeScalar(
+        _ value: Float,
+        deviceID: AudioDeviceID,
+        scope: AudioObjectPropertyScope,
+        element: AudioObjectPropertyElement
+    ) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioObjectPropertyScopeOutput,
+            mScope: scope,
             mElement: element
         )
         guard AudioObjectHasProperty(deviceID, &address) else { return false }

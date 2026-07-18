@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org) and the
 ## [Unreleased]
 
 ### Added
+- **Mic Control**, a new tool: mutes and unmutes the default input device
+  system‑wide, so every app listening to it goes quiet at once. The menu bar
+  icon is the point — a slashed mic when you're muted, a filled one when you're
+  live — and CoreAudio property listeners keep it truthful when something else
+  (a meeting app, Control Center, unplugging the mic) changes the state behind
+  its back. Shows the device's input level as a slider where the hardware
+  offers one, and says so plainly when a device exposes no mute control instead
+  of offering a button that does nothing. Setting a device's mute switch is not
+  audio capture, so it needs no microphone permission.
 - Continuous integration: every push and pull request now builds the package
   and runs the full test suite on a pinned macOS runner, using the same
   toolchain the release workflow ships with. Previously only version tags ran

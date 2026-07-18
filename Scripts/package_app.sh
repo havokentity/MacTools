@@ -36,6 +36,7 @@ HELPERS=(
   "DMonteGrabText|DMonte Grab Text.app|GrabTextInfo.plist"
   "DMonteFocusTimer|DMonte Focus Timer.app|FocusTimerInfo.plist"
   "DMonteWindowManager|DMonte Window Manager.app|WindowManagerInfo.plist"
+  "DMonteMicControl|DMonte Mic Control.app|MicControlInfo.plist"
 )
 
 stamp_version() {
