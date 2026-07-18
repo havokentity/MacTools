@@ -1,4 +1,5 @@
 import CoreAudio
+import Foundation
 
 /// A `Sendable` box that owns one CoreAudio property-listener registration and
 /// knows how to tear it down. Kept separate from the `@MainActor` controllers that
