@@ -222,7 +222,16 @@ public final class CalendarController: ObservableObject {
         let events = store.events(matching: predicate)
         var days: Set<Date> = []
         for event in events {
-            days.insert(calendar.startOfDay(for: event.startDate))
+            guard let start = event.startDate else { continue }
+            days.formUnion(
+                Self.eventDays(
+                    start: start,
+                    end: event.endDate ?? start,
+                    monthStart: monthStart,
+                    monthEnd: monthEnd,
+                    calendar: calendar
+                )
+            )
         }
         daysWithEvents = days
     }
@@ -265,9 +274,37 @@ public final class CalendarController: ObservableObject {
 
     // MARK: - Helpers
 
+    /// The in-month days an event covers, as midnight `Date`s clamped to `[monthStart, monthEnd)`.
+    /// An event can span days or have started before the displayed month, so the grid dots every day
+    /// it overlaps rather than just its first. An event ending exactly at midnight doesn't dot the
+    /// day it ends on. Internal (and pure) so the day math is unit-testable without EventKit.
+    nonisolated static func eventDays(
+        start: Date,
+        end: Date,
+        monthStart: Date,
+        monthEnd: Date,
+        calendar: Calendar
+    ) -> Set<Date> {
+        // An event wholly before the month doesn't overlap it; a zero-length event stamped exactly
+        // at `monthStart` does.
+        guard start >= monthStart || end > monthStart else { return [] }
+        var days: Set<Date> = []
+        var day = calendar.startOfDay(for: max(start, monthStart))
+        while day < monthEnd {
+            days.insert(day)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day), next < end else { break }
+            day = next
+        }
+        return days
+    }
+
     private static func makeItem(from event: EKEvent) -> CalendarEventItem {
-        CalendarEventItem(
-            id: event.eventIdentifier ?? UUID().uuidString,
+        // Every occurrence of a recurring event shares one `eventIdentifier`, so the row id also
+        // carries the occurrence date — which stays put even when an occurrence is detached and
+        // moved — to keep list identities unique and stable across reloads.
+        let occurrence = event.occurrenceDate ?? event.startDate ?? Date()
+        return CalendarEventItem(
+            id: "\(event.eventIdentifier ?? event.calendarItemIdentifier)-\(occurrence.timeIntervalSinceReferenceDate)",
             title: event.title ?? "(No title)",
             start: event.startDate ?? Date(),
             end: event.endDate ?? event.startDate ?? Date(),

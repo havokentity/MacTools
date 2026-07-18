@@ -38,6 +38,7 @@ final class VideoDownloaderAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        VideoDownloaderProcesses.terminateAll()
         windowHost?.tearDownForTermination()
     }
 

@@ -293,10 +293,13 @@ public enum CleanDriveScanner {
             return UInt64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
         }
 
+        // Packages (.app, .photoslibrary, …) are ordinary directories here: a cache or
+        // Trash item can nest whole app bundles, and bestEffortRemove erases them, so
+        // sizing must descend into them or the reported total understates the delete.
         guard let enumerator = FileManager.default.enumerator(
             at: url,
             includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey],
-            options: [.skipsPackageDescendants]
+            options: []
         ) else {
             return 0
         }

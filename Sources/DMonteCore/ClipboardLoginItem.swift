@@ -9,11 +9,18 @@ public enum ClipboardLoginItem {
     private static let label = "com.havokentity.mactools.clipboard"
 
     public static func setEnabled(_ isEnabled: Bool) {
-        if isEnabled {
-            install()
-        } else {
+        guard isEnabled else {
             uninstall()
+            return
         }
+        // A translocated copy can't record a durable agent path (see isTranslocated), so enabling
+        // from one installs nothing — yet the caller has already persisted the toggle ON. Clear it
+        // back so the switch can't read enabled while login launch silently never happens.
+        if let executablePath = Bundle.main.executableURL?.path, isTranslocated(executablePath) {
+            AppDefaults.shared.set(false, forKey: DefaultsKey.clipboardOpenAtLogin)
+            return
+        }
+        install()
     }
 
     public static func refreshIfEnabled() {
@@ -58,7 +65,17 @@ public enum ClipboardLoginItem {
         install(executablePath: executablePath)
     }
 
+    /// macOS App Translocation runs a quarantined copy — a freshly unzipped download, say — from
+    /// a read-only temp mount that is torn down when the app quits. Recording that path would
+    /// leave launchd failing silently at every login, so a translocated copy keeps its hands off
+    /// the agent and lets the installed copy stay in charge.
+    private static func isTranslocated(_ executablePath: String) -> Bool {
+        executablePath.contains("/AppTranslocation/")
+    }
+
     private static func install(executablePath: String) {
+        guard !isTranslocated(executablePath) else { return }
+
         do {
             try FileManager.default.createDirectory(
                 at: launchAgentsDirectory,

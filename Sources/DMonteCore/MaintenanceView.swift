@@ -21,33 +21,39 @@ public final class MaintenanceController: ObservableObject {
     /// Whether the most recent operation failed (drives the status colour).
     @Published public private(set) var statusIsError: Bool = false
 
+    /// In-flight `refreshToggles` work, cancelled when a toggle write starts so
+    /// a read that began before the write cannot publish over it.
+    private var refreshTask: Task<Void, Never>?
+
     public init() {}
 
     /// Reads the live state of every toggle from `defaults`. Called on appear.
     public func refreshToggles() {
-        Task.detached {
+        refreshTask?.cancel()
+        refreshTask = Task.detached {
             var states: [String: Bool] = [:]
             for section in MaintenanceKit.sections {
                 for toggle in section.toggles {
-                    let value = MaintenanceKit.readDefaultsBool(domain: toggle.domain, key: toggle.key)
-                    states[toggle.id] = value
+                    states[toggle.id] = MaintenanceKit.currentValue(of: toggle)
                 }
             }
             let resolved = states
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.toggleStates = resolved
             }
         }
     }
 
     public func isOn(_ toggle: MaintenanceKit.MaintenanceToggle) -> Bool {
-        toggleStates[toggle.id] ?? false
+        toggleStates[toggle.id] ?? toggle.defaultWhenMissing
     }
 
     /// Flips a toggle: optimistically updates the UI, writes the new value, and
     /// restarts the associated process if needed.
     public func setToggle(_ toggle: MaintenanceKit.MaintenanceToggle, to newValue: Bool) {
         guard runningID == nil else { return }
+        refreshTask?.cancel()
         toggleStates[toggle.id] = newValue          // optimistic
         runningID = toggle.id
         setStatus("Updating \u{201C}\(toggle.title)\u{201D}\u{2026}", isError: false)
@@ -141,6 +147,14 @@ public final class MaintenanceController: ObservableObject {
 /// The Maintenance popover. Data-driven from `MaintenanceKit.sections`.
 public struct MaintenancePopoverView: View {
 
+    /// Posted by the host when the panel is about to show. The panel is cached
+    /// (`creation: .onFirstShow`) and closing only orders it out, so `onAppear`
+    /// fires once for the process — without this the toggles would keep showing
+    /// whatever the system reported at first show, even after the user changed a
+    /// setting in Finder or System Settings.
+    public static let willShowNotification =
+        Notification.Name("com.havokentity.mactools.maintenance.willShow")
+
     @StateObject private var controller = MaintenanceController()
     private let onQuit: () -> Void
 
@@ -163,6 +177,9 @@ public struct MaintenancePopoverView: View {
         .frame(width: MaintenanceSizing.popoverWidth)
         .frostedPanel(cornerRadius: MaintenanceSizing.s(18))
         .onAppear { controller.refreshToggles() }
+        .onReceive(NotificationCenter.default.publisher(for: Self.willShowNotification)) { _ in
+            controller.refreshToggles()
+        }
     }
 
     // MARK: Sections

@@ -21,7 +21,7 @@ public final class SystemMonitor: ObservableObject {
         isRunning = true
         refresh()
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard self?.isRunning == true else {
                     return
@@ -30,6 +30,11 @@ public final class SystemMonitor: ObservableObject {
                 self?.refresh()
             }
         }
+        timer.tolerance = 0.2
+        // Common mode keeps the sampling alive while a menu tracks the run loop, so the metrics
+        // don't freeze for as long as the tray item's context menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     public func stop() {

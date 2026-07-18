@@ -97,6 +97,64 @@ final class VideoDownloaderTests: XCTestCase {
         XCTAssertEqual(key, "https://www.youtube.com/watch?v=wLOWk_RR1dg")
     }
 
+    func testSanitizedURLRejectsOptionLikeText() {
+        // yt-dlp reads a leading dash as an option, so clipboard text like "-U" would
+        // make it self-update rather than download anything.
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString("-U"))
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString("  --update  "))
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString("--config-locations=/tmp/evil.conf"))
+    }
+
+    func testSanitizedURLRejectsNonWebText() {
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString(""))
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString("   "))
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString("not a url"))
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString("file:///etc/passwd"))
+        XCTAssertNil(VideoDownloaderModel.sanitizedURLString("ftp://example.com/clip.mp4"))
+    }
+
+    func testSanitizedURLKeepsWebLinksAndAssumesHTTPSForBareHosts() {
+        XCTAssertEqual(
+            VideoDownloaderModel.sanitizedURLString("  https://x.com/i/status/1  "),
+            "https://x.com/i/status/1"
+        )
+        XCTAssertEqual(
+            VideoDownloaderModel.sanitizedURLString("http://example.com/clip.mp4"),
+            "http://example.com/clip.mp4"
+        )
+        XCTAssertEqual(
+            VideoDownloaderModel.sanitizedURLString("youtube.com/watch?v=wLOWk_RR1dg"),
+            "https://youtube.com/watch?v=wLOWk_RR1dg"
+        )
+    }
+
+    func testEveryQualityRequestsAMergeBeforeFallingBackToPremuxed() {
+        // `best` on its own only ever matches a premuxed file, which YouTube caps at
+        // 720p — so each tier must ask for a video+audio merge first.
+        for quality in VideoQuality.allCases {
+            let format = quality.ytDlpFormat
+            XCTAssertTrue(format.hasPrefix("bestvideo*"), "\(quality.rawValue): \(format)")
+            XCTAssertTrue(format.contains("+bestaudio"), "\(quality.rawValue): \(format)")
+            XCTAssertTrue(format.hasSuffix("/best"), "\(quality.rawValue): \(format)")
+        }
+    }
+
+    func testQualityHeightLimitAppliesToMergeSelectorsToo() {
+        let limits: [VideoQuality: String] = [.high: "1080", .normal: "720", .low: "360"]
+
+        for (quality, limit) in limits {
+            let selectors = quality.ytDlpFormat.split(separator: "/").map(String.init)
+            // The last selector is the unconstrained fallback; everything before it
+            // carries the tier's ceiling.
+            XCTAssertEqual(selectors.last, "best", quality.rawValue)
+            for selector in selectors.dropLast() {
+                XCTAssertTrue(selector.contains("[height<=\(limit)]"), "\(quality.rawValue): \(selector)")
+            }
+        }
+
+        XCTAssertFalse(VideoQuality.maximum.ytDlpFormat.contains("height<="))
+    }
+
     func testSubtitleEnglishAndSystemNeverRequestsAll() {
         // The whole point of the fix: this mode never emits "all" (triggers YouTube's 429).
         let langs = VideoSubtitleMode.englishAndSystem.subtitleLanguageArgument(preferredLanguages: ["fr-FR", "de-DE"])

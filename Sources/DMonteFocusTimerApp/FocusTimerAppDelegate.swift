@@ -12,7 +12,11 @@ enum FocusTimerNotifications {
 
 @MainActor
 final class FocusTimerAppDelegate: NSObject, NSApplicationDelegate {
-    private let controller = FocusTimerController()
+    /// Built lazily, on the first access in `applicationDidFinishLaunching` — i.e. *after*
+    /// `AppDefaults.registerDefaults()`. The controller seeds its countdown from the persisted focus
+    /// duration in `init`, and a registration domain only exists once registered in this process, so
+    /// an eagerly-created controller would read 0 minutes and clamp the session to 1 minute.
+    private lazy var controller = FocusTimerController()
 
     private var statusItem: HelperStatusItem?
     /// Idle glyph shown on the status button when no session is running; the button shows the
@@ -29,13 +33,12 @@ final class FocusTimerAppDelegate: NSObject, NSApplicationDelegate {
     /// on the first phase completion so the prompt never appears merely on launch).
     private var didRequestNotificationAuth = false
 
-    /// Tracks the previous phase so we only chime when the controller actually advances.
-    private var lastPhase: FocusPhase = .focus
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDefaults.registerDefaults()
 
-        lastPhase = controller.phase
+        controller.onPhaseAdvance = { [weak self] in
+            self?.announcePhaseTransition()
+        }
 
         let host = HelperPanelHost(
             configuration: HelperPanelHost.Configuration(
@@ -73,8 +76,8 @@ final class FocusTimerAppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.remove()
     }
 
-    /// Keep the tray button and chime logic in sync with the controller. A single sink fires on any
-    /// published change (tick, phase change, run/pause), which is exactly when the title may differ.
+    /// Keep the tray button in sync with the controller. A single sink fires on any published
+    /// change (tick, phase change, run/pause), which is exactly when the title may differ.
     private func observeControllerState() {
         controller.objectWillChange
             .receive(on: RunLoop.main)
@@ -82,18 +85,10 @@ final class FocusTimerAppDelegate: NSObject, NSApplicationDelegate {
                 // `objectWillChange` fires *before* the new value is applied; defer to the next run
                 // loop pass so we read the updated state.
                 DispatchQueue.main.async {
-                    self?.handleControllerChange()
+                    self?.refreshStatusTitle()
                 }
             }
             .store(in: &cancellables)
-    }
-
-    private func handleControllerChange() {
-        if controller.phase != lastPhase {
-            lastPhase = controller.phase
-            announcePhaseTransition()
-        }
-        refreshStatusTitle()
     }
 
     /// Draws the remaining time when a session is active (running or paused mid-phase), otherwise the

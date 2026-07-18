@@ -2,28 +2,36 @@ import AppKit
 import CoreAudio
 import SwiftUI
 
-/// A `Sendable` box that owns the CoreAudio device-list listener registration and
+/// A `Sendable` box that owns one CoreAudio property-listener registration and
 /// knows how to tear it down. Kept separate from the `@MainActor` controller so it
 /// can be released from the controller's nonisolated `deinit` without touching
 /// actor-isolated, non-`Sendable` state.
-private final class DevicesListenerRegistration: @unchecked Sendable {
+private final class PropertyListenerRegistration: @unchecked Sendable {
+    private let objectID: AudioObjectID
+    private let address: AudioObjectPropertyAddress
     private let block: AudioObjectPropertyListenerBlock
     private var installed = false
 
-    init?(onChange: @escaping @Sendable () -> Void) {
+    init?(
+        objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope,
+        element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain,
+        onChange: @escaping @Sendable () -> Void
+    ) {
         let block: AudioObjectPropertyListenerBlock = { _, _ in
             // CoreAudio invokes this on the dispatch queue we supply (main).
             onChange()
         }
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
+            mSelector: selector,
+            mScope: scope,
+            mElement: element
         )
-        let status = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
-        )
+        let status = AudioObjectAddPropertyListenerBlock(objectID, &address, DispatchQueue.main, block)
         guard status == noErr else { return nil }
+        self.objectID = objectID
+        self.address = address
         self.block = block
         self.installed = true
     }
@@ -31,15 +39,51 @@ private final class DevicesListenerRegistration: @unchecked Sendable {
     func remove() {
         guard installed else { return }
         installed = false
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectRemovePropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block
-        )
+        var address = self.address
+        AudioObjectRemovePropertyListenerBlock(objectID, &address, DispatchQueue.main, block)
     }
+}
+
+/// Owns the volume/mute listeners for whichever device is currently the default
+/// output, re-pointing them when the default changes. Volume and mute are
+/// per-device properties, so they cannot be observed once and for all — and the
+/// element is a wildcard because a device may expose volume on its main element
+/// or only per-channel (mirroring `AudioDeviceKit.volume(for:)`).
+private final class DefaultOutputStateListener: @unchecked Sendable {
+    private let onChange: @Sendable () -> Void
+    private let lock = NSLock()
+    private var observedDeviceID: AudioDeviceID?
+    private var registrations: [PropertyListenerRegistration] = []
+
+    init(onChange: @escaping @Sendable () -> Void) {
+        self.onChange = onChange
+    }
+
+    /// Points the listeners at `deviceID`; a no-op when it is already observed.
+    func observe(deviceID: AudioDeviceID?) {
+        lock.lock()
+        guard deviceID != observedDeviceID else {
+            lock.unlock()
+            return
+        }
+        observedDeviceID = deviceID
+        let previous = registrations
+        registrations = (deviceID.map { id in
+            [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute].compactMap { selector in
+                PropertyListenerRegistration(
+                    objectID: id,
+                    selector: selector,
+                    scope: kAudioObjectPropertyScopeOutput,
+                    element: kAudioObjectPropertyElementWildcard,
+                    onChange: onChange
+                )
+            }
+        }) ?? []
+        lock.unlock()
+        previous.forEach { $0.remove() }
+    }
+
+    func remove() { observe(deviceID: nil) }
 }
 
 /// Drives the Audio Switcher popover: enumerates devices, tracks the current
@@ -56,14 +100,40 @@ public final class AudioSwitcherController: ObservableObject {
     @Published public var isMuted: Bool = false
     @Published public private(set) var muteSupported: Bool = false
 
-    private let listener: DevicesListenerRegistration?
+    /// True while the user is dragging the volume slider. Our own `setVolume`
+    /// fires the HAL volume listener, whose refresh would otherwise stamp the
+    /// hardware's (quantised, slightly-lagged) reading back onto the value the
+    /// slider is bound to, making the thumb stutter under the finger.
+    private var isAdjustingVolume = false
+
+    /// System-object listeners: the device list plus both defaults. Without the
+    /// default-device ones the popover keeps showing — and writes volume/mute to —
+    /// whichever device was default when it last refreshed, even though Control
+    /// Center or System Settings has since moved playback elsewhere.
+    private let listeners: [PropertyListenerRegistration]
+    private let outputStateListener: DefaultOutputStateListener
 
     public init() {
-        // Install the device-list listener before `self` is fully initialized by
-        // capturing only a plain function, then refresh on the main actor.
-        listener = DevicesListenerRegistration {
+        // Install the listeners before `self` is fully initialized by capturing
+        // only plain functions, then refresh on the main actor.
+        listeners = [
+            kAudioHardwarePropertyDevices,
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioHardwarePropertyDefaultInputDevice
+        ].compactMap { selector in
+            PropertyListenerRegistration(
+                objectID: AudioObjectID(kAudioObjectSystemObject),
+                selector: selector,
+                scope: kAudioObjectPropertyScopeGlobal
+            ) {
+                Task { @MainActor in
+                    AudioSwitcherController.notifyHardwareChanged()
+                }
+            }
+        }
+        outputStateListener = DefaultOutputStateListener {
             Task { @MainActor in
-                AudioSwitcherController.notifyDeviceListChanged()
+                AudioSwitcherController.notifyOutputStateChanged()
             }
         }
         refresh()
@@ -71,17 +141,23 @@ public final class AudioSwitcherController: ObservableObject {
     }
 
     deinit {
-        // `deinit` is nonisolated. The listener box is `Sendable` and removes the
-        // CoreAudio registration without touching any actor-isolated state.
-        listener?.remove()
+        // `deinit` is nonisolated. The listener boxes are `Sendable` and remove the
+        // CoreAudio registrations without touching any actor-isolated state.
+        listeners.forEach { $0.remove() }
+        outputStateListener.remove()
     }
 
-    // A weak handle to the live controller so the (static) listener callback can
+    // A weak handle to the live controller so the (static) listener callbacks can
     // route refreshes back without capturing non-Sendable instance state.
     @MainActor private static weak var activeController: AudioSwitcherController?
 
-    @MainActor private static func notifyDeviceListChanged() {
+    @MainActor private static func notifyHardwareChanged() {
         activeController?.refresh()
+    }
+
+    @MainActor private static func notifyOutputStateChanged() {
+        // Volume/mute moved on the device we already track: no need to re-enumerate.
+        activeController?.refreshVolumeAndMute()
     }
 
     /// Reloads the full device list, defaults, and volume/mute state.
@@ -91,6 +167,9 @@ public final class AudioSwitcherController: ObservableObject {
         inputDevices = all.filter { $0.hasInput }
         defaultOutputID = AudioDeviceKit.defaultOutputDeviceID()
         defaultInputID = AudioDeviceKit.defaultInputDeviceID()
+        // Volume/mute are properties of the default output device, so the
+        // listener has to follow it whenever it changes.
+        outputStateListener.observe(deviceID: defaultOutputID)
         refreshVolumeAndMute()
     }
 
@@ -104,10 +183,15 @@ public final class AudioSwitcherController: ObservableObject {
         }
         if let vol = AudioDeviceKit.volume(for: outputID) {
             volumeSupported = true
-            volume = vol
+            // Don't yank the slider out from under an active drag.
+            if !isAdjustingVolume {
+                volume = vol
+            }
         } else {
             volumeSupported = false
-            volume = 0
+            if !isAdjustingVolume {
+                volume = 0
+            }
         }
         if let muted = AudioDeviceKit.isMuted(outputID) {
             muteSupported = true
@@ -132,6 +216,16 @@ public final class AudioSwitcherController: ObservableObject {
     public func applyVolume(_ value: Float) {
         guard let outputID = defaultOutputID, volumeSupported else { return }
         AudioDeviceKit.setVolume(value, for: outputID)
+    }
+
+    /// The slider's `onEditingChanged`: while editing, the HAL listener's
+    /// refresh must not overwrite the value being dragged. On release we
+    /// re-read the hardware so the control reflects the true final level.
+    public func setVolumeEditing(_ editing: Bool) {
+        isAdjustingVolume = editing
+        if !editing {
+            refreshVolumeAndMute()
+        }
     }
 
     public func toggleMute() {
@@ -232,7 +326,10 @@ public struct AudioSwitcherPopoverView: View {
                         controller.applyVolume(newValue)
                     }
                 ),
-                in: 0...1
+                in: 0...1,
+                onEditingChanged: { editing in
+                    controller.setVolumeEditing(editing)
+                }
             )
 
             Text("\(Int((controller.volume * 100).rounded()))%")

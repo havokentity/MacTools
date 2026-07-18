@@ -61,7 +61,24 @@ DENO_DIR="$("$ROOT_DIR/Scripts/fetch_deno.sh")"
 # Pool of virtual cables for the Audio Router tool. Non-fatal: if the build
 # fails (offline / no Xcode), the tool still ships and works for mirror/combine —
 # it just can't offer one-click cable install until a pool is present.
-BLACKHOLE_POOL_DIR="$("$ROOT_DIR/Scripts/fetch_blackhole.sh" 2>/dev/null || true)"
+#
+# stderr is captured to a file rather than discarded: it carries the noisy
+# xcodebuild log (unwanted on the normal path) but ALSO the pinned-commit
+# failure's expected-vs-actual hashes, which are the whole point of that guard
+# and must reach the build log. Telling the operator to "re-run for details"
+# would not do: on an ephemeral CI runner the re-run is a fresh clone, and the
+# source that failed the check is already gone.
+BLACKHOLE_STATUS=0
+BLACKHOLE_LOG="$(mktemp)"
+trap 'rm -f "$BLACKHOLE_LOG"' EXIT
+BLACKHOLE_POOL_DIR="$("$ROOT_DIR/Scripts/fetch_blackhole.sh" 2>"$BLACKHOLE_LOG")" || BLACKHOLE_STATUS=$?
+# Exit 2 is the one failure we must NOT shrug off: the upstream source didn't
+# match its pinned commit, i.e. the tag moved. Never build past that.
+if [[ "$BLACKHOLE_STATUS" -eq 2 ]]; then
+  cat "$BLACKHOLE_LOG" >&2
+  echo "error: BlackHole source failed its pinned-commit check — refusing to build" >&2
+  exit 1
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"

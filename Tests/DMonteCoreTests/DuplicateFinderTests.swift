@@ -123,6 +123,43 @@ final class DuplicateFinderTests: XCTestCase {
         XCTAssertEqual(DuplicateFinderKit.wastedBytes(groups), 0)
     }
 
+    func testHardlinksToOneInodeAreNotReportedAsDuplicates() throws {
+        let original = try write("linked-payload", to: "original.txt")
+        let link = tempDir.appendingPathComponent("nested/link.txt")
+        try FileManager.default.createDirectory(
+            at: link.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.linkItem(at: original, to: link)
+
+        let groups = DuplicateFinderKit.findDuplicates(in: tempDir, progress: nil)
+
+        // Two names, one file: trashing either reclaims nothing.
+        XCTAssertTrue(groups.isEmpty, "Hardlinks to one inode must not form a duplicate group")
+        XCTAssertEqual(DuplicateFinderKit.wastedBytes(groups), 0)
+    }
+
+    func testHardlinkCollapsesButAGenuineCopyStillGroups() throws {
+        let original = try write("linked-payload", to: "original.txt")
+        let link = tempDir.appendingPathComponent("link.txt")
+        try FileManager.default.linkItem(at: original, to: link)
+
+        // An independently written file with the same bytes — a real reclaimable copy.
+        let copy = try write("linked-payload", to: "real-copy.txt")
+
+        let groups = DuplicateFinderKit.findDuplicates(in: tempDir, progress: nil)
+
+        XCTAssertEqual(groups.count, 1)
+        // One member for the hardlinked inode (either name), one for the real copy.
+        XCTAssertEqual(groups.first?.urls.count, 2)
+
+        let groupedPaths = Set(groups.flatMap { $0.urls }.map { self.standardizedPath($0) })
+        XCTAssertTrue(groupedPaths.contains(standardizedPath(copy)))
+
+        let size = UInt64("linked-payload".utf8.count)
+        XCTAssertEqual(DuplicateFinderKit.wastedBytes(groups), size)
+    }
+
     func testProgressCallbackCountsExaminedFiles() throws {
         try write("one", to: "one.txt")
         try write("two", to: "two.txt")

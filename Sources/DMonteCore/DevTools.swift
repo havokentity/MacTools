@@ -70,10 +70,20 @@ public enum DevToolsKit {
             return .failure(.emptyInput)
         }
 
-        // Strip whitespace/newlines from wrapped pastes, then decode strictly so genuinely
-        // invalid input (e.g. "@@@@") fails instead of silently decoding to empty.
-        let cleaned = trimmed.components(separatedBy: .whitespacesAndNewlines).joined()
-        guard let data = Data(base64Encoded: cleaned), !data.isEmpty,
+        // Strip whitespace/newlines from wrapped pastes, accept the base64url alphabet,
+        // and restore the "=" padding `Data(base64Encoded:)` insists on — JWT segments
+        // and plenty of CLI output arrive unpadded. Decoding stays strict otherwise, so
+        // genuinely invalid input (e.g. "@@@@") still fails rather than decoding to empty.
+        let cleaned = trimmed
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        // Append the padding rather than `padding(toLength:)`: that API measures in UTF-16
+        // units while `count` measures Characters, so a non-ASCII paste could silently get
+        // truncated instead of padded.
+        let padded = cleaned + String(repeating: "=", count: (4 - cleaned.count % 4) % 4)
+        guard let data = Data(base64Encoded: padded), !data.isEmpty,
               let string = String(data: data, encoding: .utf8) else {
             return .failure(.invalidBase64)
         }

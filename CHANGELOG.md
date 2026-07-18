@@ -4,6 +4,14 @@ All notable changes to D'Monte's Tool Box are documented here. This project
 adheres to [Semantic Versioning](https://semver.org) and the
 [Keep a Changelog](https://keepachangelog.com) format.
 
+## [Unreleased]
+
+### Added
+- Continuous integration: every push and pull request now builds the package
+  and runs the full test suite on a pinned macOS runner, using the same
+  toolchain the release workflow ships with. Previously only version tags ran
+  CI, so a branch could go unverified until release day.
+
 ## [0.13.0] — 2026-07-12
 
 ### Added
@@ -371,6 +379,16 @@ Switcher, Focus Timer, Calendar, Keep Awake, Maintenance, and Dev Tools.
 - The menu bar tool box shell and the first tool, System Monitor (live CPU,
   memory, disk, network, and temperature metrics).
 
+[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/havokentity/MacTools/releases/tag/v0.13.0
+[0.12.0]: https://github.com/havokentity/MacTools/releases/tag/v0.12.0
+[0.11.0]: https://github.com/havokentity/MacTools/releases/tag/v0.11.0
+[0.10.0]: https://github.com/havokentity/MacTools/releases/tag/v0.10.0
+[0.9.1]: https://github.com/havokentity/MacTools/releases/tag/v0.9.1
+[0.9.0]: https://github.com/havokentity/MacTools/releases/tag/v0.9.0
+[0.8.8]: https://github.com/havokentity/MacTools/releases/tag/v0.8.8
+[0.8.7]: https://github.com/havokentity/MacTools/releases/tag/v0.8.7
+[0.8.6]: https://github.com/havokentity/MacTools/releases/tag/v0.8.6
 [0.8.5]: https://github.com/havokentity/MacTools/releases/tag/v0.8.5
 [0.8.4]: https://github.com/havokentity/MacTools/releases/tag/v0.8.4
 [0.8.3]: https://github.com/havokentity/MacTools/releases/tag/v0.8.3

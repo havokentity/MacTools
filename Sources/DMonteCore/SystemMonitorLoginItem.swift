@@ -88,11 +88,40 @@ public enum SystemMonitorLoginItem {
     }
 
     private static func uninstall() {
-        unloadLaunchAgent()
+        // `bootout` SIGTERMs the job's own processes. When this instance *is* the agent's job,
+        // booting out would turn the "Open when Mac starts" toggle into a quit, and would kill us
+        // inside `waitUntilExit()` before the plist below ever got removed. Dropping the plist is
+        // enough on its own: `KeepAlive` is false, so the still-loaded job is never respawned, it
+        // exits with the login session, and it cannot come back without the plist.
+        if !isRunningAsOwnLaunchAgent {
+            unloadLaunchAgent()
+        }
+
         try? FileManager.default.removeItem(at: launchAgentURL)
     }
 
+    /// Whether launchd started *this* process from our own LaunchAgent — i.e. whether booting the
+    /// job out would kill us.
+    ///
+    /// launchd exports the job's label as `XPC_SERVICE_NAME`; a LaunchServices launch reports
+    /// `application.<bundle-id>.<hash>.<hash>` instead, so the two are distinguishable. `getppid()`
+    /// cannot answer this: macOS reparents *every* GUI app to launchd, so a Finder-launched copy
+    /// has ppid 1 exactly like the agent's own job does.
+    private static var isRunningAsOwnLaunchAgent: Bool {
+        ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == label
+    }
+
     private static func reloadLaunchAgent() {
+        // Same hazard as `uninstall()`: the bootout half of a reload SIGTERMs us when we are the
+        // job, so re-enabling the toggle in the same session would quit the app the way disabling
+        // it used to. Skip the reload entirely — the plist has already been rewritten on disk, and
+        // that is what launchd reads at the next login, which is all this toggle has to guarantee.
+        // (Being the job also means the job is still loaded, so the `bootstrap` below would be
+        // rejected anyway.)
+        guard !isRunningAsOwnLaunchAgent else {
+            return
+        }
+
         unloadLaunchAgent()
         runLaunchctl(arguments: ["bootstrap", guiDomain, launchAgentURL.path])
     }

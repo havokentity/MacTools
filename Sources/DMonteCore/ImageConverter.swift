@@ -108,25 +108,30 @@ public enum ImageConverterKit {
             return .failure(.unreadableSource)
         }
 
-        let cgImage: CGImage
+        // Both paths go through the thumbnail API: it is the only ImageIO entry point
+        // that honours `kCGImageSourceCreateThumbnailWithTransform`, which bakes EXIF
+        // orientation into the pixels. Without it an orientation 5-8 source (every
+        // portrait phone photo) is written out sideways, because PNG has nowhere to
+        // carry the tag onward. With no resize asked for, the cap is the source's own
+        // longest edge, so nothing is scaled — it just decodes upright.
+        let maxPixelSize: Int
         if let maxDimension, maxDimension > 0 {
-            // Let ImageIO produce a correctly-oriented, downsampled image in one
-            // step — far cheaper than decoding full-size then scaling ourselves.
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceThumbnailMaxPixelSize: maxDimension
-            ]
-            guard let scaled = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) else {
-                return .failure(.decodeFailed)
-            }
-            cgImage = scaled
+            maxPixelSize = maxDimension
         } else {
-            guard let full = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
-                return .failure(.decodeFailed)
+            guard let longestEdge = sourceLongestEdge(imageSource) else {
+                return .failure(.sizingFailed)
             }
-            cgImage = full
+            maxPixelSize = longestEdge
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) else {
+            return .failure(.decodeFailed)
         }
 
         let pixelWidth = cgImage.width
@@ -174,6 +179,19 @@ public enum ImageConverterKit {
                 pixelHeight: pixelHeight
             )
         )
+    }
+
+    /// Longest stored pixel edge, read from metadata without decoding the image.
+    /// Orientation only ever swaps the two axes, so the maximum is the same whether
+    /// it is measured before or after the transform.
+    private static func sourceLongestEdge(_ imageSource: CGImageSource) -> Int? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else {
+            return nil
+        }
+        return max(width, height)
     }
 
     /// Byte size of a file on disk, or 0 if it can't be read.

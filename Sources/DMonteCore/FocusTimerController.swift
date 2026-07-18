@@ -31,7 +31,8 @@ public enum FocusPhase: Equatable, Sendable {
 }
 
 /// Drives the Pomodoro state machine and the live countdown. The state machine is fully
-/// deterministic and is exercised through `tick(by:)`, which the real `Timer` calls once per second.
+/// deterministic and is exercised through `tick(by:)`, which the real `Timer` calls once per second
+/// with the wall-clock interval that actually elapsed since the previous fire.
 /// Tests advance time by calling `tick(by:)` directly, so no real sleeps are needed.
 ///
 /// All mutation happens on the main actor, so the timer and published state are never touched
@@ -52,7 +53,23 @@ public final class FocusTimerController: ObservableObject {
     /// Total number of focus sessions completed since the last `reset()`.
     @Published public private(set) var completedFocusCount = 0
 
+    /// Set by the delegate; fires when the machine actually advances to a new phase — one that
+    /// elapsed, or an explicit `skip()`. `reset()` returns to focus without completing anything, so
+    /// it never fires and observers can chime on real transitions only.
+    public var onPhaseAdvance: (() -> Void)?
+
     private var countdownTimer: Timer?
+
+    /// Wall-clock instant the current phase ends while running; `nil` when paused or idle. The
+    /// countdown is derived from it rather than from the number of timer fires: a sleeping Mac or a
+    /// stalled run loop coalesces every missed fire into a single one, which would otherwise stretch
+    /// the phase well past its configured duration.
+    private var phaseEnd: Date?
+
+    /// `true` while the current phase still sits at its full configured duration — nothing has
+    /// counted down yet. Lets a duration change re-seed the display without disturbing a session
+    /// that is merely paused.
+    private var isPhaseUnstarted = true
 
     /// Number of focus sessions completed *within the current long-break cycle*. Resets to `0`
     /// after a long break so long breaks recur every Nth focus session.
@@ -123,6 +140,7 @@ public final class FocusTimerController: ObservableObject {
             remaining = duration(for: phase)
         }
         isRunning = true
+        anchorPhaseEnd()
         scheduleTimer()
     }
 
@@ -130,6 +148,7 @@ public final class FocusTimerController: ObservableObject {
     public func pause() {
         guard isRunning else { return }
         isRunning = false
+        anchorPhaseEnd()
         invalidateTimer()
     }
 
@@ -141,7 +160,7 @@ public final class FocusTimerController: ObservableObject {
         phase = .focus
         focusInCycle = 0
         completedFocusCount = 0
-        remaining = duration(for: .focus)
+        seedPhase()
     }
 
     /// Immediately ends the current phase and advances to the next. Unlike a naturally elapsed
@@ -151,11 +170,20 @@ public final class FocusTimerController: ObservableObject {
         advancePhase(countingCompletion: false)
     }
 
+    /// Re-seeds `remaining` from the configured durations when the current phase hasn't started
+    /// counting down. Lets the settings UI reflect a new duration immediately without `reset()`'s
+    /// side effects: a paused session, the long-break cycle and the completed tally all survive.
+    public func refreshDurationIfUnstarted() {
+        guard !isRunning, isPhaseUnstarted else { return }
+        remaining = duration(for: phase)
+    }
+
     // MARK: - State machine (deterministic, test entry point)
 
     /// Advances the state machine by `seconds`. Decrements `remaining`; when it reaches zero the
     /// current phase completes and the machine transitions to the next phase with a freshly reset
-    /// `remaining`. The real `Timer` calls `tick(by: 1)`; tests call it with larger spans.
+    /// `remaining`. The real `Timer` passes the wall time that elapsed since the previous fire;
+    /// tests call it with larger spans.
     ///
     /// Advances at most one phase per call (a single tick is one phase-completion event at most,
     /// matching the once-per-second real cadence); overshoot is discarded so each phase starts clean.
@@ -163,6 +191,7 @@ public final class FocusTimerController: ObservableObject {
         guard isRunning, seconds > 0 else { return }
 
         remaining -= seconds
+        isPhaseUnstarted = false
         if remaining <= 0 {
             advancePhase()
         }
@@ -187,16 +216,38 @@ public final class FocusTimerController: ObservableObject {
         case .shortBreak, .longBreak:
             phase = .focus
         }
+        seedPhase()
+        onPhaseAdvance?()
+    }
+
+    /// Refills `remaining` for the current phase and re-anchors the countdown to the wall clock.
+    private func seedPhase() {
         remaining = duration(for: phase)
+        isPhaseUnstarted = true
+        anchorPhaseEnd()
+    }
+
+    /// Pins the countdown to the instant the current phase ends, so elapsed wall time — not the
+    /// number of timer fires — drives it. Cleared when nothing is running.
+    private func anchorPhaseEnd() {
+        phaseEnd = isRunning ? Date().addingTimeInterval(remaining) : nil
     }
 
     // MARK: - Timer lifecycle
+
+    /// Turns the wall time actually elapsed since the last update into a tick, so a delayed fire —
+    /// or the single fire that a wake from sleep coalesces the missed ones into — still advances the
+    /// countdown by the real interval.
+    private func tickFromClock() {
+        guard let end = phaseEnd else { return }
+        tick(by: remaining - end.timeIntervalSinceNow)
+    }
 
     private func scheduleTimer() {
         invalidateTimer()
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.tick(by: 1)
+                self?.tickFromClock()
             }
         }
         timer.tolerance = 0.1

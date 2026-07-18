@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SwiftUI
 
 // MARK: - Duplicate Finder window
@@ -400,6 +401,14 @@ final class DuplicateFinderController: ObservableObject {
     private var scanToken = UUID()
     private var scanTask: Task<Void, Never>?
 
+    /// Latest examined-file count plus whether a main-actor redraw is already
+    /// scheduled, shared between the scan thread and the main actor so progress
+    /// hops can be coalesced instead of fired per file.
+    private struct ScanProgress {
+        var latest = 0
+        var updateScheduled = false
+    }
+
     deinit {
         scanTask?.cancel()
     }
@@ -452,15 +461,31 @@ final class DuplicateFinderController: ObservableObject {
         skipNotice = nil
 
         let target = url
+        // The engine invokes `report` once per file examined. Record each count but
+        // coalesce the main-actor hops — keep at most one redraw in flight — so a large
+        // folder cannot flood the main actor with a task per file. Each hop reads the
+        // freshest count, so the label still advances to the true total.
+        let progress = OSAllocatedUnfairLock<ScanProgress>(initialState: ScanProgress())
         scanTask = Task.detached { [weak self] in
             // Capture the weak reference into an immutable local so the @Sendable
             // progress sink does not capture the task's mutable `self` binding.
             let controller = self
             let report: @Sendable (Int) -> Void = { count in
+                let shouldSchedule = progress.withLock { state -> Bool in
+                    state.latest = count
+                    guard !state.updateScheduled else { return false }
+                    state.updateScheduled = true
+                    return true
+                }
+                guard shouldSchedule else { return }
                 Task { @MainActor in
+                    let shown = progress.withLock { state -> Int in
+                        state.updateScheduled = false
+                        return state.latest
+                    }
                     guard controller?.scanToken == token else { return }
-                    let fileWord = count == 1 ? "file" : "files"
-                    controller?.progressText = "Scanned \(count) \(fileWord)…"
+                    let fileWord = shown == 1 ? "file" : "files"
+                    controller?.progressText = "Scanned \(shown) \(fileWord)…"
                 }
             }
             let found = DuplicateFinderKit.findDuplicates(in: target, progress: report)
@@ -494,7 +519,13 @@ final class DuplicateFinderController: ObservableObject {
         let alert = NSAlert()
         let fileWord = targets.count == 1 ? "file" : "files"
         alert.messageText = "Move \(targets.count) \(fileWord) to Trash?"
-        alert.informativeText = "This will reclaim about \(bytes.diskBytesString). Files are moved to the Trash and can be recovered."
+        var informativeText = "This will reclaim about \(bytes.diskBytesString). Files are moved to the Trash and can be recovered."
+        let exhausted = groupsLosingEveryCopy()
+        if exhausted > 0 {
+            let groupWord = exhausted == 1 ? "group" : "groups"
+            informativeText += "\n\nEvery copy is selected in \(exhausted) \(groupWord), so that content will be left nowhere outside the Trash."
+        }
+        alert.informativeText = informativeText
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
@@ -522,6 +553,15 @@ final class DuplicateFinderController: ObservableObject {
     }
 
     // MARK: Private helpers
+
+    /// Number of groups whose every copy is selected. The kept original can be ticked
+    /// like any other row, so the pre-selection's "one copy survives" invariant is only
+    /// a default — deleting such a group leaves no copy outside the Trash.
+    private func groupsLosingEveryCopy() -> Int {
+        groups.filter { group in
+            group.files.allSatisfy { selectedURLs.contains($0.url) }
+        }.count
+    }
 
     private func reclaimableForSelection() -> UInt64 {
         var total: UInt64 = 0

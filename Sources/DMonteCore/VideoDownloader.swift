@@ -20,16 +20,20 @@ public enum VideoQuality: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// yt-dlp's `best` only ever matches a single premuxed file, and YouTube serves
+    /// nothing above 720p premuxed — so every tier has to ask for a video+audio merge
+    /// first and fall back to a premuxed file only when no merge is possible. The
+    /// MP4-family streams lead each list so a merged file still lands in an .mp4.
     var ytDlpFormat: String {
         switch self {
         case .maximum:
-            "best[ext=mp4]/best"
+            "bestvideo*[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best[ext=mp4]/best"
         case .high:
-            "best[ext=mp4][height<=1080]/best[height<=1080]/best"
+            "bestvideo*[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo*[height<=1080]+bestaudio/best[ext=mp4][height<=1080]/best[height<=1080]/best"
         case .normal:
-            "best[ext=mp4][height<=720]/best[height<=720]/best"
+            "bestvideo*[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo*[height<=720]+bestaudio/best[ext=mp4][height<=720]/best[height<=720]/best"
         case .low:
-            "best[ext=mp4][height<=360]/best[height<=360]/best"
+            "bestvideo*[ext=mp4][height<=360]+bestaudio[ext=m4a]/bestvideo*[height<=360]+bestaudio/best[ext=mp4][height<=360]/best[height<=360]/best"
         }
     }
 }
@@ -205,7 +209,7 @@ final class VideoDownloaderModel: ObservableObject {
     }
 
     var canDownload: Bool {
-        !trimmedURL.isEmpty
+        Self.sanitizedURLString(urlText) != nil
     }
 
     var isDownloading: Bool {
@@ -302,8 +306,7 @@ final class VideoDownloaderModel: ObservableObject {
     }
 
     func startDownload() {
-        let url = trimmedURL
-        guard !url.isEmpty else {
+        guard let url = Self.sanitizedURLString(urlText) else {
             return
         }
 
@@ -381,10 +384,6 @@ final class VideoDownloaderModel: ObservableObject {
         launchAvailableDownloads()
     }
 
-    private var trimmedURL: String {
-        urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func launchAvailableDownloads() {
         let activeCount = downloads.filter { $0.state == .downloading }.count
         let availableSlots = max(Self.maximumConcurrentDownloads - activeCount, 0)
@@ -441,7 +440,11 @@ final class VideoDownloaderModel: ObservableObject {
     }
 
     private func updateProgress(id: UUID, progress: VideoDownloaderRunner.Progress) {
-        guard let index = downloads.firstIndex(where: { $0.id == id }) else {
+        // A progress update is posted from the pipe's reader thread, so a last one can
+        // land after the row has already finished or gone into a retry wait. Only a row
+        // that is still downloading may be rewritten.
+        guard let index = downloads.firstIndex(where: { $0.id == id }),
+              downloads[index].state == .downloading else {
             return
         }
 
@@ -551,6 +554,29 @@ final class VideoDownloaderModel: ObservableObject {
         return host.replacingOccurrences(of: "www.", with: "")
     }
 
+    /// The http(s) link to hand yt-dlp, or nil when the text isn't one. yt-dlp reads a
+    /// leading-dash argument as an option rather than a URL — clipboard text like "-U"
+    /// would make it self-update instead of download — and the clipboard/drop paths
+    /// start a download without the user ever seeing the text. A scheme-less host is
+    /// assumed to be https so a hand-typed "youtube.com/watch?v=…" still works.
+    nonisolated static func sanitizedURLString(_ urlString: String) -> String? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("-") else {
+            return nil
+        }
+
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let components = URLComponents(string: candidate),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              !host.isEmpty else {
+            return nil
+        }
+
+        return candidate
+    }
+
     nonisolated static func normalizedURLString(_ urlString: String) -> String {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: trimmed) else {
@@ -611,22 +637,23 @@ enum VideoDownloaderRunner {
         var errorMessage: String?
     }
 
+    /// A pipe read can end mid-character, so the bytes are kept raw and decoded only
+    /// once the whole output is in hand — decoding each chunk on its own would throw
+    /// the split chunk away, and the next one with it.
     private final class OutputBuffer: @unchecked Sendable {
         private let lock = NSLock()
-        private var text = ""
-        private let maximumCharacterCount = 32_768
+        private var bytes = Data()
+        private let maximumByteCount = 32_768
 
         func append(_ data: Data) {
-            guard !data.isEmpty,
-                  let string = String(data: data, encoding: .utf8),
-                  !string.isEmpty else {
+            guard !data.isEmpty else {
                 return
             }
 
             lock.lock()
-            text += string
-            if text.count > maximumCharacterCount {
-                text = String(text.suffix(maximumCharacterCount))
+            bytes.append(data)
+            if bytes.count > maximumByteCount {
+                bytes = Data(bytes.suffix(maximumByteCount))
             }
             lock.unlock()
         }
@@ -637,8 +664,64 @@ enum VideoDownloaderRunner {
                 lock.unlock()
             }
 
-            return text
+            return String(decoding: bytes, as: UTF8.self)
         }
+    }
+
+    /// The yt-dlp processes this app has running. Quitting the window is the only way
+    /// to stop a download, and the app's exit doesn't reach a yt-dlp that is blocked
+    /// on an ffmpeg merge — it would keep running headless — so they are tracked here
+    /// and signalled from applicationWillTerminate.
+    private static let activeProcesses = ActiveProcesses()
+
+    private final class ActiveProcesses: @unchecked Sendable {
+        private let lock = NSLock()
+        private var processes: [Process] = []
+        private var isTerminating = false
+
+        /// Launches a process and tracks it, or returns false without launching once
+        /// terminateAll has run: a download is several sequential yt-dlp attempts, so
+        /// without this latch an attempt that starts after the quit signal would never
+        /// be signalled and would outlive the app as an orphan. The launch itself is
+        /// held under the lock so terminateAll can never snapshot a process that is
+        /// registered but not yet spawned — that one would be skipped and then spawned.
+        func launch(_ process: Process) throws -> Bool {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+
+            guard !isTerminating else {
+                return false
+            }
+
+            try process.run()
+            processes.append(process)
+            return true
+        }
+
+        func remove(_ process: Process) {
+            lock.lock()
+            processes.removeAll { $0 === process }
+            lock.unlock()
+        }
+
+        func terminateAll() {
+            lock.lock()
+            isTerminating = true
+            let running = processes
+            lock.unlock()
+
+            // Every tracked process has launched, so one that is no longer running has
+            // already exited on its own — terminate() on it would signal a reaped pid.
+            for process in running where process.isRunning {
+                process.terminate()
+            }
+        }
+    }
+
+    fileprivate static func terminateActiveDownloads() {
+        activeProcesses.terminateAll()
     }
 
     fileprivate static func download(
@@ -703,7 +786,9 @@ enum VideoDownloaderRunner {
                 if let cookieBrowser {
                     arguments += ["--cookies-from-browser", cookieBrowser]
                 }
-                arguments.append(url)
+                // "--" ends option parsing, so the link can never be read as an option
+                // however it was obtained (see sanitizedURLString).
+                arguments += ["--", url]
 
                 let process = Process()
                 process.executableURL = command.executableURL
@@ -732,12 +817,17 @@ enum VideoDownloaderRunner {
                     }
                 }
                 defer {
+                    activeProcesses.remove(process)
                     pipe.fileHandleForReading.readabilityHandler = nil
                     try? pipe.fileHandleForReading.close()
                 }
 
                 do {
-                    let terminationStatus = try await runAndWait(process)
+                    guard let terminationStatus = try await runAndWait(process) else {
+                        // The app is quitting; launching now would orphan this process.
+                        return Attempt(status: nil, output: "", errorMessage: "Download cancelled")
+                    }
+
                     pipe.fileHandleForReading.readabilityHandler = nil
                     let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
                     output.append(remainingData)
@@ -840,7 +930,9 @@ enum VideoDownloaderRunner {
         }.value
     }
 
-    private static func runAndWait(_ process: Process) async throws -> Int32 {
+    /// The process's exit status, or nil when the app is quitting and it was never
+    /// launched.
+    private static func runAndWait(_ process: Process) async throws -> Int32? {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 process.terminationHandler = { process in
@@ -848,7 +940,11 @@ enum VideoDownloaderRunner {
                 }
 
                 do {
-                    try process.run()
+                    guard try activeProcesses.launch(process) else {
+                        process.terminationHandler = nil
+                        continuation.resume(returning: nil)
+                        return
+                    }
                 } catch {
                     process.terminationHandler = nil
                     continuation.resume(throwing: error)
@@ -922,7 +1018,8 @@ enum VideoDownloaderRunner {
     }
 
     private static func parseProgress(from data: Data) -> Progress? {
-        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else {
+        let text = String(decoding: data, as: UTF8.self)
+        guard !text.isEmpty else {
             return nil
         }
 
@@ -1490,6 +1587,14 @@ private struct DownloadQueueRow: View {
         case .failed:
             .red
         }
+    }
+}
+
+public enum VideoDownloaderProcesses {
+    /// Stops every download this app started. Called on quit: quitting is the app's
+    /// only cancel affordance, and nothing else signals yt-dlp or the ffmpeg it drives.
+    public nonisolated static func terminateAll() {
+        VideoDownloaderRunner.terminateActiveDownloads()
     }
 }
 

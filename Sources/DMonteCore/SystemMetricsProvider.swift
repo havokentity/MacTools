@@ -6,6 +6,8 @@ import Darwin
 final class SystemMetricsProvider {
     private var previousCPU: (idle: UInt64, total: UInt64)?
     private var previousNetwork: (timestamp: Date, down: UInt64, up: UInt64)?
+    private var previousInterfaceCounters: [String: (down: UInt32, up: UInt32)] = [:]
+    private var cumulativeNetwork: (down: UInt64, up: UInt64) = (down: 0, up: 0)
     private let thermalSensorReader = ThermalSensorReader()
 
     func sample() -> MetricSnapshot {
@@ -61,11 +63,14 @@ final class SystemMetricsProvider {
         let stride = Int(CPU_STATE_MAX)
 
         for cpuIndex in 0..<Int(processorCount) {
+            // The kernel's tick counters are unsigned, but `processor_info_array_t` types them as
+            // `integer_t` (Int32), so each one reads back negative once it passes 2^31 — roughly a
+            // year of uptime. Reinterpret the bits rather than converting the signed value.
             let offset = cpuIndex * stride
-            let user = UInt64(cpuInfo[offset + Int(CPU_STATE_USER)])
-            let system = UInt64(cpuInfo[offset + Int(CPU_STATE_SYSTEM)])
-            let nice = UInt64(cpuInfo[offset + Int(CPU_STATE_NICE)])
-            let cpuIdle = UInt64(cpuInfo[offset + Int(CPU_STATE_IDLE)])
+            let user = UInt64(UInt32(bitPattern: cpuInfo[offset + Int(CPU_STATE_USER)]))
+            let system = UInt64(UInt32(bitPattern: cpuInfo[offset + Int(CPU_STATE_SYSTEM)]))
+            let nice = UInt64(UInt32(bitPattern: cpuInfo[offset + Int(CPU_STATE_NICE)]))
+            let cpuIdle = UInt64(UInt32(bitPattern: cpuInfo[offset + Int(CPU_STATE_IDLE)]))
 
             idle += cpuIdle
             total += user + system + nice + cpuIdle
@@ -154,18 +159,32 @@ final class SystemMetricsProvider {
         )
     }
 
+    /// Deltas above this are read as an interface reset rather than a counter wrap. A wrap yields a
+    /// wrapping delta equal to the real traffic since the last sample, whereas a `utun` that was
+    /// destroyed and recreated under the same name restarts near zero and yields a wrapping delta of
+    /// nearly the whole 32-bit range. The bound sits just below that range rather than at a plausible
+    /// line rate, because 10GbE and Thunderbolt bridge interfaces can move more than a GiB in one
+    /// sample, and a real delta big enough to reach here would be indistinguishable from a wrap anyway.
+    private static let maxPlausibleOctetDelta: UInt32 = 0xF000_0000
+
+    /// Monotonic 64-bit octet totals across the monitored interfaces. `if_data` only exposes 32-bit
+    /// counters, which wrap every 4 GiB, so each interface is diffed against its own previous
+    /// reading with wrapping subtraction and the deltas accumulate here. Interfaces contribute
+    /// nothing for the sample in which they first appear, and nothing for a sample whose delta is
+    /// too large to be real — which is how a recreated interface's restarted counters are kept from
+    /// landing as a ~4 GiB spike.
     private func networkTotals() -> (down: UInt64, up: UInt64) {
         var addresses: UnsafeMutablePointer<ifaddrs>?
-        var down: UInt64 = 0
-        var up: UInt64 = 0
 
         guard getifaddrs(&addresses) == 0, let firstAddress = addresses else {
-            return (down: down, up: up)
+            return cumulativeNetwork
         }
 
         defer {
             freeifaddrs(addresses)
         }
+
+        var counters: [String: (down: UInt32, up: UInt32)] = [:]
 
         for pointer in sequence(first: firstAddress, next: { $0.pointee.ifa_next }) {
             let interface = pointer.pointee
@@ -182,11 +201,29 @@ final class SystemMetricsProvider {
                 continue
             }
 
-            down += UInt64(data.ifi_ibytes)
-            up += UInt64(data.ifi_obytes)
+            counters[name] = (down: data.ifi_ibytes, up: data.ifi_obytes)
         }
 
-        return (down: down, up: up)
+        for (name, current) in counters {
+            guard let previous = previousInterfaceCounters[name] else {
+                continue
+            }
+
+            cumulativeNetwork.down += UInt64(Self.octetDelta(current: current.down, previous: previous.down))
+            cumulativeNetwork.up += UInt64(Self.octetDelta(current: current.up, previous: previous.up))
+        }
+
+        previousInterfaceCounters = counters
+
+        return cumulativeNetwork
+    }
+
+    /// Octets transferred between two readings of one interface's 32-bit counter. Wrapping
+    /// subtraction recovers the true delta across the 4 GiB wrap; an implausibly large result means
+    /// the counter restarted rather than wrapped, and is dropped.
+    private static func octetDelta(current: UInt32, previous: UInt32) -> UInt32 {
+        let delta = current &- previous
+        return delta > maxPlausibleOctetDelta ? 0 : delta
     }
 
     private func batteryStatus() -> (percent: Double?, isCharging: Bool) {

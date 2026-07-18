@@ -39,6 +39,10 @@ public final class ImageConverterController: ObservableObject {
     @Published public private(set) var totalSavedBytes: Int64 = 0
     @Published public private(set) var statusMessage = "Drop images to begin"
 
+    /// How many items the running batch snapshotted, so a drop mid-batch can't move
+    /// the progress bar's denominator out from under it.
+    @Published private var batchCount = 0
+
     public init() {}
 
     public var hasItems: Bool { !items.isEmpty }
@@ -47,10 +51,10 @@ public final class ImageConverterController: ObservableObject {
 
     /// Fraction complete for the progress bar (0...1).
     public var progressFraction: Double {
-        guard isConverting, !items.isEmpty else {
+        guard isConverting, batchCount > 0 else {
             return 0
         }
-        return min(1, Double(completedCount) / Double(items.count))
+        return min(1, Double(completedCount) / Double(batchCount))
     }
 
     // MARK: Queue management
@@ -65,6 +69,9 @@ public final class ImageConverterController: ObservableObject {
             .filter { Self.isImageURL($0) }
 
         guard !newURLs.isEmpty else {
+            if !urls.isEmpty, !isConverting {
+                statusMessage = "No new images to add"
+            }
             return
         }
 
@@ -126,8 +133,20 @@ public final class ImageConverterController: ObservableObject {
             items[index].status = .ready
         }
 
+        // Snapshot the queue by id. The drop zone stays live while a batch runs, so
+        // anything added mid-batch belongs to the next run — it must not be skipped by
+        // a stale index range, nor counted in this run's progress or summary.
+        let batch = items.map(\.id)
+        batchCount = batch.count
+
         Task {
-            for index in items.indices {
+            for id in batch {
+                defer { completedCount += 1 }
+
+                guard let index = items.firstIndex(where: { $0.id == id }) else {
+                    continue
+                }
+
                 let item = items[index]
                 items[index].status = .converting
                 statusMessage = "Converting \(item.name)…"
@@ -146,33 +165,41 @@ public final class ImageConverterController: ObservableObject {
                     )
                 }.value
 
+                guard let resultIndex = items.firstIndex(where: { $0.id == id }) else {
+                    continue
+                }
+
                 switch result {
                 case let .success(converted):
                     let saved = Int64(originalBytes) - Int64(converted.byteCount)
                     totalSavedBytes += saved
-                    items[index].status = .done(
+                    items[resultIndex].status = .done(
                         savedBytes: saved,
                         outputName: converted.outputURL.lastPathComponent,
                         finalBytes: converted.byteCount
                     )
                 case let .failure(error):
-                    items[index].status = .failed(reason: error.message)
+                    items[resultIndex].status = .failed(reason: error.message)
                 }
-
-                completedCount += 1
             }
 
             isConverting = false
-            statusMessage = summaryMessage()
+            statusMessage = summaryMessage(for: batch)
         }
     }
 
-    private func summaryMessage() -> String {
-        let failures = items.filter { item in
-            if case .failed = item.status { return true }
+    private func summaryMessage(for batch: [UUID]) -> String {
+        let statuses = batch.compactMap { id in
+            items.first(where: { $0.id == id })?.status
+        }
+        let succeeded = statuses.filter { status in
+            if case .done = status { return true }
             return false
         }.count
-        let succeeded = items.count - failures
+        let failures = statuses.filter { status in
+            if case .failed = status { return true }
+            return false
+        }.count
 
         var parts: [String] = []
         if succeeded > 0 {
@@ -403,7 +430,7 @@ public struct ImageConverterWindowView: View {
             }
         }
         .frame(height: layout.dropHeight)
-        .onDrop(of: [.fileURL, .image], isTargeted: $isDropTargeted) { providers in
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
             return true
         }

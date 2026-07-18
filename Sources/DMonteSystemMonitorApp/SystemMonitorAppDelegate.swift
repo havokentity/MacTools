@@ -109,8 +109,11 @@ final class SystemMonitorAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureObservers() {
+        // DispatchQueue.main rather than RunLoop.main: the RunLoop scheduler delivers only in
+        // default mode, which would freeze the tray strip for as long as a menu tracks the run
+        // loop. The main queue is drained in the common modes, so updates continue.
         snapshotSink = monitor.$snapshot
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in
                 self?.updateStatusTitle(snapshot)
             }
@@ -119,7 +122,7 @@ final class SystemMonitorAppDelegate: NSObject, NSApplicationDelegate {
             for: UserDefaults.didChangeNotification,
             object: AppDefaults.shared
         )
-        .receive(on: RunLoop.main)
+        .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in
             let showsIcon = AppDefaults.shared.bool(forKey: DefaultsKey.systemMonitorShowsTrayIcon)
             self?.statusView?.applyShowsIcon(showsIcon)

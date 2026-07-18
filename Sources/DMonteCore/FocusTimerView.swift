@@ -253,10 +253,9 @@ private struct FocusTimerSettingsView: View {
             }
 
             stepperRow(title: "Focus", value: $focusMinutes, range: 1...120, unit: "min") {
-                // Refresh the displayed time when idle so a new duration shows immediately.
-                if !controller.isRunning {
-                    controller.reset()
-                }
+                // Refresh the displayed time when idle so a new duration shows immediately. A
+                // session that is only paused keeps its remaining time and the tally.
+                controller.refreshDurationIfUnstarted()
             }
 
             stepperRow(title: "Short break", value: $shortBreakMinutes, range: 1...60, unit: "min") { }

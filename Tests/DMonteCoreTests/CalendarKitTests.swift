@@ -206,4 +206,99 @@ final class CalendarKitTests: XCTestCase {
         let trailing = flattened.suffix(13)
         XCTAssertTrue(trailing.allSatisfy { $0 == nil }, "All trailing cells should be blank.")
     }
+
+    // MARK: - Month-grid event dots.
+
+    /// February 2027 (28 days) as `[monthStart, monthEnd)`, the window `reloadMonthDots` queries.
+    private func februaryBounds(calendar: Calendar) -> (start: Date, end: Date) {
+        (date(2027, 2, 1, calendar: calendar), date(2027, 3, 1, calendar: calendar))
+    }
+
+    private func dots(start: Date, end: Date, calendar: Calendar) -> Set<Date> {
+        let bounds = februaryBounds(calendar: calendar)
+        return CalendarController.eventDays(
+            start: start,
+            end: end,
+            monthStart: bounds.start,
+            monthEnd: bounds.end,
+            calendar: calendar
+        )
+    }
+
+    func testSingleDayEventDotsOnlyItsOwnDay() {
+        let calendar = makeCalendar()
+        let start = date(2027, 2, 10, calendar: calendar).addingTimeInterval(9 * 3600)
+        let days = dots(start: start, end: start.addingTimeInterval(3600), calendar: calendar)
+        XCTAssertEqual(days, [date(2027, 2, 10, calendar: calendar)])
+    }
+
+    func testMultiDayEventDotsEveryDayItSpans() {
+        let calendar = makeCalendar()
+        let days = dots(
+            start: date(2027, 2, 10, calendar: calendar).addingTimeInterval(9 * 3600),
+            end: date(2027, 2, 12, calendar: calendar).addingTimeInterval(17 * 3600),
+            calendar: calendar
+        )
+        XCTAssertEqual(days, Set([10, 11, 12].map { date(2027, 2, $0, calendar: calendar) }))
+    }
+
+    func testEventStartingBeforeTheMonthDotsItsInMonthDays() {
+        // A conference running Jan 30 – Feb 2: February should dot the 1st and the 2nd.
+        let calendar = makeCalendar()
+        let days = dots(
+            start: date(2027, 1, 30, calendar: calendar),
+            end: date(2027, 2, 2, calendar: calendar).addingTimeInterval(17 * 3600),
+            calendar: calendar
+        )
+        XCTAssertEqual(days, Set([1, 2].map { date(2027, 2, $0, calendar: calendar) }))
+    }
+
+    func testEventRunningPastTheMonthIsClampedToIt() {
+        let calendar = makeCalendar()
+        let days = dots(
+            start: date(2027, 2, 27, calendar: calendar),
+            end: date(2027, 3, 3, calendar: calendar),
+            calendar: calendar
+        )
+        XCTAssertEqual(days, Set([27, 28].map { date(2027, 2, $0, calendar: calendar) }))
+    }
+
+    func testEventEndingAtMidnightDoesNotDotTheDayItEndsOn() {
+        let calendar = makeCalendar()
+        let days = dots(
+            start: date(2027, 2, 10, calendar: calendar).addingTimeInterval(22 * 3600),
+            end: date(2027, 2, 11, calendar: calendar),
+            calendar: calendar
+        )
+        XCTAssertEqual(days, [date(2027, 2, 10, calendar: calendar)])
+    }
+
+    func testEventEntirelyBeforeTheMonthDotsNothing() {
+        let calendar = makeCalendar()
+        let days = dots(
+            start: date(2027, 1, 5, calendar: calendar),
+            end: date(2027, 1, 6, calendar: calendar),
+            calendar: calendar
+        )
+        XCTAssertEqual(days, [], "An event that ended in January must not dot February's 1st.")
+    }
+
+    func testEventEndingExactlyAtTheMonthStartDotsNothing() {
+        // New Year's Eve, viewed from the next month: Jan 31 22:00 – Feb 1 00:00 ends as February
+        // begins, and the end-at-midnight rule applies across the month boundary too.
+        let calendar = makeCalendar()
+        let days = dots(
+            start: date(2027, 1, 31, calendar: calendar).addingTimeInterval(22 * 3600),
+            end: date(2027, 2, 1, calendar: calendar),
+            calendar: calendar
+        )
+        XCTAssertEqual(days, [])
+    }
+
+    func testZeroLengthEventAtTheMonthStartDotsTheFirst() {
+        let calendar = makeCalendar()
+        let start = date(2027, 2, 1, calendar: calendar)
+        let days = dots(start: start, end: start, calendar: calendar)
+        XCTAssertEqual(days, [date(2027, 2, 1, calendar: calendar)])
+    }
 }

@@ -66,6 +66,46 @@ final class ImageConverterTests: XCTestCase {
         assertValidImage(at: converted.outputURL)
     }
 
+    // MARK: EXIF orientation
+
+    func testConvertBakesEXIFOrientationIntoOutputPixels() throws {
+        // Stored 40x20 tagged orientation 6, i.e. it displays as 20x40.
+        let rotated = try writeRotatedJPEG(width: 40, height: 20, orientation: 6)
+
+        let result = ImageConverterKit.convert(
+            source: rotated,
+            to: .png,
+            quality: 1.0,
+            maxDimension: nil,
+            outputDirectory: workingDirectory
+        )
+
+        // PNG carries no orientation tag, so the pixels themselves must come out upright.
+        let converted = try result.get()
+        XCTAssertEqual(converted.pixelWidth, 20)
+        XCTAssertEqual(converted.pixelHeight, 40)
+
+        let (width, height) = try pixelSize(of: converted.outputURL)
+        XCTAssertEqual(width, 20)
+        XCTAssertEqual(height, 40)
+    }
+
+    func testConvertLeavesUnorientedImageAtFullSize() throws {
+        // The no-resize path caps at the source's longest edge — that must not downscale.
+        let result = ImageConverterKit.convert(
+            source: sourcePNG,
+            to: .png,
+            quality: 1.0,
+            maxDimension: nil,
+            outputDirectory: workingDirectory
+        )
+
+        let converted = try result.get()
+        let (width, height) = try pixelSize(of: converted.outputURL)
+        XCTAssertEqual(width, 64)
+        XCTAssertEqual(height, 64)
+    }
+
     // MARK: Resizing
 
     func testResizeClampsLongestEdgeToMaxDimension() throws {
@@ -130,9 +170,70 @@ final class ImageConverterTests: XCTestCase {
         XCTAssertEqual(ImageConverterKit.ImageFormat.allCases.count, 4)
     }
 
+    // MARK: Batch snapshot
+
+    @MainActor
+    func testImagesAddedMidBatchAreNotReportedAsConverted() async throws {
+        let late = try writeTestPNG(width: 32, height: 32, named: "late.png")
+
+        let controller = ImageConverterController()
+        controller.outputDirectory = workingDirectory
+        controller.addURLs([sourcePNG])
+
+        controller.convertAll()
+        // The batch body runs in a Task, so this append lands after the snapshot is
+        // taken but before any item is converted — exactly the mid-batch drop case.
+        controller.addURLs([late])
+
+        try await waitForIdle(controller)
+
+        XCTAssertEqual(controller.items.count, 2)
+        XCTAssertEqual(controller.items[1].status, .ready)
+        XCTAssertTrue(
+            controller.statusMessage.hasPrefix("1 converted"),
+            "Only the snapshotted image belongs to this batch, got: \(controller.statusMessage)"
+        )
+    }
+
     // MARK: Helpers
 
-    private func writeTestPNG(width: Int, height: Int) throws -> URL {
+    @MainActor
+    private func waitForIdle(_ controller: ImageConverterController) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while controller.isConverting, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(controller.isConverting, "Batch did not finish before the timeout")
+    }
+
+    private func writeTestPNG(width: Int, height: Int, named: String = "source.png") throws -> URL {
+        let cgImage = try makeTestImage(width: width, height: height)
+
+        let url = workingDirectory.appendingPathComponent(named)
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+        )
+        CGImageDestinationAddImage(destination, cgImage, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    /// Writes a JPEG whose stored pixel buffer is `width` x `height` but which carries an
+    /// EXIF orientation tag, so a correct reader displays it transformed.
+    private func writeRotatedJPEG(width: Int, height: Int, orientation: Int) throws -> URL {
+        let cgImage = try makeTestImage(width: width, height: height)
+
+        let url = workingDirectory.appendingPathComponent("rotated.jpg")
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
+        )
+        let properties: [CFString: Any] = [kCGImagePropertyOrientation: orientation]
+        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    private func makeTestImage(width: Int, height: Int) throws -> CGImage {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         let context = try XCTUnwrap(
             CGContext(
@@ -152,15 +253,7 @@ final class ImageConverterTests: XCTestCase {
         context.setFillColor(CGColor(red: 0.95, green: 0.85, blue: 0.1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width / 2, height: height / 2))
 
-        let cgImage = try XCTUnwrap(context.makeImage())
-
-        let url = workingDirectory.appendingPathComponent("source.png")
-        let destination = try XCTUnwrap(
-            CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
-        )
-        CGImageDestinationAddImage(destination, cgImage, nil)
-        XCTAssertTrue(CGImageDestinationFinalize(destination))
-        return url
+        return try XCTUnwrap(context.makeImage())
     }
 
     private func assertValidImage(at url: URL, file: StaticString = #filePath, line: UInt = #line) {

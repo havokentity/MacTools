@@ -258,7 +258,7 @@ public struct ClipboardPopoverView: View {
         var parts: [String] = []
         if let app = entry.sourceAppName, !app.isEmpty { parts.append(app) }
         if entry.kind == .image {
-            parts.append(UInt64(entry.byteCount).diskBytesString)
+            parts.append(UInt64(max(0, entry.byteCount)).diskBytesString)
         } else if entry.kind != .file {
             parts.append("\((entry.text ?? "").count) chars")
         }
@@ -274,7 +274,7 @@ public struct ClipboardPopoverView: View {
             footerHint("⌘1–9", "Quick")
             footerHint("⌘P", "Pin")
             Spacer()
-            footerHint("⌫", "Delete")
+            footerHint("⌘⌫", "Delete")
         }
         .padding(.horizontal, s(14))
         .padding(.top, s(6))
@@ -480,6 +480,9 @@ private struct ClipboardSettingsView: View {
                 }
                 .labelsHidden()
                 .frame(width: 92)
+                .onChange(of: maxHistory) { _, _ in
+                    controller.store.applyHistoryLimit()
+                }
             }
 
             if controller.needsAccessibility {
