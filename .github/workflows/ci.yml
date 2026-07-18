@@ -37,6 +37,12 @@ jobs:
     # `macos-latest` moves on, bump this deliberately and in one place.
     runs-on: macos-15
 
+    # A clean build plus the suite is a few minutes; anything approaching this
+    # is a hang, not slow progress. Without a cap GitHub lets the job burn the
+    # default six hours on a macOS runner — the scarcest quota on the account —
+    # before anyone finds out.
+    timeout-minutes: 45
+
     steps:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
