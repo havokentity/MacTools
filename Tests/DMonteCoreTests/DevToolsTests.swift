@@ -114,6 +114,226 @@ final class DevToolsTests: XCTestCase {
         XCTAssertEqual(DevToolsKit.base64Decode(""), .failure(.emptyInput))
     }
 
+    // MARK: - JWT
+
+    // The canonical HS256 example token: {"alg":"HS256","typ":"JWT"} over
+    // {"sub":"1234567890","name":"John Doe","iat":1516239022}. Its payload segment is 74
+    // characters, so decoding it at all proves unpadded input is handled.
+    private static let classicJWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        + ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ"
+        + ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+
+    /// A fixed observation instant (2020-09-13T12:26:40Z) so expiry verdicts never depend on
+    /// when the suite happens to run.
+    private static let reference = Date(timeIntervalSince1970: 1_600_000_000)
+
+    private func decode(_ token: String, at now: Date = DevToolsTests.reference) -> DevToolsKit.DecodedJWT? {
+        switch DevToolsKit.decodeJWT(token, now: now) {
+        case let .success(value):
+            return value
+        case let .failure(error):
+            XCTFail("Expected a decoded token, got \(error)")
+            return nil
+        }
+    }
+
+    private func decodeError(_ token: String) -> DevToolsKit.DevToolsError? {
+        switch DevToolsKit.decodeJWT(token, now: DevToolsTests.reference) {
+        case let .success(value):
+            XCTFail("Expected a failure, decoded \(value.payload)")
+            return nil
+        case let .failure(error):
+            return error
+        }
+    }
+
+    func testDecodeJWTHeaderAndPayload() {
+        guard let token = decode(Self.classicJWT) else { return }
+        XCTAssertEqual(token.algorithm, "HS256")
+        XCTAssertEqual(token.type, "JWT")
+        XCTAssertTrue(token.header.contains("\"HS256\""))
+        XCTAssertTrue(token.payload.contains("\"John Doe\""))
+        // Pretty printing means the payload spans multiple lines rather than one compact blob.
+        XCTAssertTrue(token.payload.contains("\n"))
+    }
+
+    func testDecodeJWTKeepsSignatureOpaque() {
+        guard let token = decode(Self.classicJWT) else { return }
+        XCTAssertEqual(token.signature, "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+        XCTAssertEqual(token.signatureDisplay, token.signature)
+        XCTAssertTrue(DevToolsKit.DecodedJWT.signatureNotice.lowercased().contains("not verified"))
+    }
+
+    func testDecodeJWTAcceptsBase64URLAlphabet() {
+        // The payload segment "eyJzdWIiOiI_cFQ-eCJ9" carries both "_" and "-", the two characters
+        // base64url substitutes for "/" and "+".
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI_cFQ-eCJ9.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertTrue(decoded.payload.contains("?pT>x"))
+    }
+
+    func testDecodeJWTAcceptsUnpaddedSegments() {
+        // "eyJhbGciOiJub25lIn0" is 19 characters, so it needs one "=" restored before it decodes.
+        guard let token = decode("eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.") else { return }
+        XCTAssertEqual(token.algorithm, "none")
+        XCTAssertTrue(token.payload.contains("\"x\""))
+    }
+
+    func testDecodeJWTUnsecuredTokenNamesTheEmptySignature() {
+        guard let token = decode("eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.") else { return }
+        XCTAssertEqual(token.signature, "")
+        XCTAssertTrue(token.signatureDisplay.contains("unsecured"))
+    }
+
+    func testDecodeJWTExpiredToken() {
+        // exp = 1516242622 (2018), well before the reference instant.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+            + ".eyJzdWIiOiJhYmMiLCJpYXQiOjE1MTYyMzkwMjIsIm5iZiI6MTUxNjIzOTAyMiwiZXhwIjoxNTE2MjQyNjIyfQ"
+            + ".sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.validity, .expired)
+        XCTAssertEqual(decoded.validity.label, "Expired")
+        XCTAssertEqual(decoded.timeClaims.map(\.name), ["iat", "nbf", "exp"])
+        let expiry = decoded.timeClaims.last
+        XCTAssertEqual(expiry?.date, "2018-01-18T02:30:22Z")
+        XCTAssertEqual(expiry?.epoch, 1_516_242_622)
+        XCTAssertTrue(expiry?.relative.hasSuffix("ago") == true)
+    }
+
+    func testDecodeJWTLiveToken() {
+        // exp = 4102444800 (2100-01-01), comfortably after the reference instant.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhYmMiLCJleHAiOjQxMDI0NDQ4MDB9.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.validity, .active)
+        XCTAssertEqual(decoded.timeClaims.map(\.name), ["exp"])
+        XCTAssertEqual(decoded.timeClaims.first?.date, "2100-01-01T00:00:00Z")
+        XCTAssertTrue(decoded.timeClaims.first?.relative.hasPrefix("in ") == true)
+    }
+
+    func testDecodeJWTNotYetValidToken() {
+        // nbf = 4102444800 with no exp: usable later, so neither expired nor active.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYmYiOjQxMDI0NDQ4MDB9.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.validity, .notYetValid)
+    }
+
+    func testDecodeJWTWithoutExpiryClaimIsUnknown() {
+        // The classic token carries only "iat", so no live/dead verdict can be honestly given.
+        guard let token = decode(Self.classicJWT) else { return }
+        XCTAssertEqual(token.validity, .unknown)
+        XCTAssertEqual(token.timeClaims.map(\.name), ["iat"])
+    }
+
+    func testDecodeJWTMissingClaimsYieldNoTimeRows() {
+        // No iat/nbf/exp at all: an empty list, not placeholder rows.
+        guard let token = decode("eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.") else { return }
+        XCTAssertTrue(token.timeClaims.isEmpty)
+        XCTAssertEqual(token.validity, .unknown)
+    }
+
+    func testDecodeJWTAcceptsStringNumericDate() {
+        // Some issuers ship exp as a JSON string; dropping the claim would hide the expiry.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOiIxNTE2MjQyNjIyIn0.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.validity, .expired)
+        XCTAssertEqual(decoded.timeClaims.first?.date, "2018-01-18T02:30:22Z")
+    }
+
+    func testDecodeJWTIgnoresBooleanExpiry() {
+        // `true` bridges to NSNumber and would otherwise render as 1970 and read "expired".
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOnRydWV9.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertTrue(decoded.timeClaims.isEmpty)
+        XCTAssertEqual(decoded.validity, .unknown)
+    }
+
+    func testDecodeJWTIgnoresOutOfRangeExpiry() {
+        // exp = 1e300 would be clamped by ISO8601DateFormatter into a confident-looking year
+        // 5828963 date; no row is more honest than a fabricated one.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjFlKzMwMH0.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertTrue(decoded.timeClaims.isEmpty)
+        XCTAssertEqual(decoded.validity, .unknown)
+    }
+
+    func testDecodeJWTAcceptsFarFutureButRepresentableExpiry() {
+        // Year 3000 is unusual but perfectly representable, so it must not be filtered out.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjMyNTAzNjgwMDAwfQ.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.validity, .active)
+        XCTAssertEqual(decoded.timeClaims.first?.date, "3000-01-01T00:00:00Z")
+    }
+
+    func testDecodeJWTStripsBearerPrefix() {
+        guard let token = decode("Bearer " + Self.classicJWT) else { return }
+        XCTAssertEqual(token.algorithm, "HS256")
+    }
+
+    func testDecodeJWTToleratesWrappedPaste() {
+        // Terminals and log viewers wrap long tokens; the compact form never contains newlines.
+        let wrapped = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.\neyJzdWIiOiJhYmMiLCJleHAiOjQxMDI0NDQ4MDB9\n.sig"
+        guard let decoded = decode(wrapped) else { return }
+        XCTAssertEqual(decoded.validity, .active)
+    }
+
+    func testDecodeJWTRejectsWrongSegmentCount() {
+        XCTAssertEqual(decodeError("abc"), .invalidJWTStructure(1))
+        XCTAssertEqual(decodeError("abc.def"), .invalidJWTStructure(2))
+        XCTAssertEqual(decodeError("a.b.c.d.e"), .invalidJWTStructure(5))
+    }
+
+    func testDecodeJWTRejectsInvalidBase64Segment() {
+        XCTAssertEqual(decodeError("@@@@.eyJzdWIiOiJ4In0.sig"), .invalidJWTSegment(.header))
+        XCTAssertEqual(decodeError("eyJhbGciOiJub25lIn0.@@@@.sig"), .invalidJWTSegment(.payload))
+    }
+
+    func testDecodeJWTRejectsEmptySegment() {
+        XCTAssertEqual(decodeError("..sig"), .invalidJWTSegment(.header))
+        XCTAssertEqual(decodeError("eyJhbGciOiJub25lIn0..sig"), .invalidJWTSegment(.payload))
+    }
+
+    func testDecodeJWTRejectsNonJSONSegment() {
+        // "bm90IGpzb24gYXQgYWxs" is valid base64 for "not json at all".
+        XCTAssertEqual(
+            decodeError("eyJhbGciOiJub25lIn0.bm90IGpzb24gYXQgYWxs.sig"),
+            .invalidJWTJSON(.payload)
+        )
+    }
+
+    func testDecodeJWTRejectsNonObjectJSON() {
+        // "WzEsMiwzXQ" decodes to the array [1,2,3], which is JSON but not a claims set.
+        XCTAssertEqual(
+            decodeError("eyJhbGciOiJub25lIn0.WzEsMiwzXQ.sig"),
+            .invalidJWTJSON(.payload)
+        )
+    }
+
+    func testDecodeJWTEmptyInputReturnsEmptyError() {
+        XCTAssertEqual(decodeError("   "), .emptyInput)
+    }
+
+    func testJWTSegmentLabels() {
+        XCTAssertEqual(DevToolsKit.JWTSegment.header.label, "header")
+        XCTAssertEqual(DevToolsKit.JWTSegment.payload.label, "payload")
+    }
+
+    func testRelativeHintFutureAndPast() {
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 0), "now")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 1), "in 1 second")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: -1), "1 second ago")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 120), "in 2 minutes")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: -7200), "2 hours ago")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 172_800), "in 2 days")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: -86_400), "1 day ago")
+    }
+
+    func testJWTValidityLabelsAreStable() {
+        XCTAssertEqual(DevToolsKit.JWTValidity.active.label, "Active")
+        XCTAssertEqual(DevToolsKit.JWTValidity.expired.label, "Expired")
+        XCTAssertEqual(DevToolsKit.JWTValidity.notYetValid.label, "Not yet valid")
+        XCTAssertEqual(DevToolsKit.JWTValidity.unknown.label, "No expiry claim")
+    }
+
     // MARK: - URL
 
     func testURLRoundTrip() {
