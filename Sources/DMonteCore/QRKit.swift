@@ -621,6 +621,34 @@ public extension QRKit {
         }
         return nil
     }
+
+    /// The URL the Open button should hand to the system, or `nil` to hide the button.
+    ///
+    /// An allow-list rather than "anything with a host": payloads now arrive from image files
+    /// that came from anywhere, so one click must not be able to launch an arbitrary registered
+    /// handler (`smb:`, `vnc:`, some other app's private scheme) off the back of a code someone
+    /// else generated. Copy still works for everything, so nothing is unreachable.
+    public static func openableURL(from payload: String) -> URL? {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // `SMSTO:` is what this tool emits and what most writers produce, but nothing on the
+        // system registers a handler for it, so allow-listing the scheme alone would still
+        // leave the Open button dead. Rewrite it as the `sms:` URI Messages does answer to.
+        if let sms = smsURL(fromSMSTO: trimmed) {
+            return sms
+        }
+
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() else {
+            return nil
+        }
+
+        switch scheme {
+        // A web link with no host is malformed, and "http:///" opens a blank window.
+        case "http", "https": return url.host == nil ? nil : url
+        case "mailto", "tel", "sms", "facetime": return url
+        default: return nil
+        }
+    }
 }
 
 // MARK: - Private template helpers
@@ -661,6 +689,29 @@ private extension QRKit {
         return result.contains(where: { $0.isASCII && $0.isNumber }) ? result : ""
     }
 
+    /// Rewrites `SMSTO:<number>[:<message>]` as the equivalent `sms:` URI, or `nil` when the
+    /// payload is not an SMSTO one. The message becomes a `body` query item per RFC 5724; a
+    /// handler that ignores it still opens a new message to the right number.
+    static func smsURL(fromSMSTO payload: String) -> URL? {
+        guard payload.lowercased().hasPrefix("smsto:") else {
+            return nil
+        }
+
+        // The message runs to the end of the payload, so only the first separator splits.
+        let fields = payload.dropFirst("smsto:".count)
+            .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        let number = dialableNumber(String(fields.first ?? ""))
+        guard !number.isEmpty else {
+            return nil
+        }
+
+        let message = fields.count > 1 ? String(fields[1]) : ""
+        guard !message.isEmpty else {
+            return URL(string: "sms:" + number)
+        }
+        return URL(string: "sms:\(number)?body=\(percentEncoded(message))")
+    }
+
     /// Maps a `T:` token onto a security mode. Writers in the wild emit WPA2/WPA3 even though
     /// the format only defines WPA, and an absent or empty token means an open network.
     static func wifiSecurity(fromToken token: String) -> QRWiFiSecurity {
@@ -685,8 +736,22 @@ private extension QRKit {
         guard !scheme.contains(".") else {
             return false
         }
-        return scheme.allSatisfy { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" }
+        guard scheme.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" }) else {
+            return false
+        }
+        // The dotless sibling of the same problem: "localhost:8080" is a legal scheme by the
+        // grammar but is always a host and a port. A digit straight after the colon means port,
+        // except for the handful of schemes whose value genuinely starts with one.
+        let afterColon = value.index(after: colon)
+        if afterColon < value.endIndex, value[afterColon].isASCII, value[afterColon].isNumber {
+            return digitLeadingSchemes.contains(scheme.lowercased())
+        }
+        return true
     }
+
+    /// Schemes whose value legitimately begins with a digit, so a digit after the colon does
+    /// not mean the prefix was really a host.
+    static var digitLeadingSchemes: Set<String> { ["tel", "sms", "smsto", "fax", "facetime", "callto"] }
 
     static func appendVCardLine(_ lines: inout [String], name: String, value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -445,7 +445,7 @@ public struct QRWindowView: View {
                     copyToPasteboard(payload)
                 }
 
-                if let url = openableURL(from: payload) {
+                if let url = QRKit.openableURL(from: payload) {
                     actionButton(title: "Open", systemImage: "arrow.up.right.square", isEnabled: true) {
                         NSWorkspace.shared.open(url)
                     }
@@ -544,26 +544,6 @@ public struct QRWindowView: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(string, forType: .string)
-    }
-
-    /// The URL the Open button should hand to the system, or `nil` to hide the button.
-    ///
-    /// An allow-list rather than "anything with a host": payloads now arrive from image files
-    /// that came from anywhere, so one click must not be able to launch an arbitrary registered
-    /// handler (`smb:`, `vnc:`, some other app's private scheme) off the back of a code someone
-    /// else generated. Copy still works for everything, so nothing is unreachable.
-    private func openableURL(from payload: String) -> URL? {
-        guard let url = URL(string: payload.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let scheme = url.scheme?.lowercased() else {
-            return nil
-        }
-
-        switch scheme {
-        // A web link with no host is malformed, and "http:///" opens a blank window.
-        case "http", "https": return url.host == nil ? nil : url
-        case "mailto", "tel", "sms", "facetime": return url
-        default: return nil
-        }
     }
 
     private func startScan() {

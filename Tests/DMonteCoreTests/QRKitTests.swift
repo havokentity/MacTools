@@ -384,6 +384,53 @@ final class QRKitTests: XCTestCase {
         XCTAssertEqual(QRKit.urlPayload("https://example.com:8080"), "https://example.com:8080")
     }
 
+    func testURLPayloadTreatsDotlessHostAndPortAsAHostNotAScheme() {
+        // "localhost" is a legal scheme by the grammar, so the dotted-host rule alone missed it.
+        XCTAssertEqual(QRKit.urlPayload("localhost:8080"), "https://localhost:8080")
+        XCTAssertEqual(QRKit.urlPayload("localhost:3000/admin"), "https://localhost:3000/admin")
+        XCTAssertEqual(QRKit.urlPayload("127.0.0.1:8080"), "https://127.0.0.1:8080")
+        XCTAssertEqual(QRKit.urlPayload("example.com:8080"), "https://example.com:8080")
+        // Schemes whose value starts with a digit must survive the port heuristic.
+        XCTAssertEqual(QRKit.urlPayload("tel:5550100"), "tel:5550100")
+        XCTAssertEqual(QRKit.urlPayload("sms:5550100"), "sms:5550100")
+        XCTAssertEqual(QRKit.urlPayload("SMSTO:5550100"), "SMSTO:5550100")
+        XCTAssertEqual(QRKit.urlPayload("http://x"), "http://x")
+        XCTAssertEqual(QRKit.urlPayload("mailto:"), "mailto:")
+    }
+
+    // MARK: - Opening decoded payloads
+
+    func testOpenableURLRewritesSMSTOAsAnSMSURL() {
+        // The tool emits SMSTO:, but nothing registers a handler for it, so it is mapped.
+        XCTAssertEqual(QRKit.openableURL(from: "SMSTO:5550100")?.absoluteString, "sms:5550100")
+        XCTAssertEqual(QRKit.openableURL(from: "smsto:+15550100")?.absoluteString, "sms:+15550100")
+        XCTAssertEqual(
+            QRKit.openableURL(from: "SMSTO:5550100:On my way")?.absoluteString,
+            "sms:5550100?body=On%20my%20way"
+        )
+        // Colons inside the message are part of the message, not another field.
+        XCTAssertEqual(
+            QRKit.openableURL(from: "SMSTO:5550100:ETA: 10:30")?.absoluteString,
+            "sms:5550100?body=ETA%3A%2010%3A30"
+        )
+        // Anything this tool would round-trip must survive the round trip.
+        let payload = QRKit.smsPayload(number: "+1 (555) 010-0", message: "Hi")
+        XCTAssertEqual(QRKit.openableURL(from: payload)?.scheme, "sms")
+
+        XCTAssertNil(QRKit.openableURL(from: "SMSTO:"))
+        XCTAssertNil(QRKit.openableURL(from: "SMSTO::hello"))
+    }
+
+    func testOpenableURLAllowsOnlySafeSchemes() {
+        XCTAssertEqual(QRKit.openableURL(from: "https://example.com")?.absoluteString, "https://example.com")
+        XCTAssertEqual(QRKit.openableURL(from: "  tel:5550100  ")?.absoluteString, "tel:5550100")
+        XCTAssertEqual(QRKit.openableURL(from: "sms:5550100")?.absoluteString, "sms:5550100")
+        XCTAssertEqual(QRKit.openableURL(from: "mailto:ada@example.com")?.absoluteString, "mailto:ada@example.com")
+        XCTAssertNil(QRKit.openableURL(from: "http:///"))
+        XCTAssertNil(QRKit.openableURL(from: "smb://server/share"))
+        XCTAssertNil(QRKit.openableURL(from: "just some text"))
+    }
+
     func testEmailPayloadPercentEncodesQueryItems() {
         XCTAssertEqual(QRKit.emailPayload(address: "ada@example.com", subject: "", body: ""), "mailto:ada@example.com")
         XCTAssertEqual(
