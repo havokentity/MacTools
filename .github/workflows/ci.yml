@@ -31,11 +31,21 @@ jobs:
     name: Build and test
     # Pinned rather than `macos-latest`: that label migrates to a new OS image
     # without warning, which swaps the Swift toolchain underneath us and turns
-    # an unrelated push into a mysterious red build. macos-15 (arm64) is what
-    # `macos-latest` resolves to today, so this is the same image release.yml
-    # builds the shipped artifacts on — CI and release stay in agreement. When
-    # `macos-latest` moves on, bump this deliberately and in one place.
-    runs-on: macos-15
+    # an unrelated push into a mysterious red build.
+    #
+    # macos-26 specifically, because that is the image `macos-latest` already
+    # resolves to — every shipped release (v0.9.1 through v0.13.0) was built on
+    # macos-26-arm64. Pinning here freezes current behaviour; it does not change
+    # it. Do NOT "play it safe" with an older image: macos-15 ships Xcode 16.4 /
+    # Swift 6.1.2, which cannot compile this package at all — an `@MainActor`
+    # XCTestCase with async setUp/tearDown (KeepAwakeTests) is a hard
+    # "sending value of non-Sendable type 'XCTestCase'" error under 6.1 and only
+    # became legal in a later toolchain. `swift-tools-version: 6.1` in
+    # Package.swift is the manifest format's minimum, NOT evidence that a 6.1
+    # compiler can build the sources.
+    #
+    # When `macos-latest` moves on, bump this deliberately and in one place.
+    runs-on: macos-26
 
     # A clean build plus the suite is a few minutes; anything approaching this
     # is a hang, not slow progress. Without a cap GitHub lets the job burn the
@@ -73,9 +83,14 @@ jobs:
           fi
           echo "xcode_build=$xcode_build" >> "$GITHUB_OUTPUT"
 
-          # Package.swift declares swift-tools-version 6.1. An older toolchain
-          # refuses the manifest with an error that reads like a corrupt
-          # checkout, so name the real problem here instead.
+          # The floor is 6.3 — the oldest toolchain empirically known to build
+          # these sources — not the 6.1 in Package.swift's swift-tools-version,
+          # which only governs the manifest format. Swift 6.1.2 (Xcode 16.4)
+          # parses the manifest fine and then fails the test target outright:
+          # `@MainActor` XCTestCase subclasses with async setUp/tearDown raise
+          # "sending value of non-Sendable type 'XCTestCase'". 6.2 is untested,
+          # so the floor sits at the version we have actually built on rather
+          # than the earliest that might work.
           swift_version="$(swift --version 2>&1 | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p' | head -1)"
           if [[ -z "$swift_version" ]]; then
             echo "::error::Could not determine the Swift version of the selected toolchain."
@@ -87,8 +102,8 @@ jobs:
             rest="${swift_version#*.}"
             minor="${rest%%.*}"
           fi
-          if (( major < 6 || (major == 6 && minor < 1) )); then
-            echo "::error::Swift $swift_version is older than the 6.1 tools version Package.swift requires."
+          if (( major < 6 || (major == 6 && minor < 3) )); then
+            echo "::error::Swift $swift_version cannot build this package (needs 6.3+). Xcode 16.4/Swift 6.1 fails the test target on non-Sendable XCTestCase."
             exit 1
           fi
 
