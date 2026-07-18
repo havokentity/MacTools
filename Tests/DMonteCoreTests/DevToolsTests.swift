@@ -185,6 +185,32 @@ final class DevToolsTests: XCTestCase {
         XCTAssertTrue(token.signatureDisplay.contains("unsecured"))
     }
 
+    func testDecodeJWTUnsecuredVerdictIgnoresAlgorithmCasing() {
+        // "eyJhbGciOiJOT05FIn0" is {"alg":"NONE"} — still the unsecured JWS, just shouted.
+        guard let token = decode("eyJhbGciOiJOT05FIn0.eyJzdWIiOiJ4In0.") else { return }
+        XCTAssertTrue(token.signatureDisplay.contains("unsecured"))
+    }
+
+    func testDecodeJWTEmptySignatureWithRealAlgorithmReadsAsTruncated() {
+        // A signed token whose third segment was lost in the paste is not an unsecured token, and
+        // saying "alg: none" here would describe a security property the header flatly denies.
+        guard let token = decode("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ4In0.") else { return }
+        XCTAssertEqual(token.algorithm, "HS256")
+        XCTAssertEqual(token.signature, "")
+        XCTAssertTrue(token.signatureDisplay.contains("truncated"))
+        XCTAssertTrue(token.signatureDisplay.contains("HS256"))
+        XCTAssertFalse(token.signatureDisplay.contains("unsecured"))
+        XCTAssertFalse(token.signatureDisplay.contains("alg: none"))
+    }
+
+    func testDecodeJWTEmptySignatureWithNoAlgorithmReadsAsTruncated() {
+        // No `alg` at all is not a claim of being unsecured either, so it gets the same treatment.
+        guard let token = decode("eyJ0eXAiOiJKV1QifQ.eyJzdWIiOiJ4In0.") else { return }
+        XCTAssertNil(token.algorithm)
+        XCTAssertTrue(token.signatureDisplay.contains("truncated"))
+        XCTAssertFalse(token.signatureDisplay.contains("unsecured"))
+    }
+
     func testDecodeJWTExpiredToken() {
         // exp = 1516242622 (2018), well before the reference instant.
         let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"

@@ -177,10 +177,23 @@ public enum DevToolsKit {
         public static let signatureNotice =
             "Not verified — decoding a JWT says nothing about whether it is authentic."
 
-        /// What to render in the signature field. An empty third segment is the unsecured JWS of
-        /// RFC 7519 §6, which deserves calling out rather than showing as a blank box.
+        /// What to render in the signature field. An empty third segment means one of two very
+        /// different things, and only the header can tell them apart: `alg: none` is the unsecured
+        /// JWS of RFC 7519 §6, while any real algorithm with nothing to show means the signature
+        /// went missing — almost always a truncated paste. Calling the second case “unsecured”
+        /// would tell the reader the token is something it is not.
         public var signatureDisplay: String {
-            signature.isEmpty ? "none — unsecured token (alg: none)" : signature
+            guard signature.isEmpty else { return signature }
+
+            guard let algorithm else {
+                return "missing — the header declares no alg, so this token looks truncated"
+            }
+
+            guard algorithm.lowercased() != "none" else {
+                return "none — unsecured token (alg: none)"
+            }
+
+            return "missing — the header declares alg: \(algorithm), so this token looks truncated"
         }
     }
 
