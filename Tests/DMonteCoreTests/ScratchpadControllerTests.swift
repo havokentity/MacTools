@@ -217,6 +217,49 @@ final class ScratchpadControllerTests: XCTestCase {
         XCTAssertEqual(ScratchpadKit.loadNotes(from: directory).map(\.body), [""])
     }
 
+    /// An arm that survives a whole editing session is not a confirmation. Without this, a user
+    /// who armed a delete, kept writing, and pressed Delete again much later would lose the note
+    /// on that single press.
+    func testTypingDisarmsAnArmedDelete() {
+        let controller = makeController()
+        controller.addNote()
+        controller.updateText("valuable work")
+        controller.deleteSelectedNote()
+        XCTAssertNotNil(controller.pendingDeleteNoteID, "Precondition: the first press armed it")
+
+        controller.updateText("valuable work, continued")
+
+        XCTAssertNil(controller.pendingDeleteNoteID)
+        // The next press must only re-arm, leaving both notes intact.
+        controller.deleteSelectedNote()
+        XCTAssertEqual(controller.notes.count, 2)
+        XCTAssertEqual(controller.activeText, "valuable work, continued")
+    }
+
+    // MARK: - Failed saves
+
+    /// The one failure this tool must never hide: if the bytes did not reach disk, the user has
+    /// to be told while they can still copy the text out somewhere else.
+    func testASaveThatCannotReachDiskIsReportedNotSwallowed() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // A regular file standing where the store directory should be: every write below it fails.
+        let blocker = directory.appendingPathComponent("blocker")
+        try Data("not a directory".utf8).write(to: blocker)
+
+        let controller = ScratchpadController(
+            directory: blocker.appendingPathComponent("notes", isDirectory: true),
+            defaults: defaults
+        )
+
+        // updateText clears the status line, so anything left afterwards came from the flush.
+        controller.updateText("must not vanish quietly")
+        controller.flushPendingSaves()
+
+        XCTAssertNotNil(controller.statusMessage)
+        XCTAssertTrue(controller.statusMessage?.contains("save") == true,
+                      "The warning must name the problem, got: \(controller.statusMessage ?? "nil")")
+    }
+
     // MARK: - Renaming
 
     func testRenamingDeduplicatesAgainstTheOtherNotes() throws {

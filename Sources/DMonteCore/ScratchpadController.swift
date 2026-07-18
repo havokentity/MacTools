@@ -110,6 +110,12 @@ public final class ScratchpadController: ObservableObject {
             canUndoClear = false
         }
 
+        // Typing is also the clearest possible signal that an armed-but-unconfirmed delete was
+        // not meant to go through. The arm otherwise outlives a whole editing session and even a
+        // panel close, so a single stray press much later would destroy the note with no second
+        // chance — the confirmation would be protecting nothing.
+        pendingDeleteNoteID = nil
+
         apply(body: newText, at: index)
         statusMessage = nil
     }
@@ -244,9 +250,11 @@ public final class ScratchpadController: ObservableObject {
 
         saveGeneration &+= 1
         let generation = saveGeneration
+        var allWritten = true
         for note in notes {
-            writer.write(note, to: directory, generation: generation)
+            if !writer.write(note, to: directory, generation: generation) { allWritten = false }
         }
+        if !allWritten { reportSaveFailure() }
     }
 
     // MARK: - Private
@@ -293,10 +301,11 @@ public final class ScratchpadController: ObservableObject {
         // Task.detached takes a @Sendable closure, so it does NOT inherit this method's
         // @MainActor isolation — the encode and write run on a background executor and a very
         // large note can never stall the keystroke that triggered it.
-        saveTasks[note.id] = Task.detached(priority: .utility) {
+        saveTasks[note.id] = Task.detached(priority: .utility) { [weak self] in
             try? await Task.sleep(nanoseconds: 400_000_000)
             if Task.isCancelled { return }
-            writer.write(note, to: directory, generation: generation)
+            guard !writer.write(note, to: directory, generation: generation) else { return }
+            await MainActor.run { self?.reportSaveFailure() }
         }
     }
 
@@ -304,7 +313,15 @@ public final class ScratchpadController: ObservableObject {
     /// file's existence — not its contents — is what the UI has already committed to.
     private func writeNow(_ note: ScratchpadNote) {
         saveGeneration &+= 1
-        writer.write(note, to: directory, generation: saveGeneration)
+        if !writer.write(note, to: directory, generation: saveGeneration) { reportSaveFailure() }
+    }
+
+    /// Surfaces a save that never reached disk — a full volume, a store directory that could not
+    /// be created, revoked permissions. Staying quiet is the worst thing this tool could do here:
+    /// the user would keep typing into a note that is not being persisted and only discover it
+    /// after quitting, which is exactly the loss everything else in this file exists to prevent.
+    private func reportSaveFailure() {
+        statusMessage = "Couldn’t save to disk — copy anything important out."
     }
 
     private func refreshCounts() {
@@ -337,12 +354,18 @@ final class ScratchpadNoteWriter: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.havokentity.mactools.scratchpad.note-write", qos: .utility)
     private var lastWrittenGeneration: [UUID: UInt64] = [:]
 
-    func write(_ note: ScratchpadNote, to directory: URL, generation: UInt64) {
-        guard let data = ScratchpadKit.encode(note) else { return }
-        queue.sync {
-            guard generation > (lastWrittenGeneration[note.id] ?? 0) else { return }
+    /// Returns whether this note is safely on disk. A snapshot dropped for being older than one
+    /// already written reports success — a newer version of the same note is down, which is what
+    /// the caller actually cares about. Only bytes that genuinely failed to land report false.
+    @discardableResult
+    func write(_ note: ScratchpadNote, to directory: URL, generation: UInt64) -> Bool {
+        guard let data = ScratchpadKit.encode(note) else { return false }
+        return queue.sync {
+            guard generation > (lastWrittenGeneration[note.id] ?? 0) else { return true }
+            // Claimed even when the write below fails, so a failed save cannot let a stale
+            // snapshot that arrives afterwards overwrite newer text.
             lastWrittenGeneration[note.id] = generation
-            ScratchpadKit.writeEncodedNote(data, id: note.id, to: directory)
+            return ScratchpadKit.writeEncodedNote(data, id: note.id, to: directory)
         }
     }
 

@@ -254,6 +254,38 @@ final class ScratchpadKitTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: binaryURL.path))
     }
 
+    /// A `.json` file the tool did not write has no identity to recover it under. Salvaging it
+    /// under an invented UUID would write a *second* file and leave the original in place, so the
+    /// same stray file would be recovered again on every launch and the note count would climb
+    /// forever with nothing the user could delete. It must be left alone instead.
+    func testAForeignJSONFileIsLeftAloneRatherThanDuplicatingEveryLoad() throws {
+        let healthy = ScratchpadNote(title: "Healthy", body: "intact")
+        ScratchpadKit.save(healthy, to: directory)
+        let stray = directory.appendingPathComponent("notes.json")
+        try Data("{\"not\":\"one of ours\"".utf8).write(to: stray)
+
+        let first = ScratchpadKit.loadNotes(from: directory)
+        let second = ScratchpadKit.loadNotes(from: directory)
+
+        XCTAssertEqual(first.map(\.title), ["Healthy"])
+        XCTAssertEqual(second.map(\.title), ["Healthy"], "loading twice must not accumulate notes")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path), "an unrecognised file is never deleted")
+    }
+
+    /// A save that cannot reach disk has to say so — the controller turns this into a visible
+    /// warning, and silence would let someone type into a note that is not being persisted.
+    func testWritingIntoAnUnwritableLocationReportsFailure() throws {
+        // A regular file where a directory is expected: writes below it fail with ENOTDIR, with
+        // no dependence on the test runner's uid (a root runner would ignore chmod).
+        let blocker = directory.appendingPathComponent("blocker")
+        try Data("not a directory".utf8).write(to: blocker)
+
+        let unwritable = blocker.appendingPathComponent("notes", isDirectory: true)
+
+        XCTAssertFalse(ScratchpadKit.prepareDirectory(unwritable))
+        XCTAssertFalse(ScratchpadKit.save(ScratchpadNote(title: "Doomed", body: "text"), to: unwritable))
+    }
+
     /// Rewriting a salvaged note must land on the same file, leaving exactly one note behind.
     func testSavingASalvagedNoteRepairsItsFileInPlace() {
         let corruptID = UUID()

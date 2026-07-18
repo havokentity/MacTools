@@ -182,9 +182,14 @@ public enum ScratchpadKit {
     /// file name so a subsequent save overwrites the damaged file rather than leaving a duplicate
     /// behind; unreadable bytes yield `nil` and the caller leaves the file alone.
     private static func salvage(_ data: Data, at url: URL) -> ScratchpadNote? {
+        // Salvage only works when the file name yields the note's real identity, because that is
+        // what makes the next save repair *this* file. Inventing an id for a foreign .json instead
+        // would recover it under a fresh UUID, write that to a new file, and leave the original in
+        // place — so it would be recovered again on every launch, multiplying notes the user has
+        // no way to get rid of. Anything we cannot identify is left untouched on disk.
+        guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { return nil }
         guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return nil }
 
-        let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) ?? UUID()
         // The file's modification date is the closest thing to a real timestamp still available.
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate ?? Date()
