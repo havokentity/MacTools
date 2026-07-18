@@ -22,6 +22,7 @@ final class DriveEjectorKitTests: XCTestCase {
         isInternal: Bool? = nil,
         isRemovable: Bool? = nil,
         isEjectable: Bool? = nil,
+        isLocal: Bool? = true,
         totalBytes: UInt64 = 500_000_000_000,
         freeBytes: UInt64 = 250_000_000_000
     ) -> VolumeDescriptor {
@@ -32,6 +33,7 @@ final class DriveEjectorKitTests: XCTestCase {
             isInternal: isInternal,
             isRemovable: isRemovable,
             isEjectable: isEjectable,
+            isLocal: isLocal,
             totalBytes: totalBytes,
             freeBytes: freeBytes
         )
@@ -57,6 +59,25 @@ final class DriveEjectorKitTests: XCTestCase {
         descriptor(path: "/Volumes/Backup SSD", name: "Backup SSD", isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: true)
     }
 
+    /// A USB SSD exactly as macOS actually describes one — measured on a Mac Studio, where both
+    /// the removable and the ejectable flag come back `false`. The tool listed nothing at all
+    /// until the rule stopped requiring them; this fixture is the regression guard.
+    private var usbSSDAsMacOSReportsIt: VolumeDescriptor {
+        descriptor(path: "/Volumes/T9 MAC OUT", name: "T9 MAC OUT", isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: false, isLocal: true)
+    }
+
+    /// A Thunderbolt/PCIe enclosure, likewise measured: false/false, and external only by
+    /// `isInternal`.
+    private var pcieEnclosureAsMacOSReportsIt: VolumeDescriptor {
+        descriptor(path: "/Volumes/XTRM 5 Media", name: "XTRM 5 Media", isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: false, isLocal: true)
+    }
+
+    /// An iOS Simulator runtime image. Reports removable *and* ejectable — the exact combination
+    /// the old rule keyed on — while vending no `isInternal`, so it must still be refused.
+    private var simulatorRuntimeImage: VolumeDescriptor {
+        descriptor(path: "/Library/Developer/CoreSimulator/Volumes/iOS_23E254a", name: "iOS 26.4.1 Simulator", isRootFileSystem: false, isInternal: nil, isRemovable: true, isEjectable: true, isLocal: true)
+    }
+
     /// A USB stick: removable media as well as ejectable.
     private var usbStick: VolumeDescriptor {
         descriptor(path: "/Volumes/USB Stick", name: "USB Stick", isRootFileSystem: false, isInternal: false, isRemovable: true, isEjectable: true)
@@ -67,9 +88,11 @@ final class DriveEjectorKitTests: XCTestCase {
         descriptor(path: "/Volumes/Installer", name: "Installer", isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: true)
     }
 
-    /// An SMB share: external in the sense of "not inside the Mac", but not detachable media.
+    /// An SMB share. Identified by `isLocal == false` and nothing else: its removable and
+    /// ejectable flags are indistinguishable from a real USB SSD's, which is precisely why the
+    /// rule cannot be built on them.
     private var networkShare: VolumeDescriptor {
-        descriptor(path: "/Volumes/Studio Share", name: "Studio Share", isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: false)
+        descriptor(path: "/Volumes/Studio Share", name: "Studio Share", isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: false, isLocal: false)
     }
 
     /// A filesystem that vends no classification flags at all (some FUSE mounts behave this way).
@@ -217,12 +240,38 @@ final class DriveEjectorKitTests: XCTestCase {
         XCTAssertFalse(DriveEjectorKit.isEligibleForEjection(dataVolume))
     }
 
-    func testFixedExternalVolumesAreBlocked() {
-        XCTAssertEqual(DriveEjectorKit.verdict(for: networkShare), .notRemovable)
+    func testNetworkVolumesAreBlocked() {
+        XCTAssertEqual(DriveEjectorKit.verdict(for: networkShare), .networkVolume)
+        XCTAssertFalse(DriveEjectorKit.isEligibleForEjection(networkShare))
     }
 
-    /// "Cannot be determined" must never resolve to "safe". Each flag is checked individually so
-    /// a single missing key is enough to exclude the volume.
+    /// The regression this tool actually shipped with: every real external drive was refused.
+    ///
+    /// `isRemovable` means removable *media* — an SD card, an optical disc — so USB and
+    /// Thunderbolt SSDs report it `false`, and report `isEjectable` `false` too. A rule that
+    /// required either flag listed nothing at all on a normal Mac. These are the values macOS
+    /// really returned for two attached drives.
+    func testRealExternalDrivesAreOfferedEvenThoughBothFlagsAreFalse() {
+        XCTAssertEqual(DriveEjectorKit.verdict(for: usbSSDAsMacOSReportsIt), .eligible)
+        XCTAssertEqual(DriveEjectorKit.verdict(for: pcieEnclosureAsMacOSReportsIt), .eligible)
+        XCTAssertTrue(DriveEjectorKit.isEligibleForEjection(usbSSDAsMacOSReportsIt))
+        XCTAssertTrue(DriveEjectorKit.isEligibleForEjection(pcieEnclosureAsMacOSReportsIt))
+    }
+
+    /// The mirror image: the volumes that *do* claim removable+ejectable on a real Mac are
+    /// simulator runtime images, which must never be offered. They vend no `isInternal`.
+    func testSimulatorImagesAreRefusedDespiteClaimingRemovableAndEjectable() {
+        XCTAssertEqual(DriveEjectorKit.verdict(for: simulatorRuntimeImage), .undetermined)
+        XCTAssertFalse(DriveEjectorKit.isEligibleForEjection(simulatorRuntimeImage))
+    }
+
+    /// "Cannot be determined" must never resolve to "safe" — but only for the flag the rule
+    /// actually depends on.
+    ///
+    /// `isInternal` is that flag: without it nothing distinguishes an external drive from the
+    /// sealed system volume, so a missing value excludes. `isRemovable` and `isEjectable` are
+    /// deliberately *not* required — real external drives report them as `false`, and requiring
+    /// them (present or true) is what made the tool list nothing at all.
     func testUndeterminedVolumesAreExcluded() {
         XCTAssertEqual(DriveEjectorKit.verdict(for: unclassifiable), .undetermined)
 
@@ -233,13 +282,13 @@ final class DriveEjectorKitTests: XCTestCase {
         )
         XCTAssertEqual(
             DriveEjectorKit.verdict(for: descriptor(path: "/Volumes/B", name: "B", isRootFileSystem: false, isInternal: false, isRemovable: nil, isEjectable: true)),
-            .undetermined,
-            "An unknown removable flag must exclude the volume"
+            .eligible,
+            "A missing removable flag is not disqualifying: the rule does not consult it"
         )
         XCTAssertEqual(
             DriveEjectorKit.verdict(for: descriptor(path: "/Volumes/C", name: "C", isRootFileSystem: false, isInternal: false, isRemovable: true, isEjectable: nil)),
-            .undetermined,
-            "An unknown ejectable flag must exclude the volume"
+            .eligible,
+            "A missing ejectable flag is not disqualifying: the rule does not consult it"
         )
     }
 
@@ -421,7 +470,7 @@ final class DriveEjectorKitTests: XCTestCase {
 
     func testBlockedReasonsReadAsSentencesAndEligibleHasNone() {
         XCTAssertNil(VolumeEjectionVerdict.eligible.blockedReason)
-        for verdict: VolumeEjectionVerdict in [.bootVolume, .internalDisk, .notRemovable, .undetermined] {
+        for verdict: VolumeEjectionVerdict in [.bootVolume, .internalDisk, .networkVolume, .undetermined] {
             let reason = verdict.blockedReason ?? ""
             XCTAssertFalse(reason.isEmpty, "Every blocking verdict needs an explanation to show the user")
             XCTAssertFalse(reason.contains("..."), "Typography: use a real ellipsis, never three dots")
@@ -466,7 +515,9 @@ final class DriveEjectorKitTests: XCTestCase {
             XCTAssertNotEqual(volume.url.standardizedFileURL.path, "/", "The startup disk was offered")
             XCTAssertNotEqual(volume.isRootFileSystem, true, "The root filesystem was offered")
             XCTAssertNotEqual(volume.isInternal, true, "An internal disk was offered: \(volume.name)")
-            XCTAssertTrue(volume.isRemovable == true || volume.isEjectable == true)
+            XCTAssertNotEqual(volume.isLocal, false, "A network volume was offered: \(volume.name)")
+            // Deliberately NOT asserting isRemovable/isEjectable here. Real external drives
+            // report both as false, so requiring either is what made this tool list nothing.
         }
     }
 

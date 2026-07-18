@@ -18,10 +18,16 @@ public struct VolumeDescriptor: Identifiable, Sendable, Equatable {
     public let isRootFileSystem: Bool?
     /// `true` for disks physically inside the Mac (including the sealed system and Data volumes).
     public let isInternal: Bool?
-    /// `true` for media that can be removed from its drive.
+    /// `true` for removable *media* — an SD card or optical disc, not an unpluggable drive.
+    /// Reported `false` by USB and Thunderbolt SSDs, so it cannot gate eligibility. Kept for
+    /// display and diagnostics only.
     public let isRemovable: Bool?
-    /// `true` when the volume can be unmounted and ejected by the user.
+    /// `true` when the filesystem advertises itself as ejectable. Also `false` on plenty of real
+    /// external drives, so likewise not an eligibility signal. See `isRemovable`.
     public let isEjectable: Bool?
+    /// `false` for network mounts (SMB, NFS, autofs homes). A drive ejector deals in hardware,
+    /// so a volume that is known-not-local is refused.
+    public let isLocal: Bool?
     /// Total capacity in bytes; `0` when unavailable.
     public let totalBytes: UInt64
     /// Free capacity in bytes; `0` when unavailable.
@@ -41,6 +47,7 @@ public struct VolumeDescriptor: Identifiable, Sendable, Equatable {
         isInternal: Bool?,
         isRemovable: Bool?,
         isEjectable: Bool?,
+        isLocal: Bool? = nil,
         totalBytes: UInt64,
         freeBytes: UInt64
     ) {
@@ -54,6 +61,7 @@ public struct VolumeDescriptor: Identifiable, Sendable, Equatable {
         self.isInternal = isInternal
         self.isRemovable = isRemovable
         self.isEjectable = isEjectable
+        self.isLocal = isLocal
         self.totalBytes = totalBytes
         self.freeBytes = freeBytes
     }
@@ -64,14 +72,15 @@ public struct VolumeDescriptor: Identifiable, Sendable, Equatable {
 /// A separate reason (rather than a bare `Bool`) exists so the re-check performed immediately
 /// before unmounting can tell the user *why* a row that looked ejectable a moment ago is not.
 public enum VolumeEjectionVerdict: Sendable, Equatable {
-    /// External, removable, and demonstrably not the startup disk.
+    /// External, local, and demonstrably not the startup disk.
     case eligible
     /// The volume the system booted from. Never ejectable, regardless of its other flags.
     case bootVolume
     /// A disk inside the Mac (including the sealed system and Data volumes).
     case internalDisk
-    /// External but fixed — nothing about it says it can be detached.
-    case notRemovable
+    /// A network mount rather than a drive. Unmounting one is a different action with different
+    /// consequences, so it is not offered here.
+    case networkVolume
     /// The filesystem did not vend the flags needed to clear it. Excluded by default.
     case undetermined
 
@@ -81,7 +90,7 @@ public enum VolumeEjectionVerdict: Sendable, Equatable {
         case .eligible: nil
         case .bootVolume: "it’s the startup disk"
         case .internalDisk: "it’s an internal disk"
-        case .notRemovable: "it isn’t a removable volume"
+        case .networkVolume: "it’s a network volume, not a drive"
         case .undetermined: "macOS wouldn’t confirm it’s safe to eject"
         }
     }
@@ -116,6 +125,7 @@ public enum DriveEjectorKit {
         .volumeIsInternalKey,
         .volumeIsRemovableKey,
         .volumeIsEjectableKey,
+        .volumeIsLocalKey,
         .volumeTotalCapacityKey,
         .volumeAvailableCapacityKey
     ]
@@ -162,11 +172,16 @@ public enum DriveEjectorKit {
             return .bootVolume
         }
 
-        // All three classification flags must be present. A volume nobody will classify is one
-        // this tool declines to touch: guessing costs the user a disk, refusing costs a click.
-        guard let isInternal = descriptor.isInternal,
-              let isRemovable = descriptor.isRemovable,
-              let isEjectable = descriptor.isEjectable else {
+        // A drive ejector deals in hardware. Network mounts are refused before the hardware
+        // flags are consulted, since a share can otherwise look external in every other respect.
+        if descriptor.isLocal == false {
+            return .networkVolume
+        }
+
+        // A volume nobody will classify is one this tool declines to touch: guessing costs the
+        // user a disk, refusing costs a click. Synthetic mounts — the simulator's disk images,
+        // autofs homes — vend no `isInternal` at all and drop out here.
+        guard let isInternal = descriptor.isInternal else {
             return .undetermined
         }
 
@@ -174,12 +189,19 @@ public enum DriveEjectorKit {
             return .internalDisk
         }
 
-        // Either flag alone is enough: USB sticks and card media report removable, while disk
-        // images and most external SSDs report only ejectable.
-        guard isRemovable || isEjectable else {
-            return .notRemovable
-        }
-
+        // `isInternal == false` is the whole rule, because it is the only flag that actually
+        // tracks "this disk is external" on modern hardware.
+        //
+        // Do NOT gate on `isRemovable` / `isEjectable`. In DiskArbitration terms "removable"
+        // means removable *media* — an SD card or an optical disc — not a drive you can
+        // unplug, so a USB or Thunderbolt SSD reports removable=false AND ejectable=false and
+        // a rule keyed on them lists nothing at all. Measured on a Mac Studio: a USB SSD and a
+        // PCIe enclosure both report false/false, while the iOS Simulator's disk images are
+        // the volumes that report true/true. The flags are kept on the descriptor because they
+        // are honest signals for display, but they cannot decide eligibility.
+        //
+        // Safety is unaffected: an externally-booted startup disk is caught above by the
+        // root-filesystem flag and the `/System/Volumes` prefix, both of which run first.
         return .eligible
     }
 
@@ -233,6 +255,7 @@ public enum DriveEjectorKit {
             isInternal: values.volumeIsInternal,
             isRemovable: values.volumeIsRemovable,
             isEjectable: values.volumeIsEjectable,
+            isLocal: values.volumeIsLocal,
             totalBytes: total,
             freeBytes: free
         )
