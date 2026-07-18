@@ -129,7 +129,7 @@ public enum ScratchpadKit {
 
     /// Creates `directory` if needed, restricted to the current user. Notes routinely hold
     /// half-written messages and pasted credentials, so 0700 is the right default. Returns false
-    /// only when the directory could not be created at all.
+    /// unless a real directory is in place afterwards.
     @discardableResult
     public static func prepareDirectory(_ directory: URL) -> Bool {
         let ownerOnly: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
@@ -141,7 +141,15 @@ public enum ScratchpadKit {
         // Re-asserted separately: createDirectory only applies its attributes to directories it
         // actually creates, so a directory from an earlier build would keep its old mode.
         try? FileManager.default.setAttributes(ownerOnly, ofItemAtPath: directory.path)
-        return FileManager.default.fileExists(atPath: directory.path)
+
+        // A regular file sitting at this path would satisfy a bare existence check while every
+        // enumeration and write below it failed, so the controller would report storage ready and
+        // silently drop the user's only copy of their notes.
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        return isDirectory.boolValue
     }
 
     /// Loads every note in `directory`, ordered oldest-first.

@@ -310,4 +310,26 @@ final class ScratchpadControllerTests: XCTestCase {
         XCTAssertTrue(reloaded.notes.contains { $0.body == "healthy" })
         XCTAssertTrue(reloaded.notes.contains { $0.title == "Recovered Note" })
     }
+
+    // MARK: - Write ordering
+
+    /// The writer's whole reason to exist: a snapshot that lost the race must never land on top of
+    /// newer text, and a note the user deleted must stay deleted even if a write was already in
+    /// flight. Both are dropped early now, so this also guards the pre-encode shortcut.
+    func testStaleSnapshotsAreDroppedWithoutOverwritingNewerText() throws {
+        ScratchpadKit.prepareDirectory(directory)
+        let writer = ScratchpadNoteWriter()
+        let note = ScratchpadNote(title: "Ideas", body: "newer")
+
+        XCTAssertTrue(writer.write(note, to: directory, generation: 5))
+
+        var stale = note
+        stale.body = "older"
+        XCTAssertTrue(writer.write(stale, to: directory, generation: 3), "a superseded snapshot is not a failure")
+        XCTAssertEqual(ScratchpadKit.loadNotes(from: directory).first?.body, "newer")
+
+        writer.delete(id: note.id, in: directory)
+        XCTAssertTrue(writer.write(note, to: directory, generation: 9))
+        XCTAssertTrue(ScratchpadKit.loadNotes(from: directory).isEmpty, "a deleted note must not come back")
+    }
 }

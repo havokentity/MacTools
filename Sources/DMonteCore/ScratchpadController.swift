@@ -359,6 +359,13 @@ final class ScratchpadNoteWriter: @unchecked Sendable {
     /// the caller actually cares about. Only bytes that genuinely failed to land report false.
     @discardableResult
     func write(_ note: ScratchpadNote, to directory: URL, generation: UInt64) -> Bool {
+        // Cheap pre-check so a doomed snapshot — one superseded while it waited, or one for a note
+        // the user has since deleted — does not pay to encode a large body first. Recorded
+        // generations only ever move forward, so a snapshot that is stale here is still stale by
+        // the time the authoritative check below runs; the reverse cannot happen, which is what
+        // keeps this from ever dropping a write that was needed.
+        if queue.sync(execute: { generation <= (lastWrittenGeneration[note.id] ?? 0) }) { return true }
+
         guard let data = ScratchpadKit.encode(note) else { return false }
         return queue.sync {
             guard generation > (lastWrittenGeneration[note.id] ?? 0) else { return true }

@@ -286,6 +286,16 @@ final class ScratchpadKitTests: XCTestCase {
         XCTAssertFalse(ScratchpadKit.save(ScratchpadNote(title: "Doomed", body: "text"), to: unwritable))
     }
 
+    /// A regular file squatting on the store path is not usable storage, and saying otherwise
+    /// would let the controller keep accepting text it can never write down.
+    func testPreparingADirectoryOverAPlainFileFails() throws {
+        let squatter = directory.appendingPathComponent("squatter", isDirectory: true)
+        try Data("I am a file".utf8).write(to: squatter)
+
+        XCTAssertFalse(ScratchpadKit.prepareDirectory(squatter))
+        XCTAssertFalse(ScratchpadKit.save(ScratchpadNote(title: "Doomed", body: "text"), to: squatter))
+    }
+
     /// Rewriting a salvaged note must land on the same file, leaving exactly one note behind.
     func testSavingASalvagedNoteRepairsItsFileInPlace() {
         let corruptID = UUID()
