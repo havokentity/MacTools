@@ -108,7 +108,7 @@ public enum DevToolsKit {
 
     /// One of the two decodable segments of a compact JWS, so a failure can name the part that
     /// went wrong instead of reporting a shapeless “bad token”.
-    public enum JWTSegment: String, Equatable, Sendable {
+    public enum JWTSegment: Equatable, Sendable {
         case header
         case payload
 
@@ -298,11 +298,13 @@ public enum DevToolsKit {
     /// Reads a NumericDate claim. RFC 7519 §2 defines it as a JSON number, but issuers do ship it
     /// as a string, so accept both rather than silently dropping the claim.
     private static func numericDate(_ value: Any?) -> Double? {
-        // `true`/`false` bridge to `NSNumber` as well, and would otherwise render as 1970.
-        if let value, value is Bool { return nil }
-
         let seconds: Double?
         if let number = value as? NSNumber {
+            // `true`/`false` arrive as `NSNumber` too and would otherwise render as 1970. Test the
+            // CoreFoundation type rather than `is Bool`: that cast succeeds for *any* NSNumber
+            // losslessly convertible to a boolean, so it also swallows the numbers 0 and 1 — and
+            // `exp: 0` is a real (if sloppy) way to say "already expired".
+            guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
             seconds = number.doubleValue
         } else if let string = value as? String {
             seconds = Double(string)
@@ -326,17 +328,28 @@ public enum DevToolsKit {
     /// Hand-rolled rather than `RelativeDateTimeFormatter` because that formatter's wording shifts
     /// with locale and OS version, and this string is asserted on in tests.
     static func relativeHint(secondsFromNow seconds: Double) -> String {
-        let magnitude = abs(seconds)
+        guard seconds.isFinite else { return "unknown" }
+        // `Int(_: Double)` traps above `Int.max` and the reference instant is caller-supplied, so
+        // cap the offset before converting rather than letting an absurd `now` crash the decoder.
+        let magnitude = min(abs(seconds), 1e15)
         guard magnitude >= 1 else { return "now" }
 
-        let (count, unit): (Int, String) = {
-            switch magnitude {
-            case ..<60: (Int(magnitude.rounded()), "second")
-            case ..<3600: (Int((magnitude / 60).rounded()), "minute")
-            case ..<86_400: (Int((magnitude / 3600).rounded()), "hour")
-            default: (Int((magnitude / 86_400).rounded()), "day")
-            }
-        }()
+        // Round first, then promote to the next unit if the count reached that unit's limit —
+        // otherwise the last half-second before a boundary reads "in 60 minutes" rather than
+        // "in 1 hour", which is exactly when someone is staring at a token about to expire.
+        let units: [(seconds: Double, name: String, limit: Int)] = [
+            (1, "second", 60),
+            (60, "minute", 60),
+            (3600, "hour", 24),
+            (86_400, "day", .max)
+        ]
+        var count = 0
+        var unit = ""
+        for candidate in units {
+            count = Int((magnitude / candidate.seconds).rounded())
+            unit = candidate.name
+            if count < candidate.limit { break }
+        }
 
         let phrase = "\(count) \(unit)\(count == 1 ? "" : "s")"
         return seconds >= 0 ? "in \(phrase)" : "\(phrase) ago"

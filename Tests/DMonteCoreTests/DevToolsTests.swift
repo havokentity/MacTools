@@ -247,6 +247,30 @@ final class DevToolsTests: XCTestCase {
         XCTAssertEqual(decoded.validity, .unknown)
     }
 
+    func testDecodeJWTKeepsEpochZeroExpiry() {
+        // exp = 0 is a sloppy but real way to mint a dead token. It must not be mistaken for the
+        // boolean `false`, which shares NSNumber's bridging.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjB9.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.validity, .expired)
+        XCTAssertEqual(decoded.timeClaims.first?.date, "1970-01-01T00:00:00Z")
+    }
+
+    func testDecodeJWTKeepsEpochOneClaims() {
+        // Likewise the number 1 casts to `true`, so an unguarded Bool check would drop this row.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjAsImV4cCI6MX0.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.timeClaims.map(\.name), ["iat", "exp"])
+        XCTAssertEqual(decoded.timeClaims.last?.date, "1970-01-01T00:00:01Z")
+    }
+
+    func testDecodeJWTExpiredBeatsNotYetValid() {
+        // nbf in the far future *and* exp in the past: dead wins, whatever nbf claims.
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYmYiOjQxMDI0NDQ4MDAsImV4cCI6MTUxNjI0MjYyMn0.sig"
+        guard let decoded = decode(token) else { return }
+        XCTAssertEqual(decoded.validity, .expired)
+    }
+
     func testDecodeJWTIgnoresOutOfRangeExpiry() {
         // exp = 1e300 would be clamped by ISO8601DateFormatter into a confident-looking year
         // 5828963 date; no row is more honest than a fabricated one.
@@ -325,6 +349,25 @@ final class DevToolsTests: XCTestCase {
         XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: -7200), "2 hours ago")
         XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 172_800), "in 2 days")
         XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: -86_400), "1 day ago")
+    }
+
+    func testRelativeHintPromotesAtUnitBoundaries() {
+        // Rounding within a unit must not produce that unit's own limit: a token issued for an
+        // hour and read a fraction of a second later is "in 1 hour", never "in 60 minutes".
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 59.6), "in 1 minute")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 3_599.6), "in 1 hour")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: -86_399.6), "1 day ago")
+        // Values comfortably inside a unit still read in that unit.
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 3_000), "in 50 minutes")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: 82_800), "in 23 hours")
+    }
+
+    func testRelativeHintSurvivesAbsurdReferenceInstants() {
+        // `now` is caller-supplied, and `Int(_: Double)` traps past `Int.max`; these must return
+        // a string rather than crash the decoder.
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: .infinity), "unknown")
+        XCTAssertEqual(DevToolsKit.relativeHint(secondsFromNow: .nan), "unknown")
+        XCTAssertFalse(DevToolsKit.relativeHint(secondsFromNow: -.greatestFiniteMagnitude).isEmpty)
     }
 
     func testJWTValidityLabelsAreStable() {
