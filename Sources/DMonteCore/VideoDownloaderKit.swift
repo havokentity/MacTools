@@ -29,6 +29,55 @@ public enum VideoDownloaderKit {
         }
     }
 
+    /// The subtitle flags for one download, or an empty array when none apply.
+    ///
+    /// Subtitles are a video-player feature: sidecar .vtt files next to an audio file
+    /// are dead weight, and "all languages" can 429 the download outright, so
+    /// audio-only skips them however the preference is set.
+    public static func subtitleArguments(
+        mode: VideoDownloadMode,
+        subtitleMode: VideoSubtitleMode,
+        preferredLanguages: [String]
+    ) -> [String] {
+        guard mode == .video,
+              let subtitleLangs = subtitleMode.subtitleLanguageArgument(preferredLanguages: preferredLanguages) else {
+            return []
+        }
+
+        // Requesting many languages ("all") trips YouTube's HTTP 429 rate limit, and
+        // yt-dlp treats a subtitle failure as fatal — which aborts the whole download.
+        // Focused language sets avoid 429; the "all" mode tolerates a subtitle failure
+        // instead (see allowsSubtitleFailures).
+        var arguments = ["--write-subs", "--write-auto-subs", "--sub-langs", subtitleLangs]
+        if subtitleMode.allowsSubtitleFailures {
+            arguments += ["--ignore-errors"]
+        }
+        return arguments
+    }
+
+    /// The container-handling flags for one download, or an empty array when none
+    /// apply.
+    ///
+    /// The MP4 preferences describe a video container, so they'd either be ignored or
+    /// fight the extract-audio step in audio-only mode.
+    public static func containerArguments(
+        mode: VideoDownloadMode,
+        nonMP4Handling: VideoNonMP4Handling
+    ) -> [String] {
+        guard mode == .video else {
+            return []
+        }
+
+        switch nonMP4Handling {
+        case .downloadMP4LowerQuality:
+            return ["--merge-output-format", "mp4"]
+        case .downloadWithoutConversion:
+            return []
+        case .convertToMP4:
+            return ["--recode-video", "mp4"]
+        }
+    }
+
     /// The `-o` template for a download into `saveDirectory`.
     ///
     /// One template serves both modes: `%(ext)s` resolves to the extension of the

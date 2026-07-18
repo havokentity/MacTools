@@ -212,6 +212,87 @@ final class VideoDownloaderTests: XCTestCase {
         }
     }
 
+    func testVideoModeEmitsSubtitleFlagsForEveryConfiguredMode() {
+        XCTAssertEqual(
+            VideoDownloaderKit.subtitleArguments(
+                mode: .video,
+                subtitleMode: .englishOnly,
+                preferredLanguages: ["fr-FR"]
+            ),
+            ["--write-subs", "--write-auto-subs", "--sub-langs", "en.*"]
+        )
+        XCTAssertEqual(
+            VideoDownloaderKit.subtitleArguments(
+                mode: .video,
+                subtitleMode: .englishAndSystem,
+                preferredLanguages: ["fr-FR"]
+            ),
+            ["--write-subs", "--write-auto-subs", "--sub-langs", "en.*,fr.*"]
+        )
+
+        // "All languages" is the only mode that may swallow a subtitle failure, since
+        // it is the only one that reliably trips YouTube's 429.
+        XCTAssertEqual(
+            VideoDownloaderKit.subtitleArguments(
+                mode: .video,
+                subtitleMode: .allLanguages,
+                preferredLanguages: ["en-US"]
+            ),
+            ["--write-subs", "--write-auto-subs", "--sub-langs", "all", "--ignore-errors"]
+        )
+
+        // Off is the one video-mode case that emits nothing.
+        XCTAssertEqual(
+            VideoDownloaderKit.subtitleArguments(mode: .video, subtitleMode: .off, preferredLanguages: ["en-US"]),
+            []
+        )
+    }
+
+    func testAudioOnlyEmitsNoSubtitleFlagsHoweverSubtitlesAreConfigured() {
+        // Sidecar .vtt files next to an .m4a are dead weight, and "all languages" can
+        // 429 the download outright — so the preference is dropped, not honoured.
+        for subtitleMode in VideoSubtitleMode.allCases {
+            XCTAssertEqual(
+                VideoDownloaderKit.subtitleArguments(
+                    mode: .audioOnly,
+                    subtitleMode: subtitleMode,
+                    preferredLanguages: ["fr-FR"]
+                ),
+                [],
+                subtitleMode.rawValue
+            )
+        }
+    }
+
+    func testVideoModeEmitsTheConfiguredMP4HandlingFlags() {
+        XCTAssertEqual(
+            VideoDownloaderKit.containerArguments(mode: .video, nonMP4Handling: .downloadMP4LowerQuality),
+            ["--merge-output-format", "mp4"]
+        )
+        XCTAssertEqual(
+            VideoDownloaderKit.containerArguments(mode: .video, nonMP4Handling: .convertToMP4),
+            ["--recode-video", "mp4"]
+        )
+
+        // "Download without conversion" is the one mode that means "add no flag".
+        XCTAssertEqual(
+            VideoDownloaderKit.containerArguments(mode: .video, nonMP4Handling: .downloadWithoutConversion),
+            []
+        )
+    }
+
+    func testAudioOnlyEmitsNoMP4HandlingFlagsHoweverConfigured() {
+        // --recode-video/--merge-output-format name a video container, so they would
+        // fight the extract-audio step rather than be quietly ignored.
+        for handling in VideoNonMP4Handling.allCases {
+            XCTAssertEqual(
+                VideoDownloaderKit.containerArguments(mode: .audioOnly, nonMP4Handling: handling),
+                [],
+                handling.rawValue
+            )
+        }
+    }
+
     func testOutputTemplateLeavesTheExtensionToYTDLP() {
         let template = VideoDownloaderKit.outputTemplate(saveDirectory: temporaryDirectory)
 

@@ -839,33 +839,16 @@ enum VideoDownloaderRunner {
                 audioFormat: preferences.audioFormat
             )
 
-            // Subtitles are a video-player feature: sidecar .vtt files next to an audio
-            // file are dead weight, and "all languages" can 429 the download outright,
-            // so audio-only skips them however the preference is set.
-            if !isAudioOnly,
-               let subtitleLangs = preferences.subtitleMode.subtitleLanguageArgument(preferredLanguages: Locale.preferredLanguages) {
-                // Requesting many languages ("all") trips YouTube's HTTP 429 rate limit,
-                // and yt-dlp treats a subtitle failure as fatal — which aborts the whole
-                // download. Focused language sets avoid 429; the "all" mode tolerates a
-                // subtitle failure instead (see allowsSubtitleFailures).
-                baseArguments += ["--write-subs", "--write-auto-subs", "--sub-langs", subtitleLangs]
-                if preferences.subtitleMode.allowsSubtitleFailures {
-                    baseArguments += ["--ignore-errors"]
-                }
-            }
+            baseArguments += VideoDownloaderKit.subtitleArguments(
+                mode: preferences.downloadMode,
+                subtitleMode: preferences.subtitleMode,
+                preferredLanguages: Locale.preferredLanguages
+            )
 
-            // The MP4 preferences describe a video container, so they'd either be
-            // ignored or fight the extract-audio step in audio-only mode.
-            if !isAudioOnly {
-                switch preferences.nonMP4Handling {
-                case .downloadMP4LowerQuality:
-                    baseArguments += ["--merge-output-format", "mp4"]
-                case .downloadWithoutConversion:
-                    break
-                case .convertToMP4:
-                    baseArguments += ["--recode-video", "mp4"]
-                }
-            }
+            baseArguments += VideoDownloaderKit.containerArguments(
+                mode: preferences.downloadMode,
+                nonMP4Handling: preferences.nonMP4Handling
+            )
 
             // Sources like X, Instagram, and YouTube Shorts deliver separate video
             // and audio streams that yt-dlp must merge with ffmpeg. A Finder-launched
@@ -1485,7 +1468,7 @@ public struct VideoDownloaderWindowView: View {
             .labelsHidden()
             .controlSize(layout.controlSize)
             .frame(width: layout.modePickerWidth)
-            .help("Download the video, or only its audio track")
+            .help("Download the video, or only its audio track. Audio ignores the subtitle and non-MP4 settings.")
 
             Group {
                 if downloadMode == .audioOnly {
@@ -1864,6 +1847,7 @@ private struct VideoDownloaderSettingsView: View {
     var onDone: () -> Void
 
     @AppStorage(DefaultsKey.videoDownloaderPreferredQuality, store: AppDefaults.shared) private var preferredQualityRaw = VideoQuality.maximum.rawValue
+    @AppStorage(DefaultsKey.videoDownloaderDownloadMode, store: AppDefaults.shared) private var downloadModeRaw = VideoDownloadMode.video.rawValue
     @AppStorage(DefaultsKey.videoDownloaderNonMP4Handling, store: AppDefaults.shared) private var nonMP4HandlingRaw = VideoNonMP4Handling.downloadWithoutConversion.rawValue
     @AppStorage(DefaultsKey.videoDownloaderSubtitleMode, store: AppDefaults.shared) private var subtitleModeRaw = VideoSubtitleMode.englishAndSystem.rawValue
     @AppStorage(DefaultsKey.videoDownloaderCookieSource, store: AppDefaults.shared) private var cookieSourceRaw = VideoCookieSource.automatic.rawValue
@@ -1881,19 +1865,35 @@ private struct VideoDownloaderSettingsView: View {
                 layout: layout
             )
 
-            settingsPicker(
-                title: "For non-MP4 videos:",
-                selection: $nonMP4HandlingRaw,
-                options: VideoNonMP4Handling.allCases.map { ($0.rawValue, $0.title) },
-                layout: layout
-            )
+            // Both of these describe a video file, and the runner drops their flags in
+            // audio mode. Leaving them live would let the user change a setting and see
+            // nothing happen, so they go inert and say why.
+            VStack(alignment: .leading, spacing: layout.captionSpacing) {
+                VStack(alignment: .leading, spacing: layout.sectionSpacing) {
+                    settingsPicker(
+                        title: "For non-MP4 videos:",
+                        selection: $nonMP4HandlingRaw,
+                        options: VideoNonMP4Handling.allCases.map { ($0.rawValue, $0.title) },
+                        layout: layout
+                    )
 
-            settingsPicker(
-                title: "Subtitles:",
-                selection: $subtitleModeRaw,
-                options: VideoSubtitleMode.allCases.map { ($0.rawValue, $0.title) },
-                layout: layout
-            )
+                    settingsPicker(
+                        title: "Subtitles:",
+                        selection: $subtitleModeRaw,
+                        options: VideoSubtitleMode.allCases.map { ($0.rawValue, $0.title) },
+                        layout: layout
+                    )
+                }
+                .disabled(isAudioOnly)
+                .opacity(isAudioOnly ? 0.45 : 1)
+
+                if isAudioOnly {
+                    Text("Not used in Audio mode — these describe a video file.")
+                        .font(.system(size: layout.captionFontSize, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             VStack(alignment: .leading, spacing: layout.controlSpacing) {
                 Text("Save to:")
@@ -1959,6 +1959,10 @@ private struct VideoDownloaderSettingsView: View {
         .padding(.top, layout.topPadding)
         .padding(.bottom, layout.bottomPadding)
         .frame(width: layout.width, height: layout.height)
+    }
+
+    private var isAudioOnly: Bool {
+        VideoDownloadMode(rawValue: downloadModeRaw) == .audioOnly
     }
 
     private var saveDirectoryName: String {
