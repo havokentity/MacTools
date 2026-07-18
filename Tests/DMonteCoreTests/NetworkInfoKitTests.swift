@@ -145,6 +145,24 @@ final class NetworkInfoKitTests: XCTestCase {
         XCTAssertEqual(NetworkInfoKit.dnsServers(fromResolvConf: fixture), ["192.168.0.1"])
     }
 
+    /// Regression: Swift treats CRLF as a *single* grapheme cluster, so splitting the file on the
+    /// literal "\n" never matches a CRLF break — the whole file collapsed into one line and the
+    /// tool reported no DNS servers at all. A carriage return is also absent from
+    /// `CharacterSet.whitespaces`, so trimming has to use `.whitespacesAndNewlines`.
+    func testResolvConfHandlesCarriageReturnLineEndings() {
+        let crlf = "nameserver 192.168.1.1\r\nnameserver 8.8.8.8\r\n"
+        XCTAssertEqual(NetworkInfoKit.dnsServers(fromResolvConf: crlf), ["192.168.1.1", "8.8.8.8"])
+
+        let bareCR = "nameserver 10.0.0.1\rnameserver 10.0.0.2\r"
+        XCTAssertEqual(NetworkInfoKit.dnsServers(fromResolvConf: bareCR), ["10.0.0.1", "10.0.0.2"])
+    }
+
+    /// A comment marker must still be honoured when the line ends in CRLF.
+    func testResolvConfIgnoresCommentsWithCarriageReturns() {
+        let fixture = "# nameserver 8.8.8.8\r\nnameserver 192.168.0.1\r\n"
+        XCTAssertEqual(NetworkInfoKit.dnsServers(fromResolvConf: fixture), ["192.168.0.1"])
+    }
+
     func testResolvConfWithNoNameservers() {
         XCTAssertTrue(NetworkInfoKit.dnsServers(fromResolvConf: "search lan\n").isEmpty)
         XCTAssertTrue(NetworkInfoKit.dnsServers(fromResolvConf: "").isEmpty)
@@ -179,8 +197,24 @@ final class NetworkInfoKitTests: XCTestCase {
         XCTAssertNil(NetworkInfoKit.publicIPAddress(fromResponseBody: padded))
     }
 
+    /// The other half of the byte cap: it must sit *above* the longest address a correct endpoint
+    /// can legitimately return (45 characters), or a real answer would be thrown away as oversized.
+    /// Without this, `maximumPublicIPResponseBytes` could be lowered to 8 and every rejection test
+    /// above would still pass.
+    func testPublicIPAcceptsLongestLegitimateAddress() {
+        let longest = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"
+        XCTAssertEqual(longest.utf8.count, 45)
+        XCTAssertEqual(NetworkInfoKit.publicIPAddress(fromResponseBody: longest), longest)
+    }
+
     func testPublicIPRejectsAddressWithTrailingContent() {
         XCTAssertNil(NetworkInfoKit.publicIPAddress(fromResponseBody: "203.0.113.7 and more"))
+    }
+
+    /// Trimming only strips the ends, so a body holding two addresses must be refused outright
+    /// rather than silently reported as whichever one happened to survive.
+    func testPublicIPRejectsBodyWithMultipleAddresses() {
+        XCTAssertNil(NetworkInfoKit.publicIPAddress(fromResponseBody: "203.0.113.7\n198.51.100.4"))
     }
 
     // MARK: - Interface classification

@@ -222,8 +222,12 @@ public enum NetworkInfoKit {
         var seen = Set<String>()
         var servers: [String] = []
 
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+        // Split on `isNewline` rather than the literal "\n": Swift treats CRLF as a *single*
+        // grapheme cluster, so splitting on "\n" does not match it at all and a CRLF-terminated
+        // file collapses into one giant line that parses as zero nameservers. Trimming uses
+        // `.whitespacesAndNewlines` for the same reason — `.whitespaces` excludes carriage return.
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.hasPrefix("#"), !line.hasPrefix(";") else { continue }
 
             let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
@@ -393,6 +397,11 @@ public enum NetworkInfoKit {
     // MARK: - sockaddr formatting
 
     private static func ipv4String(from address: UnsafeMutablePointer<sockaddr>) -> String? {
+        // `ifa_netmask` is not guaranteed to carry a family: the kernel hands back an unspecified
+        // (AF_UNSPEC) sockaddr for some tunnel interfaces, and rebinding that to `sockaddr_in`
+        // would read a zero address and render a bogus "0.0.0.0 (/0)" subnet.
+        guard Int32(address.pointee.sa_family) == AF_INET else { return nil }
+
         var raw = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
         var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
         guard inet_ntop(AF_INET, &raw, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else {

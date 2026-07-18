@@ -186,12 +186,23 @@ public struct NetworkInfoPopoverView: View {
 
             // Naming the service on the face of the button, not buried in settings, is the point:
             // this is the only control in the tool that talks to anyone but the local machine.
-            Text("Sends one request to \(NetworkInfoKit.publicIPServiceHost), which replies with the address your traffic appears to come from. Nothing is sent until you press the button.")
+            Text(publicIPDisclosure)
                 .font(.system(size: s(11)))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The second half of this sentence has to track the preference: claiming "nothing is sent
+    /// until you press the button" while the automatic lookup is switched on would be a plain
+    /// falsehood, and this disclosure is the whole basis on which the user consents.
+    private var publicIPDisclosure: String {
+        let opening = "Sends one request to \(NetworkInfoKit.publicIPServiceHost), which replies with the address your traffic appears to come from."
+        guard controller.fetchesPublicIPAutomatically else {
+            return "\(opening) Nothing is sent until you press the button."
+        }
+        return "\(opening) Automatic lookup is on, so this also runs whenever the network changes."
     }
 
     // MARK: - Footer

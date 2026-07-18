@@ -39,12 +39,16 @@ public final class NetworkInfoController: ObservableObject {
     /// IPv4 router equal to a DNS server, which is the common home-router case) don't both flash.
     @Published public private(set) var copiedRowID: String?
 
-    private let pathMonitor = NWPathMonitor()
+    /// Recreated by each `start()` rather than held for the process lifetime: `NWPathMonitor` is
+    /// single-use, and calling `start(queue:)` on one that has already been cancelled silently
+    /// never delivers an update — a stop/start cycle would leave the tool frozen on a stale
+    /// snapshot with no sign anything was wrong.
+    private var pathMonitor: NWPathMonitor?
     private let pathMonitorQueue = DispatchQueue(label: "com.havokentity.mactools.networkinfo.path")
-    private var isMonitoring = false
 
     private var copiedResetTask: Task<Void, Never>?
     private var publicIPTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
 
     /// Ephemeral so the public-IP request leaves no cookie, credential or cache trace on disk, and
     /// short-timeout so a captive portal that black-holes the connection surfaces as a failure
@@ -67,8 +71,8 @@ public final class NetworkInfoController: ObservableObject {
     deinit {
         // `deinit` is nonisolated; cancel the monitor directly so its dispatch source is torn down
         // even on a path that never reaches `applicationWillTerminate`. `cancel()` on an
-        // already-cancelled or never-started monitor is a no-op.
-        pathMonitor.cancel()
+        // already-cancelled monitor is a no-op.
+        pathMonitor?.cancel()
     }
 
     // MARK: - Public API
@@ -78,37 +82,48 @@ public final class NetworkInfoController: ObservableObject {
     public func start() {
         refresh()
 
-        guard !isMonitoring else { return }
-        isMonitoring = true
+        guard pathMonitor == nil else { return }
 
         // `NWPathMonitor` fires for interface, address and reachability changes alike, which is
         // exactly the set of events that can invalidate the snapshot — polling on a timer would
         // either lag behind a Wi‑Fi switch or burn wakeups doing nothing.
-        pathMonitor.pathUpdateHandler = { [weak self] _ in
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor in
                 self?.handlePathChange()
             }
         }
-        pathMonitor.start(queue: pathMonitorQueue)
+        pathMonitor = monitor
+        monitor.start(queue: pathMonitorQueue)
     }
 
-    /// Stops the path monitor. Called from `applicationWillTerminate` so the monitor's queue is
-    /// torn down before the process exits rather than during deallocation.
+    /// Stops the path monitor and abandons any read still in flight. Called from
+    /// `applicationWillTerminate` so the monitor's queue is torn down before the process exits
+    /// rather than during deallocation. A later `start()` builds a fresh monitor.
     public func stop() {
-        guard isMonitoring else { return }
-        isMonitoring = false
-        pathMonitor.cancel()
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        refreshTask?.cancel()
+        refreshTask = nil
     }
 
     /// Re-reads the local network facts. The read touches `getifaddrs` and SystemConfiguration, so
     /// it runs detached and only the resulting value crosses back to the main actor.
     public func refresh() {
-        Task { [weak self] in
+        // A network transition makes `NWPathMonitor` fire several times in quick succession, so
+        // supersede the previous read instead of letting reads pile up: without this they race,
+        // and a slower earlier read can land last and overwrite the newer snapshot with stale data.
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
             let reading = await Task.detached(priority: .userInitiated) {
                 NetworkInfoKit.snapshot()
             }.value
 
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
+
+            // Republishing an identical snapshot would redraw the popover and rewrite the tray
+            // icon for nothing on every path callback.
+            guard reading != self.snapshot else { return }
             self.snapshot = reading
         }
     }
@@ -182,6 +197,14 @@ public final class NetworkInfoController: ObservableObject {
 
     private func handlePathChange() {
         refresh()
+
+        // Any lookup already in flight was issued against the previous path, so its answer is not
+        // trustworthy as the new network's address — abandon it before deciding what comes next.
+        // Cancelling also clears `isFetchingPublicIP`, which would otherwise leave the button
+        // disabled with no status text once the branch below wipes the "Asking…" line.
+        publicIPTask?.cancel()
+        publicIPTask = nil
+        isFetchingPublicIP = false
 
         guard fetchesPublicIPAutomatically else {
             // The cached address almost certainly belongs to the previous network, so drop it
