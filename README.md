@@ -1,5 +1,7 @@
 # D'Monte's Tool Box
 
+[![CI](https://github.com/havokentity/MacTools/actions/workflows/ci.yml/badge.svg)](https://github.com/havokentity/MacTools/actions/workflows/ci.yml)
+
 A native macOS menu bar tool box — 20 fast, focused utilities in one lightweight Swift app, inspired by the convenience of Parallels Toolbox.
 
 Open the tool box from the menu bar, search for what you need, and launch it. Each tool is a self-contained helper with its own polished SwiftUI interface; tools that run continuously (like System Monitor and Clipboard History) add their own menu bar item.
