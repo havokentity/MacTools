@@ -3,14 +3,35 @@ import XCTest
 
 final class MaintenanceTests: XCTestCase {
 
-    /// A throwaway defaults domain so tests never touch real system settings.
-    private let testDomain = "com.havokentity.mactools.maintenancetest"
+    /// `defaults` accepts a plist PATH in place of a domain name, and that form
+    /// bypasses cfprefsd entirely — it edits the file directly.
+    ///
+    /// A named domain cannot be used here. cfprefsd applies a write
+    /// asynchronously, so `defaults write` exits 0 before the value is
+    /// readable; the very next `defaults read` then reports "the domain/default
+    /// pair does not exist" and the assertion fails. Measured at roughly one
+    /// run in three locally, which on CI is an unexplainable red build. A
+    /// per-test temp file also keeps the suite out of the real preferences
+    /// directory, so a test run leaves nothing behind on the machine.
+    private var testDomain = ""
     private let testKey = "MaintenanceUnitTestFlag"
+    private var tempDirectory: URL?
 
-    override func tearDown() {
-        // Ensure no test residue is left behind.
-        _ = MaintenanceKit.deleteDefaults(domain: testDomain, key: testKey)
-        super.tearDown()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("MaintenanceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        tempDirectory = directory
+        testDomain = directory.appendingPathComponent("defaults.plist").path
+    }
+
+    override func tearDownWithError() throws {
+        if let tempDirectory {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        tempDirectory = nil
+        try super.tearDownWithError()
     }
 
     // MARK: - runShell
