@@ -38,6 +38,59 @@ public enum VideoQuality: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// What a download should produce: the video itself, or only its audio track.
+public enum VideoDownloadMode: String, CaseIterable, Identifiable, Sendable {
+    case video
+    case audioOnly
+
+    public var id: String { rawValue }
+
+    /// Kept to one word each because these are the segments of a control that has
+    /// to share a row with the quality/format menu.
+    var title: String {
+        switch self {
+        case .video: "Video"
+        case .audioOnly: "Audio"
+        }
+    }
+}
+
+/// The container an audio-only download is delivered in.
+public enum VideoAudioFormat: String, CaseIterable, Identifiable, Sendable {
+    case m4a
+    case mp3
+
+    public var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .m4a: "M4A (best quality)"
+        case .mp3: "MP3 (most compatible)"
+        }
+    }
+
+    /// The yt-dlp `--audio-format` token. The raw value doubles as the flag value
+    /// and as the extension yt-dlp gives the extracted file, so the two can never
+    /// drift apart.
+    var ytDlpAudioFormat: String { rawValue }
+
+    /// The extension the finished file carries once yt-dlp's extract-audio step has
+    /// renamed it.
+    var fileExtension: String { rawValue }
+
+    /// The `-f` selector to pair with extract-audio. M4A leads with the m4a-native
+    /// stream so the extract step can remux instead of re-encoding YouTube's Opus
+    /// audio; MP3 always transcodes whatever it gets, so it just takes the best
+    /// audio available. Both fall back to `best` for sources that publish no
+    /// audio-only stream — the extractor strips the video track from a premuxed file.
+    var ytDlpFormat: String {
+        switch self {
+        case .m4a: "bestaudio[ext=m4a]/bestaudio/best"
+        case .mp3: "bestaudio/best"
+        }
+    }
+}
+
 public enum VideoNonMP4Handling: String, CaseIterable, Identifiable, Sendable {
     case downloadMP4LowerQuality
     case downloadWithoutConversion
@@ -140,10 +193,21 @@ public enum VideoCookieSource: String, CaseIterable, Identifiable, Sendable {
 
 fileprivate struct VideoDownloaderPreferences: Sendable {
     var quality: VideoQuality
+    var downloadMode: VideoDownloadMode
+    var audioFormat: VideoAudioFormat
     var nonMP4Handling: VideoNonMP4Handling
     var subtitleMode: VideoSubtitleMode
     var saveDirectoryPath: String
     var cookieSource: VideoCookieSource
+
+    /// What a queue row should say this download will produce. The quality tiers only
+    /// describe video streams, so an audio-only row names its container instead.
+    var queueDetail: String {
+        switch downloadMode {
+        case .video: quality.title
+        case .audioOnly: audioFormat.title
+        }
+    }
 
     @MainActor
     static var current: VideoDownloaderPreferences {
@@ -154,6 +218,10 @@ fileprivate struct VideoDownloaderPreferences: Sendable {
         return VideoDownloaderPreferences(
             quality: VideoQuality(rawValue: defaults.string(forKey: DefaultsKey.videoDownloaderPreferredQuality) ?? "")
                 ?? .maximum,
+            downloadMode: VideoDownloadMode(rawValue: defaults.string(forKey: DefaultsKey.videoDownloaderDownloadMode) ?? "")
+                ?? .video,
+            audioFormat: VideoAudioFormat(rawValue: defaults.string(forKey: DefaultsKey.videoDownloaderAudioFormat) ?? "")
+                ?? .m4a,
             nonMP4Handling: VideoNonMP4Handling(rawValue: defaults.string(forKey: DefaultsKey.videoDownloaderNonMP4Handling) ?? "")
                 ?? .downloadWithoutConversion,
             subtitleMode: VideoSubtitleMode(rawValue: defaults.string(forKey: DefaultsKey.videoDownloaderSubtitleMode) ?? "")
@@ -322,7 +390,7 @@ final class VideoDownloaderModel: ObservableObject {
             url: url,
             title: Self.displayTitle(for: url),
             status: "Queued",
-            detail: preferences.quality.title,
+            detail: preferences.queueDetail,
             progressFraction: nil,
             progressDetail: "Waiting",
             copyText: url,
@@ -376,7 +444,7 @@ final class VideoDownloaderModel: ObservableObject {
         downloads[index].retryCount = 0
         downloads[index].state = .queued
         downloads[index].status = "Queued"
-        downloads[index].detail = VideoDownloaderPreferences.current.quality.title
+        downloads[index].detail = VideoDownloaderPreferences.current.queueDetail
         downloads[index].progressFraction = nil
         downloads[index].progressDetail = "Waiting"
         downloads[index].copyText = downloads[index].url
@@ -740,19 +808,42 @@ enum VideoDownloaderRunner {
                 )
             }
 
+            let isAudioOnly = preferences.downloadMode == .audioOnly
+            let ffmpegDirectory = findFFmpegDirectory()
+
+            // Extract-audio *is* ffmpeg — yt-dlp only orchestrates it. Saying so now
+            // beats downloading the whole stream and then failing on the last step
+            // with a message about a postprocessor the user never asked for.
+            if isAudioOnly, ffmpegDirectory == nil {
+                return Result(
+                    title: "ffmpeg is required",
+                    detail: "Audio-only needs ffmpeg. Install with Homebrew: brew install ffmpeg",
+                    copyText: "Audio-only downloads need ffmpeg. Install with Homebrew: brew install ffmpeg",
+                    succeeded: false,
+                    outputFilePath: nil
+                )
+            }
+
             let saveURL = URL(fileURLWithPath: preferences.saveDirectoryPath, isDirectory: true)
-            let outputTemplate = saveURL.appendingPathComponent("%(title).200B.%(ext)s").path
             var baseArguments = command.arguments + [
                 "--newline",
                 "--no-playlist",
                 "--no-keep-video",
-                "-f",
-                preferences.quality.ytDlpFormat,
                 "-o",
-                outputTemplate
+                VideoDownloaderKit.outputTemplate(saveDirectory: saveURL)
             ]
 
-            if let subtitleLangs = preferences.subtitleMode.subtitleLanguageArgument(preferredLanguages: Locale.preferredLanguages) {
+            baseArguments += VideoDownloaderKit.mediaSelectionArguments(
+                mode: preferences.downloadMode,
+                quality: preferences.quality,
+                audioFormat: preferences.audioFormat
+            )
+
+            // Subtitles are a video-player feature: sidecar .vtt files next to an audio
+            // file are dead weight, and "all languages" can 429 the download outright,
+            // so audio-only skips them however the preference is set.
+            if !isAudioOnly,
+               let subtitleLangs = preferences.subtitleMode.subtitleLanguageArgument(preferredLanguages: Locale.preferredLanguages) {
                 // Requesting many languages ("all") trips YouTube's HTTP 429 rate limit,
                 // and yt-dlp treats a subtitle failure as fatal — which aborts the whole
                 // download. Focused language sets avoid 429; the "all" mode tolerates a
@@ -763,13 +854,17 @@ enum VideoDownloaderRunner {
                 }
             }
 
-            switch preferences.nonMP4Handling {
-            case .downloadMP4LowerQuality:
-                baseArguments += ["--merge-output-format", "mp4"]
-            case .downloadWithoutConversion:
-                break
-            case .convertToMP4:
-                baseArguments += ["--recode-video", "mp4"]
+            // The MP4 preferences describe a video container, so they'd either be
+            // ignored or fight the extract-audio step in audio-only mode.
+            if !isAudioOnly {
+                switch preferences.nonMP4Handling {
+                case .downloadMP4LowerQuality:
+                    baseArguments += ["--merge-output-format", "mp4"]
+                case .downloadWithoutConversion:
+                    break
+                case .convertToMP4:
+                    baseArguments += ["--recode-video", "mp4"]
+                }
             }
 
             // Sources like X, Instagram, and YouTube Shorts deliver separate video
@@ -777,7 +872,7 @@ enum VideoDownloaderRunner {
             // .app has a minimal PATH that omits /opt/homebrew/bin, so point yt-dlp at
             // ffmpeg explicitly; without this the merge step fails and the whole
             // download is reported as failed.
-            if let ffmpegDirectory = findFFmpegDirectory() {
+            if let ffmpegDirectory {
                 baseArguments += ["--ffmpeg-location", ffmpegDirectory]
             }
 
@@ -838,7 +933,11 @@ enum VideoDownloaderRunner {
             }
 
             func successResult(from attempt: Attempt) -> Result {
-                let outputFileURL = downloadedFileURL(from: attempt.output, saveDirectory: saveURL)
+                let outputFileURL = downloadedFileURL(
+                    from: attempt.output,
+                    saveDirectory: saveURL,
+                    audioFormat: isAudioOnly ? preferences.audioFormat : nil
+                )
                 let message = "Download complete. Saved to \(saveURL.path)"
                 return Result(
                     title: "Download complete",
@@ -1017,8 +1116,11 @@ enum VideoDownloaderRunner {
         return nil
     }
 
-    private static func parseProgress(from data: Data) -> Progress? {
-        let text = String(decoding: data, as: UTF8.self)
+    static func parseProgress(from data: Data) -> Progress? {
+        parseProgress(from: String(decoding: data, as: UTF8.self))
+    }
+
+    static func parseProgress(from text: String) -> Progress? {
         guard !text.isEmpty else {
             return nil
         }
@@ -1027,12 +1129,20 @@ enum VideoDownloaderRunner {
             return Progress(fraction: nil, detail: "Preparing file")
         }
 
-        if text.localizedCaseInsensitiveContains("[download] 100%") {
-            return Progress(fraction: 1, detail: "Finishing")
+        // Post-processing is checked before the 100% line because it runs *after* it,
+        // and a single pipe read can carry both: an audio extraction or merge that
+        // takes a minute would otherwise sit on "Finishing" the whole time, and — for
+        // audio — the extract step's own "100%" would be the last thing shown.
+        if text.localizedCaseInsensitiveContains("[ExtractAudio]") {
+            return Progress(fraction: nil, detail: "Extracting audio")
         }
 
         if text.localizedCaseInsensitiveContains("[Merger]") {
             return Progress(fraction: nil, detail: "Merging")
+        }
+
+        if text.localizedCaseInsensitiveContains("[download] 100%") {
+            return Progress(fraction: 1, detail: "Finishing")
         }
 
         let lines = text
@@ -1074,10 +1184,28 @@ enum VideoDownloaderRunner {
         return String(text[range])
     }
 
-    static func downloadedFileURL(from output: String, saveDirectory: URL) -> URL? {
-        let candidates = output
+    /// The file yt-dlp actually left on disk, picked from the paths it logged — the
+    /// newest one that still exists, since intermediate streams are deleted as the
+    /// merge and postprocessing steps replace them.
+    ///
+    /// Pass `audioFormat` for an audio-only download: yt-dlp's extract-audio step
+    /// renames the downloaded stream to that container, and the wording of the log
+    /// line announcing it drifts between yt-dlp versions, so each logged path is also
+    /// tried with the audio extension swapped in.
+    static func downloadedFileURL(
+        from output: String,
+        saveDirectory: URL,
+        audioFormat: VideoAudioFormat? = nil
+    ) -> URL? {
+        var candidates = output
             .split(separator: "\n")
             .flatMap { downloadedFilePathCandidates(in: String($0)) }
+
+        if let audioFormat {
+            candidates += candidates.map {
+                VideoDownloaderKit.extractedAudioPath(fromDownloadedPath: $0, audioFormat: audioFormat)
+            }
+        }
 
         for candidate in candidates.reversed() {
             let url = candidate.hasPrefix("/")
@@ -1101,6 +1229,7 @@ enum VideoDownloaderRunner {
             #"\[download\]\s+Destination:\s+(.+)$"#,
             #"\[download\]\s+(.+)\s+has already been downloaded"#,
             #"\[Merger\]\s+Merging formats into\s+\"(.+)\""#,
+            #"\[ExtractAudio\]\s+Destination:\s+(.+)$"#,
             #"\[VideoConvertor\]\s+Converting video from .+ to \"(.+)\""#,
             #"\[MoveFiles\]\s+Moving file \"(.+)\" to \"(.+)\""#
         ]
@@ -1244,6 +1373,8 @@ public struct VideoDownloaderWindowView: View {
     @StateObject private var model = VideoDownloaderModel()
     @State private var isShowingSettings = false
     @AppStorage(DefaultsKey.videoDownloaderPreferredQuality, store: AppDefaults.shared) private var preferredQualityRaw = VideoQuality.maximum.rawValue
+    @AppStorage(DefaultsKey.videoDownloaderDownloadMode, store: AppDefaults.shared) private var downloadModeRaw = VideoDownloadMode.video.rawValue
+    @AppStorage(DefaultsKey.videoDownloaderAudioFormat, store: AppDefaults.shared) private var audioFormatRaw = VideoAudioFormat.m4a.rawValue
 
     public init(onQuit: @escaping () -> Void) {
         self.onQuit = onQuit
@@ -1256,15 +1387,7 @@ public struct VideoDownloaderWindowView: View {
             VStack(spacing: 0) {
                 header(layout: layout)
 
-                Picker("", selection: preferredQualityBinding) {
-                    ForEach(VideoQuality.allCases) { quality in
-                        Text(quality.title).tag(quality)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .controlSize(layout.controlSize)
-                .frame(width: layout.qualityPickerWidth)
+                formatControls(layout: layout)
 
                 dropZone(layout: layout)
                     .padding(.horizontal, layout.contentHorizontalPadding)
@@ -1341,11 +1464,71 @@ public struct VideoDownloaderWindowView: View {
         .animation(.easeInOut(duration: 0.24), value: isShowingSettings)
     }
 
+    /// Mode on the left, and one menu on the right whose contents follow it: the
+    /// quality tiers only describe video streams, so audio-only swaps in the container
+    /// choice rather than leaving a control that does nothing. Sharing one row keeps
+    /// the window height unchanged.
+    private func formatControls(layout: VideoDownloaderLayout) -> some View {
+        HStack(spacing: layout.formatControlSpacing) {
+            Picker("", selection: downloadModeBinding) {
+                ForEach(VideoDownloadMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(layout.controlSize)
+            .frame(width: layout.modePickerWidth)
+            .help("Download the video, or only its audio track")
+
+            Group {
+                if downloadMode == .audioOnly {
+                    Picker("", selection: audioFormatBinding) {
+                        ForEach(VideoAudioFormat.allCases) { format in
+                            Text(format.title).tag(format)
+                        }
+                    }
+                    .help("Container for the extracted audio")
+                } else {
+                    Picker("", selection: preferredQualityBinding) {
+                        ForEach(VideoQuality.allCases) { quality in
+                            Text(quality.title).tag(quality)
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(layout.controlSize)
+            .frame(width: layout.qualityPickerWidth)
+        }
+    }
+
+    private var downloadMode: VideoDownloadMode {
+        VideoDownloadMode(rawValue: downloadModeRaw) ?? .video
+    }
+
     private var preferredQualityBinding: Binding<VideoQuality> {
         Binding {
             VideoQuality(rawValue: preferredQualityRaw) ?? .maximum
         } set: { quality in
             preferredQualityRaw = quality.rawValue
+        }
+    }
+
+    private var downloadModeBinding: Binding<VideoDownloadMode> {
+        Binding {
+            downloadMode
+        } set: { mode in
+            downloadModeRaw = mode.rawValue
+        }
+    }
+
+    private var audioFormatBinding: Binding<VideoAudioFormat> {
+        Binding {
+            VideoAudioFormat(rawValue: audioFormatRaw) ?? .m4a
+        } set: { format in
+            audioFormatRaw = format.rawValue
         }
     }
 
@@ -1635,6 +1818,10 @@ private struct VideoDownloaderLayout {
     var headerTopPadding: CGFloat { 18 * scale }
     var headerBottomPadding: CGFloat { 10 * scale }
     var qualityPickerWidth: CGFloat { 220 * scale }
+    // Wide enough for "Video"/"Audio" side by side; the pair plus the quality menu
+    // still clears the 410 pt window with room to spare.
+    var modePickerWidth: CGFloat { 116 * scale }
+    var formatControlSpacing: CGFloat { 8 * scale }
     var contentHorizontalPadding: CGFloat { 42 * scale }
     var dropZoneTopPadding: CGFloat { 12 * scale }
     var dropZoneHeight: CGFloat { 215 * scale }
