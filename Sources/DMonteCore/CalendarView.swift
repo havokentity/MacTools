@@ -554,9 +554,15 @@ public struct CalendarPopoverView: View {
         .padding(.bottom, s(10))
     }
 
-    /// `true` when at least one calendar is hidden, so the header icon can advertise that the lists
-    /// are showing less than everything.
-    private var filterIsActive: Bool { !controller.excludedCalendarIDs.isEmpty }
+    /// `true` when at least one calendar that still exists is hidden, so the header icon can advertise
+    /// that the lists are showing less than everything. Measured against the live calendar list rather
+    /// than the raw exclusion set, which retains identifiers of calendars that have since been deleted.
+    private var filterIsActive: Bool {
+        CalendarKit.hasHiddenCalendars(
+            among: controller.calendarSources.map(\.id),
+            excludedCalendarIDs: controller.excludedCalendarIDs
+        )
+    }
 
     // MARK: - Calendar filter
 

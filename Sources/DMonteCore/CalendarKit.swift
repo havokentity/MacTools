@@ -202,6 +202,22 @@ public enum CalendarKit {
         return result
     }
 
+    /// Whether any calendar that currently exists is hidden — i.e. whether the lists are actually
+    /// showing less than everything.
+    ///
+    /// Deliberately not `!excludedCalendarIDs.isEmpty`: the stored set is never pruned (see
+    /// `persistedExcludedCalendarIDs`), so an identifier left behind by a deleted calendar or a
+    /// removed account would otherwise keep the "filtering" indicator lit forever while nothing is
+    /// being filtered. This answers the question the UI actually asks without dropping the
+    /// identifiers that let a returning calendar stay hidden.
+    public static func hasHiddenCalendars(
+        among calendarIDs: some Sequence<String>,
+        excludedCalendarIDs: Set<String>
+    ) -> Bool {
+        guard !excludedCalendarIDs.isEmpty else { return false }
+        return calendarIDs.contains { excludedCalendarIDs.contains($0) }
+    }
+
     // MARK: - Filter persistence
 
     /// The persisted set of hidden calendar identifiers. Never migrates or prunes identifiers that no
@@ -232,7 +248,7 @@ public enum CalendarKit {
     ///     needs, so the stamp must not be taken from `startDate`.
     public static func eventShowURL(eventIdentifier: String?, occurrenceDate: Date?) -> URL? {
         guard let eventIdentifier, !eventIdentifier.isEmpty,
-              let escaped = eventIdentifier.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+              let escaped = eventIdentifier.addingPercentEncoding(withAllowedCharacters: pathComponentAllowed) else {
             return nil
         }
         // `options=more` opens the full inspector rather than the compact popover.
@@ -242,6 +258,11 @@ public enum CalendarKit {
         }
         return URL(string: "ical://ekevent/\(utcStamp(for: occurrenceDate))/\(escaped)\(query)")
     }
+
+    /// `.urlPathAllowed` minus `/`. The identifier is one path component, but EventKit identifiers are
+    /// opaque, so a slash inside one would otherwise pass through unescaped and split the URL into
+    /// extra components — addressing something else entirely instead of failing loudly.
+    private static let pathComponentAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
 
     /// `yyyyMMddTHHmmssZ` in UTC, the shape Calendar.app's URL scheme expects for the occurrence path
     /// component. Built from `DateComponents` rather than a `DateFormatter` so it needs no shared

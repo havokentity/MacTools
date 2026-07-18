@@ -406,6 +406,60 @@ final class CalendarKitTests: XCTestCase {
         )
     }
 
+    func testPersistenceKeepsIdentifiersThatNoLongerResolve() {
+        // The load-bearing persistence decision: an offline or deleted calendar's identifier must
+        // survive a save/load cycle, otherwise a deliberately hidden calendar un-hides itself the
+        // next time its account comes back.
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        CalendarKit.persistExcludedCalendarIDs(["work", "gone-offline"], defaults: defaults)
+        let loaded = CalendarKit.persistedExcludedCalendarIDs(defaults: defaults)
+        XCTAssertEqual(loaded, ["work", "gone-offline"])
+
+        // Toggling an unrelated calendar must not quietly drop the unresolvable one.
+        let updated = CalendarKit.excludedCalendarIDs(loaded, setting: "home", visible: false)
+        CalendarKit.persistExcludedCalendarIDs(updated, defaults: defaults)
+        XCTAssertEqual(
+            CalendarKit.persistedExcludedCalendarIDs(defaults: defaults),
+            ["work", "gone-offline", "home"]
+        )
+    }
+
+    func testPersistenceSurvivesUnicodeAndEmptyIdentifiers() {
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let awkward: Set<String> = ["", "日本のカレンダー", "a b/c", "🎉"]
+        CalendarKit.persistExcludedCalendarIDs(awkward, defaults: defaults)
+        XCTAssertEqual(CalendarKit.persistedExcludedCalendarIDs(defaults: defaults), awkward)
+    }
+
+    // MARK: - "Is anything actually hidden?"
+
+    func testNothingIsHiddenWithAnEmptyExclusionSet() {
+        XCTAssertFalse(CalendarKit.hasHiddenCalendars(among: ["work", "home"], excludedCalendarIDs: []))
+    }
+
+    func testHidingALiveCalendarCountsAsFiltering() {
+        XCTAssertTrue(CalendarKit.hasHiddenCalendars(among: ["work", "home"], excludedCalendarIDs: ["work"]))
+    }
+
+    func testAStaleExclusionDoesNotCountAsFiltering() {
+        // A calendar deleted (or an account removed) while hidden leaves its identifier behind on
+        // purpose. Nothing is being filtered any more, so the UI must not claim otherwise.
+        XCTAssertFalse(
+            CalendarKit.hasHiddenCalendars(among: ["work", "home"], excludedCalendarIDs: ["deleted"]),
+            "A leftover identifier for a calendar that no longer exists must not light the filter indicator."
+        )
+    }
+
+    func testNoCalendarsMeansNothingIsHidden() {
+        XCTAssertFalse(CalendarKit.hasHiddenCalendars(among: [], excludedCalendarIDs: ["work"]))
+    }
+
     // MARK: - Calendar.app deep links
 
     func testEventShowURLCarriesTheOccurrenceDate() {
@@ -450,6 +504,28 @@ final class CalendarKitTests: XCTestCase {
         // EventKit identifiers are opaque; a space or a hash must not truncate or break the URL.
         let url = CalendarKit.eventShowURL(eventIdentifier: "id with space#1", occurrenceDate: nil)
         XCTAssertEqual(url?.absoluteString, "ical://ekevent/id%20with%20space%231?method=show&options=more")
+    }
+
+    func testEventShowURLKeepsTheIdentifierInOnePathComponent() {
+        // A slash is legal in a URL path, so an unescaped one would silently address a different
+        // event rather than fail: the identifier must stay a single component.
+        let calendar = makeCalendar()
+        let url = CalendarKit.eventShowURL(
+            eventIdentifier: "acct/one:evt",
+            occurrenceDate: date(2027, 2, 10, calendar: calendar)
+        )
+        XCTAssertEqual(
+            url?.absoluteString,
+            "ical://ekevent/20270210T000000Z/acct%2Fone:evt?method=show&options=more"
+        )
+        XCTAssertEqual(url?.pathComponents.count, 3, "Expected /, the date stamp, and the identifier.")
+        XCTAssertEqual(url?.pathComponents.last, "acct/one:evt")
+    }
+
+    func testEventShowURLRoundTripsAUnicodeIdentifier() {
+        let identifier = "café-日程-🎉"
+        let url = CalendarKit.eventShowURL(eventIdentifier: identifier, occurrenceDate: nil)
+        XCTAssertEqual(url?.pathComponents.last, identifier)
     }
 
     func testUTCStampIsIndependentOfTheHostTimezone() {
