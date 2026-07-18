@@ -95,6 +95,10 @@ let package = Package(
         .executable(
             name: "DMonteWindowManager",
             targets: ["DMonteWindowManager"]
+        ),
+        .executable(
+            name: "DMonteDriveEjector",
+            targets: ["DMonteDriveEjector"]
         )
     ],
     dependencies: [
@@ -252,6 +256,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteWindowManagerApp"
+        ),
+        .executableTarget(
+            name: "DMonteDriveEjector",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteDriveEjectorApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

@@ -11,6 +11,14 @@ adheres to [Semantic Versioning](https://semver.org) and the
   and runs the full test suite on a pinned macOS runner, using the same
   toolchain the release workflow ships with. Previously only version tags ran
   CI, so a branch could go unverified until release day.
+- **Drive Ejector**: a new menu bar tool that lists mounted external volumes
+  with their capacity and free space and ejects them individually or all at
+  once. Only removable, non-internal volumes are ever listed, and every volume
+  is re-checked against the mount table the moment before it is ejected, so the
+  startup disk and internal drives cannot be unmounted even if a listed row goes
+  stale. Nothing is ever force-unmounted: when a file is open or Spotlight is
+  still indexing, the disk stays mounted and macOS's own reason is shown inline.
+  The list updates live as disks are plugged in and removed.
 
 ## [0.13.0] — 2026-07-12
 
