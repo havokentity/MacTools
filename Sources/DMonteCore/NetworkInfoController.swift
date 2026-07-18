@@ -97,7 +97,7 @@ public final class NetworkInfoController: ObservableObject {
         monitor.start(queue: pathMonitorQueue)
     }
 
-    /// Stops the path monitor and abandons any read still in flight. Called from
+    /// Stops the path monitor and abandons every task still in flight. Called from
     /// `applicationWillTerminate` so the monitor's queue is torn down before the process exits
     /// rather than during deallocation. A later `start()` builds a fresh monitor.
     public func stop() {
@@ -105,6 +105,19 @@ public final class NetworkInfoController: ObservableObject {
         pathMonitor = nil
         refreshTask?.cancel()
         refreshTask = nil
+
+        // A public-IP request that outlived `stop()` would keep talking to a third party after the
+        // tool was told to stand down — the one thing this lookup is deliberately user-initiated to
+        // avoid. Cancelling propagates into `URLSession`, and the state its completion would have
+        // cleared has to be cleared here because that completion now never runs.
+        publicIPTask?.cancel()
+        publicIPTask = nil
+        isFetchingPublicIP = false
+        publicIPStatus = nil
+
+        copiedResetTask?.cancel()
+        copiedResetTask = nil
+        copiedRowID = nil
     }
 
     /// Re-reads the local network facts. The read touches `getifaddrs` and SystemConfiguration, so
@@ -113,18 +126,23 @@ public final class NetworkInfoController: ObservableObject {
         // A network transition makes `NWPathMonitor` fire several times in quick succession, so
         // supersede the previous read instead of letting reads pile up: without this they race,
         // and a slower earlier read can land last and overwrite the newer snapshot with stale data.
-        refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
-            let reading = await Task.detached(priority: .userInitiated) {
-                NetworkInfoKit.snapshot()
-            }.value
+        let previous = refreshTask
+        previous?.cancel()
 
-            guard let self, !Task.isCancelled else { return }
+        // The read itself is the detached task, not a nested one whose handle is dropped: an
+        // unretained child ignores this cancellation entirely, so the supersede above would be
+        // decorative and every callback in a burst would still reach `snapshot()`.
+        refreshTask = Task.detached(priority: .userInitiated) { [weak self] in
+            // Cancelling cannot interrupt a synchronous `getifaddrs`/SystemConfiguration walk that
+            // has already begun, so waiting the previous read out is what actually keeps the burst
+            // serial. Superseded reads bail at the check below without touching the system.
+            await previous?.value
 
-            // Republishing an identical snapshot would redraw the popover and rewrite the tray
-            // icon for nothing on every path callback.
-            guard reading != self.snapshot else { return }
-            self.snapshot = reading
+            guard !Task.isCancelled else { return }
+            let reading = NetworkInfoKit.snapshot()
+            guard !Task.isCancelled, let self else { return }
+
+            await self.publish(reading)
         }
     }
 
@@ -194,6 +212,13 @@ public final class NetworkInfoController: ObservableObject {
     }
 
     // MARK: - Private
+
+    /// Lands a completed read back on the main actor. Republishing an identical snapshot would
+    /// redraw the popover and rewrite the tray icon for nothing on every path callback.
+    private func publish(_ reading: NetworkSnapshot) {
+        guard reading != snapshot else { return }
+        snapshot = reading
+    }
 
     private func handlePathChange() {
         refresh()

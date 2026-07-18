@@ -82,6 +82,8 @@ public struct NetworkInfoPopoverView: View {
             }
             .buttonStyle(.plain)
             .help("Re-read the local network details")
+            // `.help` is only a tooltip; without this VoiceOver announces the bare glyph.
+            .accessibilityLabel("Refresh")
 
             Button {
                 isShowingSettings = true
@@ -92,6 +94,7 @@ public struct NetworkInfoPopoverView: View {
             }
             .buttonStyle(.plain)
             .help("Settings")
+            .accessibilityLabel("Settings")
         }
         .padding(.horizontal, s(16))
         .padding(.top, s(14))
@@ -320,6 +323,7 @@ private struct NetworkInfoSettingsView: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close Settings")
             }
 
             settingRow(title: "Look up public IP automatically") {

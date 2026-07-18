@@ -47,6 +47,16 @@ final class NetworkInfoAppDelegate: NSObject, NSApplicationDelegate {
         // Start monitoring here rather than only from the popover's `onAppear`, so the tray glyph
         // is right before the user ever opens the panel.
         controller.start()
+
+        // The distributed notification above only covers a *second* launch. On the first one this
+        // process is the primary instance, so nothing posts it and the Toolbox tile would appear
+        // to do nothing — reveal the panel here instead. Deferred a runloop turn so the status
+        // item has a button to anchor to.
+        if CommandLine.arguments.contains("--open") {
+            DispatchQueue.main.async { [weak self] in
+                self?.panelHost?.show()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
