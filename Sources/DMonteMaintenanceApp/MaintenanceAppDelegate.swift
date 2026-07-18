@@ -42,6 +42,14 @@ final class MaintenanceAppDelegate: NSObject, NSApplicationDelegate {
         )
         panelHost = host
 
+        // The cached panel's `onAppear` fires only once, so re-read the system
+        // toggles every time it opens.
+        host.onWillShow = {
+            NotificationCenter.default.post(
+                name: MaintenancePopoverView.willShowNotification, object: nil
+            )
+        }
+
         let icon = NSImage(systemSymbolName: "wrench.and.screwdriver.fill",
                            accessibilityDescription: "Maintenance") ?? NSImage()
         statusItem = HelperStatusItem(

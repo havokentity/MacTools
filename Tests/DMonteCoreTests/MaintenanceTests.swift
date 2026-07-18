@@ -58,6 +58,62 @@ final class MaintenanceTests: XCTestCase {
         XCTAssertFalse(MaintenanceKit.readDefaultsBool(domain: testDomain, key: testKey))
     }
 
+    // MARK: - missing vs. explicitly false
+
+    func testReadDefaultsBoolIfPresentDistinguishesMissingFromFalse() {
+        _ = MaintenanceKit.deleteDefaults(domain: testDomain, key: testKey)
+        XCTAssertNil(MaintenanceKit.readDefaultsBoolIfPresent(domain: testDomain, key: testKey))
+
+        XCTAssertTrue(MaintenanceKit.writeDefaultsBool(domain: testDomain, key: testKey, value: false))
+        XCTAssertEqual(MaintenanceKit.readDefaultsBoolIfPresent(domain: testDomain, key: testKey), false)
+
+        XCTAssertTrue(MaintenanceKit.writeDefaultsBool(domain: testDomain, key: testKey, value: true))
+        XCTAssertEqual(MaintenanceKit.readDefaultsBoolIfPresent(domain: testDomain, key: testKey), true)
+    }
+
+    func testCurrentValueUsesDefaultOnlyWhenKeyIsMissing() {
+        let toggle = MaintenanceKit.MaintenanceToggle(
+            id: "test",
+            title: "Test",
+            subtitle: "Test",
+            domain: testDomain,
+            key: testKey,
+            restartProcess: nil,
+            defaultWhenMissing: true)
+
+        _ = MaintenanceKit.deleteDefaults(domain: testDomain, key: testKey)
+        XCTAssertTrue(MaintenanceKit.currentValue(of: toggle))
+
+        // An explicit false must win over the true-by-default fallback.
+        XCTAssertTrue(MaintenanceKit.writeDefaultsBool(domain: testDomain, key: testKey, value: false))
+        XCTAssertFalse(MaintenanceKit.currentValue(of: toggle))
+    }
+
+    func testDesktopIconsToggleIsOnByDefault() {
+        let toggles = MaintenanceKit.sections.flatMap(\.toggles)
+        guard let desktopIcons = toggles.first(where: { $0.id == "desktop-icons" }) else {
+            return XCTFail("Expected a desktop-icons toggle in the catalog")
+        }
+        // Finder shows desktop icons until CreateDesktop is written, so an unset
+        // key must read as On.
+        XCTAssertTrue(desktopIcons.defaultWhenMissing)
+
+        // Every other toggle is off until its key is written.
+        for toggle in toggles where toggle.id != "desktop-icons" {
+            XCTAssertFalse(toggle.defaultWhenMissing, "\(toggle.id) should default to off")
+        }
+    }
+
+    // MARK: - admin AppleScript
+
+    func testAdminAppleScriptEscapesQuotesAndRequestsPrivileges() {
+        let script = MaintenanceKit.adminAppleScript(forShellCommand: "echo \"hi\"")
+        XCTAssertTrue(script.hasPrefix("do shell script \""))
+        XCTAssertTrue(script.hasSuffix("\" with administrator privileges"))
+        // The inner double quotes must be backslash-escaped for the AppleScript literal.
+        XCTAssertTrue(script.contains("echo \\\"hi\\\""))
+    }
+
     // MARK: - lsregister discovery (non-destructive)
 
     func testLsregisterPathIsExecutableOrNil() {

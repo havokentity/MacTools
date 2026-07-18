@@ -47,46 +47,53 @@ public enum MaintenanceKit {
     /// macOS shows its native authentication dialog. Returns `true` on success.
     ///
     /// If the user cancels the prompt, or the command fails, this returns
-    /// `false` along with a human-readable message. AppKit is not imported here;
-    /// `NSAppleScript` lives in Foundation's ScriptingBridge surface via the
-    /// Objective-C runtime, so we keep this dependency-light.
+    /// `false` along with a human-readable message. Execution goes through an
+    /// `osascript` subprocess rather than in-process `NSAppleScript`: OSA is not
+    /// thread safe, and this runs off the main actor.
     public nonisolated static func runAdminScript(_ command: String) -> (success: Bool, message: String) {
-        // Escape embedded double quotes and backslashes for the AppleScript string literal.
-        let escaped = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let source = "do shell script \"\(escaped)\" with administrator privileges"
-
-        guard let script = NSAppleScript(source: source) else {
-            return (false, "Could not build the administrator command.")
-        }
-
-        var errorInfo: NSDictionary?
-        _ = script.executeAndReturnError(&errorInfo)
-
-        if let errorInfo {
-            let code = (errorInfo[NSAppleScript.errorNumber] as? Int) ?? 0
-            // -128 is the standard "User canceled" code.
-            if code == -128 {
+        let result = runShell("/usr/bin/osascript", ["-e", adminAppleScript(forShellCommand: command)])
+        guard result.status == 0 else {
+            // osascript reports a user-dismissed auth dialog as error -128.
+            if result.output.contains("-128") || result.output.localizedCaseInsensitiveContains("cancel") {
                 return (false, "Cancelled.")
             }
-            let message = (errorInfo[NSAppleScript.errorMessage] as? String) ?? "The command failed."
-            return (false, message)
+            return (false, result.output.isEmpty ? "The command failed." : result.output)
         }
-
         return (true, "Done.")
     }
 
+    /// Wraps a shell command in an AppleScript that runs it with admin rights,
+    /// escaping it for the AppleScript string literal.
+    public nonisolated static func adminAppleScript(forShellCommand command: String) -> String {
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "do shell script \"\(escaped)\" with administrator privileges"
+    }
+
     // MARK: - Defaults
+
+    /// Reads a boolean from the macOS defaults system, distinguishing a key that
+    /// has never been written (`nil`) from one explicitly set to `false`. Treats
+    /// common truthy representations ("1", "true", "yes") as `true`.
+    public nonisolated static func readDefaultsBoolIfPresent(domain: String, key: String) -> Bool? {
+        let result = runShell("/usr/bin/defaults", ["read", domain, key])
+        guard result.status == 0 else { return nil }
+        let value = result.output.lowercased()
+        return value == "1" || value == "true" || value == "yes"
+    }
 
     /// Reads a boolean from the macOS defaults system. Treats common truthy
     /// representations ("1", "true", "yes") as `true`. Missing keys read as
     /// `false`.
     public nonisolated static func readDefaultsBool(domain: String, key: String) -> Bool {
-        let result = runShell("/usr/bin/defaults", ["read", domain, key])
-        guard result.status == 0 else { return false }
-        let value = result.output.lowercased()
-        return value == "1" || value == "true" || value == "yes"
+        readDefaultsBoolIfPresent(domain: domain, key: key) ?? false
+    }
+
+    /// Current on/off state of a toggle: the written value if the key exists,
+    /// otherwise the value macOS behaves as if set.
+    public nonisolated static func currentValue(of toggle: MaintenanceToggle) -> Bool {
+        readDefaultsBoolIfPresent(domain: toggle.domain, key: toggle.key) ?? toggle.defaultWhenMissing
     }
 
     /// Writes a boolean to the macOS defaults system. Returns `true` on success.
@@ -150,14 +157,18 @@ public enum MaintenanceKit {
         public let key: String
         /// Process to restart after the toggle changes (nil = none).
         public let restartProcess: String?
+        /// How macOS behaves when the key has never been written. Most defaults
+        /// are off until set, but some (Finder's `CreateDesktop`) are on.
+        public let defaultWhenMissing: Bool
 
-        public init(id: String, title: String, subtitle: String, domain: String, key: String, restartProcess: String?) {
+        public init(id: String, title: String, subtitle: String, domain: String, key: String, restartProcess: String?, defaultWhenMissing: Bool = false) {
             self.id = id
             self.title = title
             self.subtitle = subtitle
             self.domain = domain
             self.key = key
             self.restartProcess = restartProcess
+            self.defaultWhenMissing = defaultWhenMissing
         }
     }
 
@@ -233,7 +244,8 @@ public enum MaintenanceKit {
                         subtitle: "Toggle icons on the Desktop",
                         domain: Domain.finder,
                         key: "CreateDesktop",
-                        restartProcess: "Finder"),
+                        restartProcess: "Finder",
+                        defaultWhenMissing: true),
                     MaintenanceToggle(
                         id: "posix-path",
                         title: "Show full path in title",

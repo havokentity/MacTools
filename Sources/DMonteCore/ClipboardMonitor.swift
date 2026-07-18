@@ -52,10 +52,16 @@ public final class ClipboardMonitor {
     private func tick() {
         let changeCount = pasteboard.changeCount
         guard changeCount != lastChangeCount else { return }
+
+        // A pasteboard write is not atomic: clearContents() bumps changeCount, then the payload
+        // and its privacy markers land. An empty type set means we caught that window — treating
+        // it as "no markers" would wave a concealed copy through, so leave lastChangeCount alone
+        // and judge the change on a later tick, once the writer has finished.
+        let types = Set(pasteboard.types ?? [])
+        guard !types.isEmpty else { return }
+
         lastChangeCount = changeCount
         guard !isPaused, let store else { return }
-
-        let types = Set(pasteboard.types ?? [])
         guard types.isDisjoint(with: Self.excludedTypes) else { return }
 
         // Skip our own paste-backs (we stamp the source type) to avoid loops/duplicates.
@@ -64,6 +70,15 @@ public final class ClipboardMonitor {
         }
 
         guard let captured = readPasteboard(types: types) else { return }
+
+        // The reads above are separate calls, so a copy landing mid-tick would hand us its
+        // content while the marker check ran against the previous one. Re-assert both against
+        // the live pasteboard and discard anything we can't vouch for; a change that arrived
+        // meanwhile bumped changeCount, so the next tick reads it afresh.
+        guard pasteboard.changeCount == changeCount,
+              Set(pasteboard.types ?? []).isDisjoint(with: Self.excludedTypes) else {
+            return
+        }
 
         Task { await store.record(captured) }
     }

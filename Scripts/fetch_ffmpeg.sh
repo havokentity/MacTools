@@ -108,8 +108,12 @@ fetch_one() {
     if [[ "${FFMPEG_ALLOW_UNVERIFIED:-0}" == "1" ]]; then
       echo "warning: no SHA-256 to verify $name (got $actual_sha); continuing because FFMPEG_ALLOW_UNVERIFIED=1" >&2
     else
+      # `tr`, not ${name^^}: stock macOS ships bash 3.2, where that expansion is
+      # a "bad substitution" error — which would abort before this guidance prints.
+      local upper_name
+      upper_name="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
       echo "error: no SHA-256 to verify $name (got $actual_sha)" >&2
-      echo "  set ${name^^}_SHA256=<expected>, or FFMPEG_ALLOW_UNVERIFIED=1 for local dev only" >&2
+      echo "  set ${upper_name}_SHA256=<expected>, or FFMPEG_ALLOW_UNVERIFIED=1 for local dev only" >&2
       rm -f "$tmp_zip"
       exit 1
     fi

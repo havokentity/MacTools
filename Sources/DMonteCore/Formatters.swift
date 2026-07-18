@@ -53,9 +53,7 @@ extension UInt64 {
     }
 
     var compactBytesString: String {
-        bytesString
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: ".0", with: "")
+        bytesString.replacingOccurrences(of: " ", with: "")
     }
 
     var compactRateString: String {

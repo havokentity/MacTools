@@ -11,13 +11,17 @@ final class FocusTimerTests: XCTestCase {
     private let longBreakMinutes = 15
     private let longBreakInterval = 4
 
-    private func makeController() -> FocusTimerController {
+    private func makeSuite() -> UserDefaults {
         let suite = UserDefaults(suiteName: "FocusTimerTests-\(UUID().uuidString)")!
         suite.set(focusMinutes, forKey: DefaultsKey.focusTimerFocusMinutes)
         suite.set(shortBreakMinutes, forKey: DefaultsKey.focusTimerShortBreakMinutes)
         suite.set(longBreakMinutes, forKey: DefaultsKey.focusTimerLongBreakMinutes)
         suite.set(longBreakInterval, forKey: DefaultsKey.focusTimerLongBreakInterval)
-        return FocusTimerController(defaults: suite)
+        return suite
+    }
+
+    private func makeController() -> FocusTimerController {
+        FocusTimerController(defaults: makeSuite())
     }
 
     private var focusSeconds: TimeInterval { TimeInterval(focusMinutes * 60) }
@@ -112,5 +116,70 @@ final class FocusTimerTests: XCTestCase {
         controller.skip()
         XCTAssertEqual(controller.phase, .focus)
         XCTAssertEqual(controller.remaining, focusSeconds, accuracy: 0.001)
+    }
+
+    // MARK: - Duration changes (the settings steppers)
+
+    func testDurationChangeRefreshesAnUnstartedPhase() {
+        let suite = makeSuite()
+        let controller = FocusTimerController(defaults: suite)
+        suite.set(focusMinutes + 1, forKey: DefaultsKey.focusTimerFocusMinutes)
+        controller.refreshDurationIfUnstarted()
+        XCTAssertEqual(controller.remaining, TimeInterval((focusMinutes + 1) * 60), accuracy: 0.001)
+    }
+
+    func testDurationChangeLeavesAPausedFocusSessionAndTallyIntact() {
+        let suite = makeSuite()
+        let controller = FocusTimerController(defaults: suite)
+        controller.start()
+        controller.tick(by: focusSeconds)
+        controller.tick(by: shortBreakSeconds)
+        controller.tick(by: 13 * 60)
+        controller.pause()
+        let pausedRemaining = controller.remaining
+
+        suite.set(focusMinutes + 1, forKey: DefaultsKey.focusTimerFocusMinutes)
+        controller.refreshDurationIfUnstarted()
+
+        XCTAssertEqual(controller.remaining, pausedRemaining, accuracy: 0.001, "a paused session must survive")
+        XCTAssertEqual(controller.phase, .focus)
+        XCTAssertEqual(controller.completedFocusCount, 1, "the tally must not be cleared")
+    }
+
+    func testDurationChangeDuringAPausedBreakKeepsTheBreak() {
+        let suite = makeSuite()
+        let controller = FocusTimerController(defaults: suite)
+        controller.start()
+        controller.tick(by: focusSeconds)
+        controller.tick(by: 60)
+        controller.pause()
+
+        suite.set(focusMinutes + 1, forKey: DefaultsKey.focusTimerFocusMinutes)
+        controller.refreshDurationIfUnstarted()
+
+        XCTAssertEqual(controller.phase, .shortBreak, "the break must not be abandoned")
+        XCTAssertEqual(controller.remaining, shortBreakSeconds - 60, accuracy: 0.001)
+    }
+
+    // MARK: - Phase-advance callback
+
+    func testPhaseAdvanceFiresOnCompletionAndSkipButNotOnReset() {
+        let controller = makeController()
+        var advances = 0
+        controller.onPhaseAdvance = { advances += 1 }
+
+        controller.start()
+        controller.tick(by: focusSeconds)
+        XCTAssertEqual(controller.phase, .shortBreak)
+        XCTAssertEqual(advances, 1, "an elapsed phase is a transition")
+
+        // Resetting out of a break lands on focus, but nothing completed: no chime.
+        controller.tick(by: 30)
+        controller.reset()
+        XCTAssertEqual(controller.phase, .focus)
+        XCTAssertEqual(advances, 1, "reset is not a phase transition")
+
+        controller.skip()
+        XCTAssertEqual(advances, 2, "an explicit skip is a transition")
     }
 }

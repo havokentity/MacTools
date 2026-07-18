@@ -371,6 +371,15 @@ Switcher, Focus Timer, Calendar, Keep Awake, Maintenance, and Dev Tools.
 - The menu bar tool box shell and the first tool, System Monitor (live CPU,
   memory, disk, network, and temperature metrics).
 
+[0.13.0]: https://github.com/havokentity/MacTools/releases/tag/v0.13.0
+[0.12.0]: https://github.com/havokentity/MacTools/releases/tag/v0.12.0
+[0.11.0]: https://github.com/havokentity/MacTools/releases/tag/v0.11.0
+[0.10.0]: https://github.com/havokentity/MacTools/releases/tag/v0.10.0
+[0.9.1]: https://github.com/havokentity/MacTools/releases/tag/v0.9.1
+[0.9.0]: https://github.com/havokentity/MacTools/releases/tag/v0.9.0
+[0.8.8]: https://github.com/havokentity/MacTools/releases/tag/v0.8.8
+[0.8.7]: https://github.com/havokentity/MacTools/releases/tag/v0.8.7
+[0.8.6]: https://github.com/havokentity/MacTools/releases/tag/v0.8.6
 [0.8.5]: https://github.com/havokentity/MacTools/releases/tag/v0.8.5
 [0.8.4]: https://github.com/havokentity/MacTools/releases/tag/v0.8.4
 [0.8.3]: https://github.com/havokentity/MacTools/releases/tag/v0.8.3

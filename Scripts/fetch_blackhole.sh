@@ -13,6 +13,9 @@ set -euo pipefail
 # notarizes as one unit. Requires a full Xcode toolchain (xcodebuild).
 #
 # Prints the absolute path to the directory holding the built *.driver pool.
+# Exits 2 — distinct from any other failure — when the fetched source does not
+# match its pinned commit, so package_app.sh can treat that as fatal rather than
+# shipping without cables the way it does for the offline/no-Xcode case.
 #
 # Naming convention (MUST match LoopbackDriverInstaller in Swift):
 #   index n -> kDriver_Name "DMonteCable<n>" (space-free: seeds the device UID),
@@ -27,12 +30,20 @@ POOL_DIR="$VENDOR_DIR/cables"
 STAMP_PATH="$VENDOR_DIR/pool-stamp"
 
 BLACKHOLE_VERSION="${BLACKHOLE_VERSION:-0.6.1}"
+# The commit v$BLACKHOLE_VERSION must resolve to. Git tags are mutable, so the
+# tag alone pins nothing: upstream can re-point it at different source and we
+# would compile and ship it. Verified fail-closed like the other fetch scripts'
+# SHA-256 pins — this one builds a CoreAudio driver that users install into
+# /Library/Audio/Plug-Ins/HAL. When bumping the version, clone the new tag and
+# put its `git rev-parse HEAD` here.
+BLACKHOLE_COMMIT="${BLACKHOLE_COMMIT:-4fdd55ca3dcd5207caa57ccafa09587d28669fa9}"
 # How many independent cables to pre-build. Default covers several simultaneous
 # apps (e.g. Discord, Zoom, OBS, Meet) with headroom.
 CABLE_COUNT="${CABLE_COUNT:-6}"
 REPO_URL="https://github.com/ExistentialAudio/BlackHole.git"
 
-STAMP="v${BLACKHOLE_VERSION}-x${CABLE_COUNT}"
+# The commit is part of the stamp so bumping the pin invalidates a cached pool.
+STAMP="v${BLACKHOLE_VERSION}-${BLACKHOLE_COMMIT}-x${CABLE_COUNT}"
 
 mkdir -p "$VENDOR_DIR"
 
@@ -51,6 +62,16 @@ fi
 echo "Cloning BlackHole v$BLACKHOLE_VERSION" >&2
 rm -rf "$SRC_DIR" "$POOL_DIR"
 git clone --depth 1 --branch "v$BLACKHOLE_VERSION" "$REPO_URL" "$SRC_DIR" >&2
+
+ACTUAL_COMMIT="$(git -C "$SRC_DIR" rev-parse HEAD)"
+if [[ "$ACTUAL_COMMIT" != "$BLACKHOLE_COMMIT" ]]; then
+  echo "error: BlackHole v$BLACKHOLE_VERSION does not match its pinned commit — refusing to build" >&2
+  echo "  expected: $BLACKHOLE_COMMIT" >&2
+  echo "  actual:   $ACTUAL_COMMIT" >&2
+  rm -rf "$SRC_DIR"
+  exit 2
+fi
+
 mkdir -p "$POOL_DIR"
 
 for ((n = 1; n <= CABLE_COUNT; n++)); do

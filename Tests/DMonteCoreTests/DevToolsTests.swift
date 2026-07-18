@@ -78,10 +78,36 @@ final class DevToolsTests: XCTestCase {
         XCTAssertEqual(DevToolsKit.base64Decode("YWJj"), .success("abc"))
     }
 
+    func testBase64DecodeAcceptsUnpaddedInput() {
+        XCTAssertEqual(DevToolsKit.base64Decode("aGVsbG8"), .success("hello"))
+    }
+
+    func testBase64DecodeAcceptsUnpaddedJWTSegment() {
+        // JWS/JWT payload segments are base64url with the padding stripped (RFC 7515).
+        XCTAssertEqual(
+            DevToolsKit.base64Decode("eyJzdWIiOiIxMjM0NTY3ODkwIn0"),
+            .success(#"{"sub":"1234567890"}"#)
+        )
+    }
+
+    func testBase64DecodeAcceptsBase64URLAlphabet() {
+        // base64url swaps "+" and "/" for "-" and "_": "Pz8+"/"Pz8/" become "Pz8-"/"Pz8_".
+        XCTAssertEqual(DevToolsKit.base64Decode("Pz8-"), .success("??>"))
+        XCTAssertEqual(DevToolsKit.base64Decode("Pz8_"), .success("???"))
+    }
+
     func testBase64DecodeInvalidReturnsError() {
         // "@@@@" cannot decode to valid UTF-8 text.
         let result = DevToolsKit.base64Decode("@@@@")
         XCTAssertEqual(result, .failure(.invalidBase64))
+    }
+
+    func testBase64DecodeRejectsNonASCIIInput() {
+        // Padding is computed from `count` (Characters) but applied by string concatenation,
+        // so multi-unit scalars must still fall through to a clean error rather than being
+        // truncated into something that decodes.
+        XCTAssertEqual(DevToolsKit.base64Decode("🌍🌍🌍"), .failure(.invalidBase64))
+        XCTAssertEqual(DevToolsKit.base64Decode("YWJj🌍"), .failure(.invalidBase64))
     }
 
     func testBase64DecodeEmptyReturnsEmptyError() {

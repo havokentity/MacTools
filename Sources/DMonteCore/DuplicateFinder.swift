@@ -30,7 +30,9 @@ public enum DuplicateFinderKit {
 
     /// Finds duplicate files within `directory`, scanning recursively.
     ///
-    /// Zero-byte files and symbolic links are skipped. Only groups containing
+    /// Zero-byte files and symbolic links are skipped, and directory entries
+    /// hardlinked to the same inode count as one file — they are identical by
+    /// construction and deleting one reclaims nothing. Only groups containing
     /// two or more identical files are returned.
     ///
     /// - Parameters:
@@ -46,16 +48,18 @@ public enum DuplicateFinderKit {
         let candidates = regularFiles(in: directory, progress: progress)
 
         // Phase 1: bucket by size. Only sizes with 2+ candidates can collide.
-        var sizeBuckets: [UInt64: [URL]] = [:]
+        var sizeBuckets: [UInt64: [Candidate]] = [:]
         for candidate in candidates {
             if Task.isCancelled { return [] }
-            sizeBuckets[candidate.size, default: []].append(candidate.url)
+            sizeBuckets[candidate.size, default: []].append(candidate)
         }
 
         // Phase 2: hash only within multi-member size buckets.
         var groups: [DuplicateGroup] = []
-        for (size, urls) in sizeBuckets where urls.count > 1 {
+        for (size, bucket) in sizeBuckets where bucket.count > 1 {
             if Task.isCancelled { return [] }
+            let urls = distinctFiles(in: bucket)
+            guard urls.count > 1 else { continue }
             var hashBuckets: [String: [URL]] = [:]
             for url in urls {
                 if Task.isCancelled { return [] }
@@ -91,6 +95,9 @@ public enum DuplicateFinderKit {
     private struct Candidate {
         let url: URL
         let size: UInt64
+        /// Identifies the filesystem object behind this entry. Two entries carry
+        /// the same identifier when they are linked to one inode on one volume.
+        let identity: NSObject?
     }
 
     /// Recursively enumerates non-empty regular files, skipping symlinks,
@@ -103,6 +110,7 @@ public enum DuplicateFinderKit {
             .isRegularFileKey,
             .isSymbolicLinkKey,
             .fileSizeKey,
+            .fileResourceIdentifierKey,
         ]
         guard let enumerator = FileManager.default.enumerator(
             at: directory,
@@ -128,9 +136,31 @@ public enum DuplicateFinderKit {
             let size = UInt64(values?.fileSize ?? 0)
             guard size > 0 else { continue } // skip zero-byte files
 
-            candidates.append(Candidate(url: fileURL, size: size))
+            candidates.append(
+                Candidate(
+                    url: fileURL,
+                    size: size,
+                    identity: values?.fileResourceIdentifier as? NSObject
+                )
+            )
         }
         return candidates
+    }
+
+    /// Collapses hardlinks down to one entry per inode. Several directory entries
+    /// linked to the same file are byte-identical by construction, so they always
+    /// form a "duplicate" group — but trashing one frees no space and destroys the
+    /// link structure, so only the first entry is offered as a candidate.
+    private static func distinctFiles(in bucket: [Candidate]) -> [URL] {
+        var seen: Set<NSObject> = []
+        var urls: [URL] = []
+        for candidate in bucket {
+            if let identity = candidate.identity, !seen.insert(identity).inserted {
+                continue
+            }
+            urls.append(candidate.url)
+        }
+        return urls
     }
 
     // MARK: - Streamed hashing

@@ -101,6 +101,20 @@ public final class WindowManagerController: NSObject, ObservableObject {
     /// How long an AX call may block before we give up, so one hung app can't beachball us.
     private static let axMessagingTimeoutSeconds: Float = 3.0
 
+    /// Tighter bound for the *speculative* focused-window snapshot taken on the main actor after
+    /// every click and every activation: a fingerprint an app can't produce in a quarter second is
+    /// one to drop rather than stall the Carbon hotkey callbacks and the popover for. Dropping it
+    /// is cheap there — the entry is only a guess at a target the user may never snap, and apply
+    /// falls back to the live focused window exactly as when no snapshot was recorded.
+    ///
+    /// Deliberately NOT used by `resolvePopoverTarget()`, which runs once per popover open (not per
+    /// event, so the latency argument doesn't apply) and whose snapshot is load-bearing rather than
+    /// speculative: it is the fingerprint that re-finds the user's exact window after the menu-bar
+    /// click shifts focus across displays. Losing it there to a slow-but-healthy app (Unity,
+    /// Electron) silently reinstates the cross-display wrong-window bug it exists to prevent, so
+    /// that path keeps the full `axMessagingTimeoutSeconds` budget.
+    private static let axSnapshotTimeoutSeconds: Float = 0.25
+
     /// Settle time between writing a frame and verifying it, per attempt. Apps that process AX
     /// geometry asynchronously (Electron) need a beat before the read-back reflects reality;
     /// the live-diagnosed failure was already visible at +0 ms, so this is generosity, not a fix.
@@ -177,16 +191,25 @@ public final class WindowManagerController: NSObject, ObservableObject {
         if let entry = activationTracker.resolveTargetEntry(), let target = ActivationTracker.liveApp(entry.pid) {
             return TargetSnapshot(
                 app: target,
-                windowSnapshot: entry.windowSnapshot ?? Self.focusedWindowSnapshot(of: target)
+                windowSnapshot: entry.windowSnapshot
+                    ?? Self.focusedWindowSnapshot(of: target, timeout: Self.axMessagingTimeoutSeconds)
             )
         }
 
         if let frontmost = NSWorkspace.shared.frontmostApplication, !Self.isSuiteApplication(frontmost) {
             Self.log.debug("resolve: no history, frontmost \(frontmost.localizedName ?? "?", privacy: .public)")
-            return TargetSnapshot(app: frontmost, windowSnapshot: Self.focusedWindowSnapshot(of: frontmost))
+            return TargetSnapshot(
+                app: frontmost,
+                windowSnapshot: Self.focusedWindowSnapshot(of: frontmost, timeout: Self.axMessagingTimeoutSeconds)
+            )
         }
         Self.log.debug("resolve: no history, topmost-other fallback")
-        return topmostOtherApplication().map { TargetSnapshot(app: $0, windowSnapshot: Self.focusedWindowSnapshot(of: $0)) }
+        return topmostOtherApplication().map {
+            TargetSnapshot(
+                app: $0,
+                windowSnapshot: Self.focusedWindowSnapshot(of: $0, timeout: Self.axMessagingTimeoutSeconds)
+            )
+        }
     }
 
     /// Ends the popover session: snaps go back to live frontmost resolution (hotkeys).
@@ -204,18 +227,20 @@ public final class WindowManagerController: NSObject, ObservableObject {
         }
     }
 
+    /// Recorded even when the fingerprint doesn't come back inside the speculative budget: the
+    /// `isUserSelection` flag is what exempts this entry from `resolve()`'s suspicious-activation
+    /// peel, so a slow AX server must cost us the snapshot, never the entry.
     private func recordCurrentWindowSelection() {
         guard !activationTracker.isSessionActive,
               let app = NSWorkspace.shared.frontmostApplication,
-              !Self.isSuiteApplication(app),
-              let snapshot = Self.focusedWindowSnapshot(of: app) else { return }
+              !Self.isSuiteApplication(app) else { return }
 
         activationTracker.record(
             ActivationTracker.Entry(
                 pid: app.processIdentifier,
                 name: app.localizedName,
                 at: Date(),
-                windowSnapshot: snapshot,
+                windowSnapshot: Self.focusedWindowSnapshot(of: app),
                 isUserSelection: true
             )
         )
@@ -544,23 +569,37 @@ public final class WindowManagerController: NSObject, ObservableObject {
     /// bar makes macOS re-activate whatever is topmost on *that* display (see
     /// `popoverWillShow()`). Hotkey snaps (no popover session) use the live frontmost app.
     ///
-    /// Never one of our own apps (Toolbox/helpers) in either path: right after the Toolbox
-    /// launches this helper with `--open`, the Toolbox itself is frontmost, and snapping *its*
-    /// window on the primary display while the user's window on another display stays put is
-    /// exactly the "moves the wrong window" bug. In that case we target the topmost ordinary
-    /// window owned by any other app instead.
+    /// One of our own apps (Toolbox/helpers) qualifies only while it owns a standard window: the
+    /// window-style helpers (the Disk Usage Analyzer's resizable window) are as snappable as any
+    /// other app's, but our menu-bar UI is all borderless panels, and right after the Toolbox
+    /// launches this helper with `--open` the Toolbox itself is frontmost — snapping *its* panel
+    /// on the primary display while the user's window on another display stays put is exactly the
+    /// "moves the wrong window" bug. In that case we target the topmost ordinary window owned by
+    /// any other app instead.
     private func targetApplication() -> TargetSnapshot? {
         if activationTracker.isSessionActive, let snapshot = popoverTarget {
             return snapshot // non-suite by construction (popoverWillShow filters)
         }
         guard let frontmost = NSWorkspace.shared.frontmostApplication else { return nil }
-        if !Self.isSuiteApplication(frontmost) { return TargetSnapshot(app: frontmost) }
+        if !Self.isSuiteApplication(frontmost) || Self.ownsStandardWindow(frontmost) {
+            return TargetSnapshot(app: frontmost)
+        }
         return topmostOtherApplication().map { TargetSnapshot(app: $0) }
     }
 
     private static func isSuiteApplication(_ app: NSRunningApplication) -> Bool {
         if app.processIdentifier == ProcessInfo.processInfo.processIdentifier { return true }
         return app.bundleIdentifier?.hasPrefix(suiteBundlePrefix) == true
+    }
+
+    /// Whether `app`'s focused window is an ordinary window rather than a panel. Only asked of our
+    /// own apps, to separate the helpers that put up a real window from the popovers and the
+    /// Toolbox, whose borderless panels must fall through to the window underneath.
+    private static func ownsStandardWindow(_ app: NSRunningApplication) -> Bool {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(appElement, axMessagingTimeoutSeconds)
+        guard let window = focusedWindow(of: appElement) else { return false }
+        return subrole(of: window) == kAXStandardWindowSubrole
     }
 
     /// Walks the on-screen window list front-to-back and returns the owner of the first
@@ -582,20 +621,26 @@ public final class WindowManagerController: NSObject, ObservableObject {
 
     // MARK: - Accessibility element access
 
-    private static func focusedWindowSnapshot(of app: NSRunningApplication) -> ActivationTracker.WindowSnapshot? {
+    /// Fingerprints `app`'s focused window. `timeout` defaults to the tight speculative bound used
+    /// by the per-click/per-activation callers; `resolvePopoverTarget()` passes the full messaging
+    /// timeout because there the snapshot is load-bearing (see `axSnapshotTimeoutSeconds`).
+    private static func focusedWindowSnapshot(
+        of app: NSRunningApplication,
+        timeout: Float = WindowManagerController.axSnapshotTimeoutSeconds
+    ) -> ActivationTracker.WindowSnapshot? {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        AXUIElementSetMessagingTimeout(appElement, axMessagingTimeoutSeconds)
-        guard let window = focusedWindow(of: appElement) else { return nil }
+        AXUIElementSetMessagingTimeout(appElement, timeout)
+        guard let window = focusedWindow(of: appElement, timeout: timeout) else { return nil }
         return ActivationTracker.WindowSnapshot(frame: frame(of: window), number: windowNumber(of: window))
     }
 
-    private static func focusedWindow(of appElement: AXUIElement) -> AXUIElement? {
+    private static func focusedWindow(of appElement: AXUIElement, timeout: Float = WindowManagerController.axMessagingTimeoutSeconds) -> AXUIElement? {
         var windowRef: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &windowRef)
         guard status == .success, let windowRef,
               CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
         let window = windowRef as! AXUIElement
-        AXUIElementSetMessagingTimeout(window, Self.axMessagingTimeoutSeconds)
+        AXUIElementSetMessagingTimeout(window, timeout)
         return window
     }
 
@@ -637,6 +682,12 @@ public final class WindowManagerController: NSObject, ObservableObject {
               let ref else { return nil }
         if let int = ref as? Int { return int }
         return (ref as? NSNumber)?.intValue
+    }
+
+    private static func subrole(of window: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXSubroleAttribute as CFString, &ref) == .success else { return nil }
+        return ref as? String
     }
 
     private static func frame(of window: AXUIElement) -> CGRect? {

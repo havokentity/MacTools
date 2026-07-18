@@ -48,6 +48,14 @@ public final class SystemMonitorStatusView: NSControl {
     }
 
     public override func mouseDown(with event: NSEvent) {
+        // Cmd-drag reorders or removes the status item, a gesture implemented by the hosting
+        // NSStatusBarButton's own tracking loop. This view covers the button, so hand the event
+        // over untouched instead of treating it as a click on the strip.
+        if event.modifierFlags.contains(.command) {
+            enclosingStatusBarButton()?.mouseDown(with: event)
+            return
+        }
+
         isHighlighted = true
         // The view is hosted as a subview of the status item's NSStatusBarButton. Forward the
         // click to that button's target/action (set by the app delegate) so the popover toggles,

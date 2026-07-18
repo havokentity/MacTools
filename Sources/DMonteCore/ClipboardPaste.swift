@@ -23,8 +23,10 @@ public enum ClipboardPaste {
     }
 
     /// Places the entry on the pasteboard. When `asPlainText` is true only the plain string is
-    /// written, dropping fonts/colors/links.
-    public static func copyToPasteboard(_ entry: ClipboardEntry, store: ClipboardStore, asPlainText: Bool) {
+    /// written, dropping fonts/colors/links. Returns false — leaving the pasteboard untouched —
+    /// when the entry has nothing left to write, i.e. an image whose file is gone or unreadable.
+    @discardableResult
+    public static func copyToPasteboard(_ entry: ClipboardEntry, store: ClipboardStore, asPlainText: Bool) -> Bool {
         let pasteboard = NSPasteboard.general
 
         switch entry.kind {
@@ -39,6 +41,10 @@ public enum ClipboardPaste {
                     item.setData(tiff, forType: .tiff)
                 }
             }
+            // Test the representations that actually made it onto the item, not just the read: an
+            // undecodable file leaves it marker-only, and clearing for that would throw away
+            // whatever the user had on the clipboard and put nothing in its place.
+            guard !item.types.isEmpty else { return false }
             item.setString(ClipboardMonitor.bundleIdentifier, forType: sourceType)
             pasteboard.clearContents()
             pasteboard.writeObjects([item])
@@ -75,11 +81,14 @@ public enum ClipboardPaste {
             pasteboard.clearContents()
             pasteboard.writeObjects([item])
         }
+
+        return true
     }
 
     /// Copies the entry then pastes it into `target` (the app that was frontmost before our
-    /// panel appeared). Returns false if Accessibility isn't granted yet (content is still
-    /// copied and the permission prompt is shown).
+    /// panel appeared). The result answers "is Accessibility the problem?", not "did the paste
+    /// happen": false only when the permission is missing (content is still copied and the
+    /// prompt is shown), so the caller can raise the permission banner for that case alone.
     @discardableResult
     public static func paste(
         _ entry: ClipboardEntry,
@@ -87,7 +96,10 @@ public enum ClipboardPaste {
         asPlainText: Bool,
         into target: NSRunningApplication?
     ) -> Bool {
-        copyToPasteboard(entry, store: store, asPlainText: asPlainText)
+        // Nothing to copy leaves the user's own clipboard in place, so synthesizing ⌘V would
+        // paste that instead of the entry. Accessibility isn't the problem here, so don't claim
+        // it is — the caller would show the permission banner.
+        guard copyToPasteboard(entry, store: store, asPlainText: asPlainText) else { return true }
 
         guard hasAccessibilityPermission else {
             promptForAccessibilityPermission()

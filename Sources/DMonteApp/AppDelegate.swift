@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency SPUSta
     )
     private var toolboxStatusItem: NSStatusItem?
     private var toolboxPanel: NSPanel?
+    private var toolboxHostingController: NSHostingController<ToolPopoverView>?
     private var defaultsSink: AnyCancellable?
     private var eventMonitor: Any?
 
@@ -78,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency SPUSta
 
         toolboxPanel?.orderOut(nil)
         toolboxPanel = nil
+        toolboxHostingController = nil
 
         if let toolboxStatusItem {
             NSStatusBar.system.removeStatusItem(toolboxStatusItem)
@@ -98,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency SPUSta
         let hostingController = NSHostingController(rootView: toolboxRootView(popoverSize: popoverSize))
         hostingController.view.frame = NSRect(origin: .zero, size: popoverSize)
         panel.contentViewController = hostingController
+        toolboxHostingController = hostingController
         panel.contentMinSize = popoverSize
         panel.contentMaxSize = popoverSize
         panel.setContentSize(popoverSize)
@@ -145,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency SPUSta
         toggleToolboxPopover(from: button)
     }
 
-    private func toolboxRootView(popoverSize: NSSize) -> some View {
+    private func toolboxRootView(popoverSize: NSSize) -> ToolPopoverView {
         ToolPopoverView(
             popoverSize: popoverSize,
             onOpenTool: { [weak self] tool in
@@ -237,11 +240,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency SPUSta
         }
 
         let size = Self.preferredPopoverSize()
+        applyPopoverSize(size, to: panel)
         panel.level = .popUpMenu
-        panel.setContentSize(size)
         panel.setFrame(Self.panelFrame(for: size, anchoredTo: view), display: true)
         panel.makeKeyAndOrderFront(nil)
         startOutsideClickMonitorAfterOpeningClick()
+    }
+
+    /// `ToolPopoverView` pins itself to the size it was built with, so resizing the panel alone
+    /// leaves the frosted content at the old size. Rebuild the SwiftUI root alongside it: the
+    /// preferred size follows `NSScreen.main`, which tracks the focused screen and can differ
+    /// from the display the popover was configured on at launch.
+    private func applyPopoverSize(_ size: NSSize, to panel: NSPanel) {
+        guard panel.contentMinSize != size else {
+            return
+        }
+
+        toolboxHostingController?.rootView = toolboxRootView(popoverSize: size)
+        panel.contentMinSize = size
+        panel.contentMaxSize = size
+        panel.setContentSize(size)
     }
 
     private func closeToolboxPopover() {

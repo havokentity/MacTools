@@ -142,8 +142,19 @@ public final class AudioRouterController: ObservableObject {
         if let output = selectedMonitorOutputUID, !monitorOutputs.contains(where: { $0.uid == output }) {
             selectedMonitorOutputUID = nil
         }
-        // Reflect any engines that stopped themselves (e.g. device unplugged).
-        activeMonitors = activeMonitors.filter { monitorEngines[$0.id]?.isRunning == true }
+        // Reap monitors whose input or output has gone away. CoreAudio never
+        // stops the engine when a sub-device vanishes — `isRunning` stays true
+        // with a dead aggregate — so this device-list refresh is the only place
+        // an unplug is noticed, and only `removeMonitor` puts back the sample
+        // rate the engine forced on the surviving device.
+        let liveInputUIDs = Set(monitorInputs.map(\.uid))
+        let liveOutputUIDs = Set(monitorOutputs.map(\.uid))
+        let strandedMonitors = activeMonitors.filter {
+            !liveInputUIDs.contains($0.inputUID) || !liveOutputUIDs.contains($0.outputUID)
+        }
+        for monitor in strandedMonitors {
+            removeMonitor(monitor)
+        }
     }
 
     /// Installs or removes a virtual cable (admin prompt). Runs the privileged,

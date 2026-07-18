@@ -21,6 +21,7 @@ final class ClipboardAppDelegate: NSObject, NSApplicationDelegate {
     private let activationTracker: ActivationTracker
 
     private static let log = Logger(subsystem: ClipboardMonitor.bundleIdentifier, category: "paste-target")
+    private static let hotKeyLog = Logger(subsystem: ClipboardMonitor.bundleIdentifier, category: "hotkey")
 
     override init() {
         activationTracker = ActivationTracker(
@@ -46,6 +47,8 @@ final class ClipboardAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // History saves are debounced; the task that would perform them dies with us.
+        controller.store.flushPendingSave()
         panelHost?.stopObservingShowNotifications()
         activationTracker.stopObserving()
         panelHost?.removeOutsideClickMonitor()
@@ -111,6 +114,15 @@ final class ClipboardAppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 self?.panelHost?.toggle()
             }
+        }
+
+        if hotKey == nil {
+            // Carbon refuses the combo when another clipboard manager holds it exclusively. The
+            // panel is still reachable from the status item, so this costs the accelerator rather
+            // than the feature — but it must not vanish without a trace.
+            Self.hotKeyLog.error(
+                "⇧⌘V registration failed; secure input active: \(SecureInputState.isBlockingHotKeys, privacy: .public)"
+            )
         }
     }
 

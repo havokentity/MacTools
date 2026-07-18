@@ -14,7 +14,17 @@ private let volumeMixerDefaultsSuiteName = "com.havokentity.mactools.shared"
 private struct VolumeMixerSnapshot: Sendable {
     let engineState: AppVolumeMixerEngineState
     let masterVolumeState: AppVolumeMasterVolumeState
+    /// The rows to show — already ignore-filtered, so display-only.
     let targets: [AppVolumeTarget]
+    /// Every discovered target *before* ignore filtering. Engine reaping and
+    /// auto-processing reconciliation both run over this: a hidden row must not
+    /// read as "the process is gone" (that would drop attenuation and unmute the
+    /// tap), and a hidden-but-active app's kept-alive engine still has to be
+    /// re-resolved on default-output / plug-unplug changes.
+    let allTargets: [AppVolumeTarget]
+    /// Every active target's id *before* ignore filtering, so engine reaping can
+    /// tell "this process is gone" from "this row is merely hidden".
+    let activeTargetIDs: Set<String>
     let ignoredApps: [AppVolumeIgnoredAppInfo]
     let outputDevices: [AppVolumeOutputDevice]
     let outputRouteUIDsByTargetID: [String: [String]]
@@ -62,6 +72,28 @@ public final class AppVolumeMixerController: ObservableObject {
         self.smartFilter = (defaults.object(forKey: DefaultsKey.volumeMixerSmartFilter) as? Bool) ?? true
         refresh()
         startAutoRefresh()
+        // The debounced gain write has to survive quit, and the `deinit` flush
+        // below cannot carry it: the delegate holds this controller for the life
+        // of the process and `NSApp.terminate` exits without unwinding it, so
+        // deinit never runs in the shipping app. No token is kept — the observer
+        // holds `self` weakly and outlives nothing, so there is nothing to undo.
+        //
+        // `queue: nil` is load-bearing, not an omission: it is the only
+        // documented way to get the block run *synchronously on the posting
+        // thread*. Handing this an OperationQueue risks the block being
+        // enqueued rather than run, and nothing drains the main queue after
+        // `willTerminate` — the write would be dropped exactly when it matters,
+        // silently. AppKit always posts this on the main thread, so the block
+        // is already on the main actor and `assumeIsolated` holds.
+        _ = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.flushPendingGainPersistence()
+            }
+        }
     }
 
     deinit {
@@ -91,14 +123,19 @@ public final class AppVolumeMixerController: ObservableObject {
         refreshWorkTask?.cancel()
         refreshWorkTask = Task.detached(priority: .utility) { [hideIgnoredApps, smartFilter, requestID] in
             let defaults = UserDefaults(suiteName: volumeMixerDefaultsSuiteName) ?? .standard
+            // Discover unfiltered and apply the ignore filter here: the reap set
+            // has to see every live target, not just the displayed ones.
+            let discoveredTargets = AppVolumeMixerKit.targets(
+                defaults: defaults,
+                hideIgnoredApps: false,
+                smartFilter: smartFilter
+            )
             let snapshot = VolumeMixerSnapshot(
                 engineState: AppVolumeMixerKit.engineState(),
                 masterVolumeState: AppVolumeMixerKit.masterVolumeState(),
-                targets: AppVolumeMixerKit.targets(
-                    defaults: defaults,
-                    hideIgnoredApps: hideIgnoredApps,
-                    smartFilter: smartFilter
-                ),
+                targets: hideIgnoredApps ? discoveredTargets.filter { !$0.isIgnored } : discoveredTargets,
+                allTargets: discoveredTargets,
+                activeTargetIDs: Set(discoveredTargets.filter(\.isActive).map(\.id)),
                 ignoredApps: AppVolumeMixerKit.ignoredApps(defaults: defaults, smartFilter: smartFilter),
                 outputDevices: AppVolumeMixerKit.outputDevices(),
                 outputRouteUIDsByTargetID: AppVolumeMixerKit.persistedOutputRoutes(defaults: defaults),
@@ -117,16 +154,13 @@ public final class AppVolumeMixerController: ObservableObject {
         refreshWorkTask = nil
         engineState = snapshot.engineState
         masterVolumeState = snapshot.masterVolumeState
-        let refreshedTargets = snapshot.targets.map { target in
-            guard let pendingGain = pendingGainPersistence[target.stableKey] else { return target }
-            return targetWithGain(target, gain: pendingGain)
-        }
+        let refreshedTargets = applyingPendingGains(snapshot.targets)
+        let refreshedAllTargets = applyingPendingGains(snapshot.allTargets)
         ignoredApps = snapshot.ignoredApps
         outputDevices = snapshot.outputDevices
         outputRouteUIDsByTargetID = snapshot.outputRouteUIDsByTargetID
         localIgnoredAppCount = snapshot.localIgnoredAppCount
         defaultIgnoredOverrideCount = snapshot.defaultIgnoredOverrideCount
-        let activeTargetIDs = Set(refreshedTargets.filter(\.isActive).map(\.id))
         // KNOWN STRUCTURAL LIMIT: when a process disappears from the active
         // target list entirely (its audio session fully torn down — distinct
         // from a mere output pause, which keeps the target active and is
@@ -135,14 +169,21 @@ public final class AppVolumeMixerController: ObservableObject {
         // resumes audio it plays unprocessed at full volume for up to one
         // ~2s poll cycle until rediscovery restarts the engine. Do not "fix"
         // this by keeping the engine — there is nothing left to tap.
-        let staleEngineIDs = audioEngines.keys.filter { !activeTargetIDs.contains($0) }
+        // The ids come from the snapshot's unfiltered active set, never from
+        // the displayed `targets`: the ignore filters only hide rows, and a
+        // hidden row must not read as "the process is gone" — that would drop
+        // the app's attenuation and unmute its tap behind the user's back.
+        let staleEngineIDs = audioEngines.keys.filter { !snapshot.activeTargetIDs.contains($0) }
         for id in staleEngineIDs {
             audioEngines[id]?.stop()
             audioEngines.removeValue(forKey: id)
         }
         targets = refreshedTargets
         smartPinCandidateCount = refreshedTargets.filter { !$0.isPinned && AppVolumeMixerKit.isSmartPinCandidate($0) }.count
-        reconcileAutoProcessing()
+        // Reconcile over the unfiltered set, for the same reason the reap above
+        // does: a hidden-but-active app keeps its engine, and that engine still
+        // has to be re-resolved here on default-output / plug-unplug changes.
+        reconcileAutoProcessing(over: refreshedAllTargets)
         sessionState = AppVolumeMixerSessionState(
             activeTargetIDs: Set(audioEngines.keys),
             errorMessage: sessionState.errorMessage
@@ -394,8 +435,15 @@ public final class AppVolumeMixerController: ObservableObject {
         return gain < 0.999 || hasCustomRoute
     }
 
-    private func reconcileAutoProcessing() {
-        for target in targets {
+    private func applyingPendingGains(_ targets: [AppVolumeTarget]) -> [AppVolumeTarget] {
+        targets.map { target in
+            guard let pendingGain = pendingGainPersistence[target.stableKey] else { return target }
+            return targetWithGain(target, gain: pendingGain)
+        }
+    }
+
+    private func reconcileAutoProcessing(over reconcileTargets: [AppVolumeTarget]) {
+        for target in reconcileTargets {
             if Self.shouldRunProcessing(
                 isActive: target.isActive,
                 gain: target.gain,
@@ -480,19 +528,19 @@ public final class AppVolumeMixerController: ObservableObject {
         gainPersistenceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
-            self?.flushPendingGainPersistenceAsync()
+            self?.flushPendingGainPersistence()
         }
     }
 
-    private func flushPendingGainPersistenceAsync() {
+    /// Writes the debounced gains through inline. Deferring to a detached task
+    /// would be a second window in which a quit loses them, and the pending map
+    /// is drained here, so nothing would be left to retry.
+    private func flushPendingGainPersistence() {
         let updates = pendingGainPersistence
         pendingGainPersistence.removeAll()
         gainPersistenceTask = nil
         guard !updates.isEmpty else { return }
-        Task.detached(priority: .utility) {
-            let defaults = UserDefaults(suiteName: volumeMixerDefaultsSuiteName) ?? .standard
-            AppVolumeMixerKit.setGains(updates, defaults: defaults)
-        }
+        AppVolumeMixerKit.setGains(updates, defaults: AppDefaults.shared)
     }
 
     private func targetWithGain(_ target: AppVolumeTarget, gain: Float) -> AppVolumeTarget {

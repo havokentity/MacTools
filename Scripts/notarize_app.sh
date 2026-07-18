@@ -19,7 +19,7 @@ set -euo pipefail
 #
 # If none are set, this prints how to configure them and exits 0 WITHOUT failing,
 # so `make_release_artifacts.sh` can run unnotarized for local/ad-hoc builds.
-# EXCEPTION: in CI with a real Developer ID identity (CODESIGN_IDENTITY set),
+# EXCEPTION: in CI, when the packaged app carries a real Developer ID signature,
 # missing notary credentials are a hard error — publishing a Developer-ID-signed
 # but un-notarized app would get Gatekeeper-blocked on every downloader's Mac.
 
@@ -43,16 +43,24 @@ else
   # In CI with a real Developer ID in play, skipping silently would publish a
   # signed-but-unnotarized app that Gatekeeper blocks for everyone — fail loudly
   # and name exactly which of the API-key vars is missing (names only, no values).
-  if [[ ( -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" ) && -n "${CODESIGN_IDENTITY:-}" ]]; then
+  #
+  # Keyed on the signature the app ACTUALLY carries, not on CODESIGN_IDENTITY:
+  # that variable is optional — package_app.sh also resolves a Developer ID
+  # straight out of the keychain — so an env-var check would miss exactly the
+  # cert-configured-but-notary-creds-missing case this exists to catch. An
+  # ad-hoc signature reports "Signature=adhoc" and no Authority line.
+  SIGNATURE_INFO="$(codesign --display --verbose=2 "$APP_DIR" 2>&1 || true)"
+  if [[ ( -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" ) \
+        && "$SIGNATURE_INFO" == *"Authority=Developer ID Application"* ]]; then
     MISSING=()
     [[ -z "${NOTARY_KEY_ID:-}" ]] && MISSING+=(NOTARY_KEY_ID)
     [[ -z "${NOTARY_KEY_ISSUER:-}" ]] && MISSING+=(NOTARY_KEY_ISSUER)
     [[ -z "${NOTARY_KEY_PATH:-}" ]] && MISSING+=("NOTARY_KEY_PATH (set from the NOTARY_KEY_P8 secret)")
     echo "::error::Notary credentials incomplete in CI — missing: ${MISSING[*]}." \
-         "CODESIGN_IDENTITY is set, so this build is signed with a real Developer ID;" \
-         "a Developer-ID-signed but un-notarized app must NOT be published — Gatekeeper" \
-         "would block it on every downloader's machine. Fix the notary secrets" \
-         "(or unset the signing secrets for an ad-hoc test build) and re-run." >&2
+         "This build is signed with a real Developer ID, and a Developer-ID-signed" \
+         "but un-notarized app must NOT be published — Gatekeeper would block it on" \
+         "every downloader's machine. Fix the notary secrets (or unset the signing" \
+         "secrets for an ad-hoc test build) and re-run." >&2
     exit 1
   fi
 

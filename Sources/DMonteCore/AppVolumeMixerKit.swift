@@ -355,13 +355,14 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
     /// resolution (`[]` means "System Default"). Keep-alive checks compare
     /// against this, not `activeOutputUIDs`, which always holds resolved UIDs.
     private(set) public var requestedOutputUIDs: [String] = []
-    /// Devices whose nominal sample rate we changed to make the routing
-    /// aggregate work (e.g. forcing 48 kHz so an HDMI/TV output matches the
-    /// source), paired with the rate to put back when we stop.
-    private var restoredSampleRates: [(deviceID: AudioObjectID, rate: Double)] = []
+    /// Devices this engine needs held at `reconciledSampleRate` (e.g. 48 kHz so
+    /// an HDMI/TV output matches the source). The rate to put back lives in
+    /// `ForcedSampleRates`, which restores a device only once no engine still
+    /// depends on the forced rate.
+    private var forcedSampleRateDeviceIDs: [AudioObjectID] = []
     /// The common rate `alignSampleRates` settled on for the current route —
-    /// NOT the originals in `restoredSampleRates`, which exist only to be put
-    /// back on stop.
+    /// NOT the originals held by `ForcedSampleRates`, which exist only to be
+    /// put back on stop.
     private var reconciledSampleRate: Double?
 
     public init() {}
@@ -398,10 +399,10 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         // output must share one nominal rate. HDMI/TV outputs typically run at
         // a fixed 48 kHz that differs from the Mac's default, which otherwise
         // produces silence. We align everything to a common supported rate
-        // (recording the originals to restore on stop), and create the tap
-        // afterwards so it latches the reconciled source rate.
+        // (refcounted, so the originals go back once no engine needs them), and
+        // create the tap afterwards so it latches the reconciled source rate.
         try alignSampleRates(source: sourceOutput, outputs: outputDevices)
-        MixerDebug.log("  afterAlign: sourceRate=\(Self.nominalSampleRate(for: sourceOutput.deviceID).map { String($0) } ?? "nil") changed=\(restoredSampleRates.map { "\($0.deviceID)->\($0.rate)" })")
+        MixerDebug.log("  afterAlign: sourceRate=\(Self.nominalSampleRate(for: sourceOutput.deviceID).map { String($0) } ?? "nil") forced=\(forcedSampleRateDeviceIDs)")
 
         let state = RenderState(gain: AppVolumeTarget.clampGain(gain))
         do {
@@ -484,17 +485,140 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         }
     }
 
+    /// Pure bookkeeping behind `ForcedSampleRates`: how many engines depend on a
+    /// device's forced rate, and what is owed back once none do. Free of
+    /// CoreAudio so the refcount rule itself stays testable.
+    struct ForcedSampleRateLedger {
+        private struct Entry {
+            let originalRate: Double
+            var holders: Int
+        }
+
+        private var entries: [AudioObjectID: Entry] = [:]
+
+        init() {}
+
+        /// Whether some engine already holds `deviceID` at a forced rate.
+        func isForced(_ deviceID: AudioObjectID) -> Bool {
+            entries[deviceID] != nil
+        }
+
+        /// Adds one holder. `originalRate` counts only for the first: what the
+        /// device is owed is the rate it ran at before any engine touched it,
+        /// not the forced rate a later holder finds it on.
+        mutating func acquire(_ deviceID: AudioObjectID, originalRate: Double) {
+            if var entry = entries[deviceID] {
+                entry.holders += 1
+                entries[deviceID] = entry
+            } else {
+                entries[deviceID] = Entry(originalRate: originalRate, holders: 1)
+            }
+        }
+
+        /// Drops one holder, yielding the rate to restore only when it was the
+        /// last engine depending on the forced one.
+        mutating func release(_ deviceID: AudioObjectID) -> Double? {
+            guard var entry = entries[deviceID] else { return nil }
+            entry.holders -= 1
+            guard entry.holders <= 0 else {
+                entries[deviceID] = entry
+                return nil
+            }
+            entries.removeValue(forKey: deviceID)
+            return entry.originalRate
+        }
+    }
+
+    /// Process-wide refcount of the nominal sample rates the mixer's engines
+    /// have forced. Engines routinely align the same devices — every engine taps
+    /// the system default output — so an engine that restored "its" original
+    /// rate on stop would strand every other engine still routed through that
+    /// device: the render loop does not resample, and the reconciler only
+    /// compares object ids and output UIDs, so a clobbered engine is never
+    /// restarted and its audio stays broken. Restore only on the last release.
+    ///
+    /// Refcounting alone is not enough: a live engine's render loop assumes its
+    /// devices stay at the rate chosen when it started, so a device another
+    /// engine is already driving must not be retuned. `pinnedRate` reports that
+    /// held rate so `alignSampleRates` constrains a new route to it rather than
+    /// clobbering the device at acquire time. Mirrors `MonitorSampleRateRegistry`.
+    private enum ForcedSampleRates {
+        nonisolated(unsafe) private static var ledger = ForcedSampleRateLedger()
+        /// The rate each device is currently held at by live engines, kept in
+        /// lockstep with the ledger's holders so a later route aligns to it.
+        nonisolated(unsafe) private static var pinnedRates: [AudioObjectID: Double] = [:]
+        private static let lock = NSLock()
+
+        /// The rate a live engine is already holding `deviceID` at, if any.
+        static func pinnedRate(for deviceID: AudioObjectID) -> Double? {
+            lock.lock()
+            defer { lock.unlock() }
+            return pinnedRates[deviceID]
+        }
+
+        /// Aligns `deviceID` to `rate` and takes a reference on it. Returns
+        /// `true` when the caller holds one and must `release` it on stop.
+        static func acquire(_ rate: Double, for deviceID: AudioObjectID) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let current = AppVolumeMixerAudioEngine.nominalSampleRate(for: deviceID) else {
+                return false
+            }
+            if ledger.isForced(deviceID) {
+                // Already held by another engine. Ride its reference and never
+                // retune: its non-resampling render loop assumes the pinned rate
+                // stays put, so clobbering the device here would silence it.
+                // `alignSampleRates` already constrained this route to
+                // `pinnedRate`, so `rate` matches what the device is on.
+                ledger.acquire(deviceID, originalRate: current)
+                return true
+            }
+            // First holder. Pin the rate the device actually ends up on so later
+            // routes align to it instead of retuning the device under this one. A
+            // fixed-rate device may refuse the change; take no reference then,
+            // since nothing was forced and there is nothing to put back.
+            let needsChange = abs(current - rate) > 1
+            if needsChange, !AppVolumeMixerAudioEngine.setNominalSampleRate(rate, for: deviceID) {
+                return false
+            }
+            pinnedRates[deviceID] = needsChange ? rate : current
+            ledger.acquire(deviceID, originalRate: current)
+            return true
+        }
+
+        /// Drops one reference, restoring the original rate only once no other
+        /// engine depends on the forced one.
+        static func release(_ deviceID: AudioObjectID) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let originalRate = ledger.release(deviceID) else { return }
+            let pinned = pinnedRates.removeValue(forKey: deviceID)
+            // Only put a rate back if the first holder actually moved the device;
+            // one pinned at the rate it already ran at owes nothing, and setting
+            // it would clobber whatever the device is on now.
+            if let pinned, abs(pinned - originalRate) <= 1 { return }
+            _ = AppVolumeMixerAudioEngine.setNominalSampleRate(originalRate, for: deviceID)
+        }
+    }
+
     /// Forces the source and every routed output device onto one common nominal
     /// sample rate so the (non-resampling) render loop produces sound. Throws
-    /// `.incompatibleOutputSampleRate` if the devices share no rate. Originals
-    /// are recorded in `restoredSampleRates` for `stop()` to put back.
+    /// `.incompatibleOutputSampleRate` if the devices share no rate. References
+    /// are taken through `ForcedSampleRates` for `stop()` to release.
     private func alignSampleRates(
         source: AppVolumeOutputDevice,
         outputs: [AppVolumeOutputDevice]
     ) throws {
         let deviceIDs = Self.uniqued([source.deviceID] + outputs.map(\.deviceID))
-        let rateSets = deviceIDs.map { Self.availableNominalSampleRates(for: $0) }
-        let preferred = Self.nominalSampleRate(for: source.deviceID)
+        let rateSets = deviceIDs.map { deviceID -> [Double] in
+            // A device another engine is already driving must stay at its held
+            // rate — retuning it would break that engine's non-resampling render
+            // loop — so its pinned rate is the only candidate here.
+            if let pinned = ForcedSampleRates.pinnedRate(for: deviceID) { return [pinned] }
+            return Self.availableNominalSampleRates(for: deviceID)
+        }
+        let preferred = ForcedSampleRates.pinnedRate(for: source.deviceID)
+            ?? Self.nominalSampleRate(for: source.deviceID)
         guard let chosen = Self.chooseCommonSampleRate(
             preferred: preferred,
             deviceSupportedRates: rateSets
@@ -503,23 +627,16 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         }
         reconciledSampleRate = chosen
 
-        var restored: [(deviceID: AudioObjectID, rate: Double)] = []
-        for deviceID in deviceIDs {
-            guard let current = Self.nominalSampleRate(for: deviceID),
-                  abs(current - chosen) > 1 else { continue }
-            if Self.setNominalSampleRate(chosen, for: deviceID) {
-                restored.append((deviceID, current))
-            }
-        }
-        restoredSampleRates = restored
+        forcedSampleRateDeviceIDs = deviceIDs.filter { ForcedSampleRates.acquire(chosen, for: $0) }
     }
 
-    /// Restores any device sample rates we changed in `alignSampleRates`.
+    /// Releases the forced rates `alignSampleRates` took references on; a device
+    /// is put back only once no other engine still depends on it.
     private func restoreSampleRates() {
-        for entry in restoredSampleRates {
-            _ = Self.setNominalSampleRate(entry.rate, for: entry.deviceID)
+        for deviceID in forcedSampleRateDeviceIDs {
+            ForcedSampleRates.release(deviceID)
         }
-        restoredSampleRates = []
+        forcedSampleRateDeviceIDs = []
         reconciledSampleRate = nil
     }
 
@@ -543,7 +660,7 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
                 AppVolumeMixerKit.destroyTap(tapID)
             }
         }
-        // Put back any device sample rates we forced for this route.
+        // Drop this route's hold on the device sample rates it forced.
         restoreSampleRates()
 
         tapID = AudioObjectID(kAudioObjectUnknown)
