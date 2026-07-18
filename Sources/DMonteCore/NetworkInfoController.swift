@@ -1,0 +1,230 @@
+import AppKit
+import Foundation
+import Network
+
+public extension DefaultsKey {
+    /// Whether the public-IP lookup may run on its own — on open and after each network change —
+    /// instead of only when the user presses the button. Opt-in: the integrator should register a
+    /// default of `false`, because every automatic lookup discloses the user's address to a third
+    /// party that they never asked to contact.
+    static let networkInfoFetchesPublicIPAutomatically = "tool.networkInfo.fetchesPublicIPAutomatically"
+}
+
+/// Owns the current `NetworkSnapshot`, the path monitor that refreshes it when the network
+/// changes, and the opt-in public-IP lookup. All published state is mutated on the main actor;
+/// the two slow operations (the `getifaddrs`/SystemConfiguration read and the HTTPS request) are
+/// hopped off it explicitly.
+@MainActor
+public final class NetworkInfoController: ObservableObject {
+    /// Local network facts. Starts empty and is filled by the first `refresh()`, so the popover
+    /// can be constructed before any system read has happened.
+    @Published public private(set) var snapshot = NetworkSnapshot()
+
+    /// Public address as last reported by `NetworkInfoKit.publicIPServiceHost`, or `nil` if it has
+    /// never been fetched successfully in this session. Deliberately not persisted — a stale
+    /// public IP shown as current is worse than showing nothing.
+    @Published public private(set) var publicIP: String?
+
+    /// Inline status for the public-IP row: in-progress text, or an honest failure sentence. `nil`
+    /// once an address is showing and nothing needs saying.
+    @Published public private(set) var publicIPStatus: String?
+
+    @Published public private(set) var isFetchingPublicIP = false
+
+    /// See `DefaultsKey.networkInfoFetchesPublicIPAutomatically`.
+    @Published public private(set) var fetchesPublicIPAutomatically: Bool
+
+    /// Set for a few seconds after a successful copy so the view can flash a checkmark on the row
+    /// that was copied. Holds the row's label, not its value, so two rows sharing a value (an
+    /// IPv4 router equal to a DNS server, which is the common home-router case) don't both flash.
+    @Published public private(set) var copiedRowID: String?
+
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "com.havokentity.mactools.networkinfo.path")
+    private var isMonitoring = false
+
+    private var copiedResetTask: Task<Void, Never>?
+    private var publicIPTask: Task<Void, Never>?
+
+    /// Ephemeral so the public-IP request leaves no cookie, credential or cache trace on disk, and
+    /// short-timeout so a captive portal that black-holes the connection surfaces as a failure
+    /// message within a few seconds instead of spinning indefinitely. `nonisolated` so the request
+    /// below can run off the main actor.
+    private nonisolated static let publicIPSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 12
+        configuration.waitsForConnectivity = false
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        return URLSession(configuration: configuration)
+    }()
+
+    public init() {
+        fetchesPublicIPAutomatically = AppDefaults.shared.bool(forKey: DefaultsKey.networkInfoFetchesPublicIPAutomatically)
+    }
+
+    deinit {
+        // `deinit` is nonisolated; cancel the monitor directly so its dispatch source is torn down
+        // even on a path that never reaches `applicationWillTerminate`. `cancel()` on an
+        // already-cancelled or never-started monitor is a no-op.
+        pathMonitor.cancel()
+    }
+
+    // MARK: - Public API
+
+    /// Starts watching for network changes and takes the first reading. Safe to call more than
+    /// once; the monitor is only started on the first call.
+    public func start() {
+        refresh()
+
+        guard !isMonitoring else { return }
+        isMonitoring = true
+
+        // `NWPathMonitor` fires for interface, address and reachability changes alike, which is
+        // exactly the set of events that can invalidate the snapshot — polling on a timer would
+        // either lag behind a Wi‑Fi switch or burn wakeups doing nothing.
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in
+                self?.handlePathChange()
+            }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+    }
+
+    /// Stops the path monitor. Called from `applicationWillTerminate` so the monitor's queue is
+    /// torn down before the process exits rather than during deallocation.
+    public func stop() {
+        guard isMonitoring else { return }
+        isMonitoring = false
+        pathMonitor.cancel()
+    }
+
+    /// Re-reads the local network facts. The read touches `getifaddrs` and SystemConfiguration, so
+    /// it runs detached and only the resulting value crosses back to the main actor.
+    public func refresh() {
+        Task { [weak self] in
+            let reading = await Task.detached(priority: .userInitiated) {
+                NetworkInfoKit.snapshot()
+            }.value
+
+            guard let self else { return }
+            self.snapshot = reading
+        }
+    }
+
+    /// Asks `NetworkInfoKit.publicIPServiceHost` for this Mac's public address. Never called
+    /// implicitly at launch — only from the button, or from `handlePathChange()` when the user has
+    /// explicitly opted in.
+    public func fetchPublicIP() {
+        guard !isFetchingPublicIP else { return }
+
+        isFetchingPublicIP = true
+        publicIPStatus = "Asking \(NetworkInfoKit.publicIPServiceHost)…"
+
+        publicIPTask?.cancel()
+        publicIPTask = Task { [weak self] in
+            let outcome = await Self.requestPublicIP()
+
+            guard let self, !Task.isCancelled else { return }
+            self.isFetchingPublicIP = false
+
+            switch outcome {
+            case .success(let address):
+                self.publicIP = address
+                self.publicIPStatus = nil
+            case .failure(let message):
+                // Keep any previously fetched address on screen rather than blanking it: a failed
+                // refresh does not mean the last good answer became wrong.
+                self.publicIPStatus = message
+            }
+        }
+    }
+
+    /// Turns the automatic lookup on or off. Turning it on fetches immediately, because the user
+    /// just consented and would otherwise stare at an empty row until the next network change.
+    public func setFetchesPublicIPAutomatically(_ newValue: Bool) {
+        guard newValue != fetchesPublicIPAutomatically else { return }
+        fetchesPublicIPAutomatically = newValue
+        AppDefaults.shared.set(newValue, forKey: DefaultsKey.networkInfoFetchesPublicIPAutomatically)
+
+        if newValue {
+            fetchPublicIP()
+        }
+    }
+
+    /// Copies `value` to the general pasteboard and flashes `rowID` for a moment.
+    public func copy(_ value: String, rowID: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+
+        copiedRowID = rowID
+        copiedResetTask?.cancel()
+        copiedResetTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.6))
+            guard let self, !Task.isCancelled else { return }
+            self.copiedRowID = nil
+        }
+    }
+
+    /// Clears the public address without touching the preference — used when the user wants the
+    /// value off the screen (e.g. before sharing a screenshot).
+    public func clearPublicIP() {
+        publicIPTask?.cancel()
+        publicIPTask = nil
+        isFetchingPublicIP = false
+        publicIP = nil
+        publicIPStatus = nil
+    }
+
+    // MARK: - Private
+
+    private func handlePathChange() {
+        refresh()
+
+        guard fetchesPublicIPAutomatically else {
+            // The cached address almost certainly belongs to the previous network, so drop it
+            // rather than let it masquerade as current until the user presses refresh.
+            publicIP = nil
+            publicIPStatus = nil
+            return
+        }
+
+        fetchPublicIP()
+    }
+
+    private enum PublicIPOutcome: Sendable {
+        case success(String)
+        case failure(String)
+    }
+
+    /// Performs the lookup off the main actor and reduces every possible outcome to one of two
+    /// display-ready cases — no error ever escapes to become an alert. Explicitly `nonisolated`:
+    /// the main actor must stay free while the request is in flight.
+    private nonisolated static func requestPublicIP() async -> PublicIPOutcome {
+        let host = NetworkInfoKit.publicIPServiceHost
+
+        do {
+            var request = URLRequest(url: NetworkInfoKit.publicIPEndpoint)
+            request.setValue("text/plain", forHTTPHeaderField: "Accept")
+            request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+
+            let (data, response) = try await publicIPSession.data(for: request)
+
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                return .failure("\(host) replied \(http.statusCode).")
+            }
+
+            guard data.count <= NetworkInfoKit.maximumPublicIPResponseBytes,
+                  let body = String(data: data, encoding: .utf8),
+                  let address = NetworkInfoKit.publicIPAddress(fromResponseBody: body) else {
+                return .failure("\(host) didn’t return an IP address.")
+            }
+
+            return .success(address)
+        } catch {
+            return .failure("Couldn’t reach \(host).")
+        }
+    }
+}

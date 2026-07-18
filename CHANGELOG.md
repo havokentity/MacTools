@@ -11,6 +11,18 @@ adheres to [Semantic Versioning](https://semver.org) and the
   and runs the full test suite on a pinned macOS runner, using the same
   toolchain the release workflow ships with. Previously only version tags ran
   CI, so a branch could go unverified until release day.
+- **Network Info**: a new menu bar tool showing the active interface and its
+  type, local IPv4, subnet mask, router, IPv6, and the configured DNS servers,
+  with every value click‑to‑copy. Local details are read from `getifaddrs` and
+  SystemConfiguration and never leave the Mac; the view refreshes itself when
+  the network changes rather than only at launch. The public‑IP lookup is a
+  separate, explicitly user‑initiated button that names the service it queries
+  (`api.ipify.org`) and can optionally be set to run automatically — it is
+  never fetched silently at launch, because that would disclose your address to
+  a third party every time the tool opens. No speed test: a throughput test
+  means sustained multi‑megabyte transfers from someone else's server, which is
+  its own decision about data usage and which server to trust, and does not
+  belong in a read‑only local‑info tool.
 
 ## [0.13.0] — 2026-07-12
 

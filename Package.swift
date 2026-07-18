@@ -95,6 +95,10 @@ let package = Package(
         .executable(
             name: "DMonteWindowManager",
             targets: ["DMonteWindowManager"]
+        ),
+        .executable(
+            name: "DMonteNetworkInfo",
+            targets: ["DMonteNetworkInfo"]
         )
     ],
     dependencies: [
@@ -252,6 +256,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteWindowManagerApp"
+        ),
+        .executableTarget(
+            name: "DMonteNetworkInfo",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteNetworkInfoApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",
