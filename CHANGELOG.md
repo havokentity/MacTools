@@ -4,6 +4,14 @@ All notable changes to D'Monte's Tool Box are documented here. This project
 adheres to [Semantic Versioning](https://semver.org) and the
 [Keep a Changelog](https://keepachangelog.com) format.
 
+## [Unreleased]
+
+### Added
+- Continuous integration: every push and pull request now builds the package
+  and runs the full test suite on a pinned macOS runner, using the same
+  toolchain the release workflow ships with. Previously only version tags ran
+  CI, so a branch could go unverified until release day.
+
 ## [0.13.0] — 2026-07-12
 
 ### Added
@@ -371,6 +379,7 @@ Switcher, Focus Timer, Calendar, Keep Awake, Maintenance, and Dev Tools.
 - The menu bar tool box shell and the first tool, System Monitor (live CPU,
   memory, disk, network, and temperature metrics).
 
+[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.13.0...HEAD
 [0.13.0]: https://github.com/havokentity/MacTools/releases/tag/v0.13.0
 [0.12.0]: https://github.com/havokentity/MacTools/releases/tag/v0.12.0
 [0.11.0]: https://github.com/havokentity/MacTools/releases/tag/v0.11.0

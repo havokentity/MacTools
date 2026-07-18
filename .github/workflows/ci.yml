@@ -1,0 +1,143 @@
+name: CI
+
+# Verifies every push and every pull request. Release.yml only ever runs on a
+# version tag, so before this workflow existed nothing compiled a branch or a
+# PR — regressions were only discovered at release time (or by hand).
+
+on:
+  push:
+    # Only main. `pull_request` below already verifies every branch that has a
+    # PR open, and listing every branch here as well meant each PR commit paid
+    # for two identical runs — macOS minutes are the scarcest quota on the
+    # account. A push to a branch with no PR yet is unverified by design: open
+    # the PR and it gets checked.
+    # Naming a branch filter also excludes tag pushes, which is what we want:
+    # a "v*.*.*" tag already triggers release.yml on the same commit.
+    branches: [main]
+  pull_request:
+  # Manual trigger. Without it, an open PR whose base only just gained this
+  # workflow has no way to get a result short of pushing a throwaway commit —
+  # a base-branch update does not emit `synchronize`.
+  workflow_dispatch:
+
+# Read-only: this workflow deliberately consumes no secrets and writes nothing
+# back, so it runs identically on a fork PR (where secrets are unavailable).
+permissions:
+  contents: read
+
+# A second push to the same branch makes the in-flight run's result obsolete;
+# cancelling it frees a macOS runner (the scarcest resource on the free tier)
+# instead of paying for an answer nobody will read. Keyed on the ref, so a
+# branch push and its pull_request run do not cancel each other.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    # Pinned rather than `macos-latest`: that label migrates to a new OS image
+    # without warning, which swaps the Swift toolchain underneath us and turns
+    # an unrelated push into a mysterious red build.
+    #
+    # macos-26 specifically, because that is the image `macos-latest` already
+    # resolves to — every shipped release (v0.9.1 through v0.13.0) was built on
+    # macos-26-arm64. Pinning here freezes current behaviour; it does not change
+    # it. Do NOT "play it safe" with an older image: macos-15 ships Xcode 16.4 /
+    # Swift 6.1.2, which cannot compile this package at all — an `@MainActor`
+    # XCTestCase with async setUp/tearDown (KeepAwakeTests) is a hard
+    # "sending value of non-Sendable type 'XCTestCase'" error under 6.1 and only
+    # became legal in a later toolchain. `swift-tools-version: 6.1` in
+    # Package.swift is the manifest format's minimum, NOT evidence that a 6.1
+    # compiler can build the sources.
+    #
+    # When `macos-latest` moves on, bump this deliberately and in one place.
+    runs-on: macos-26
+
+    # A clean build plus the suite is a few minutes; anything approaching this
+    # is a hang, not slow progress. Without a cap GitHub lets the job burn the
+    # default six hours on a macOS runner — the scarcest quota on the account —
+    # before anyone finds out.
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Select Xcode
+        id: toolchain
+        shell: bash
+        run: |
+          # /Applications/Xcode.app is the image's DEFAULT Xcode symlink, which
+          # is exactly what release.yml builds with (it never runs xcode-select).
+          # Selecting a specific Xcode_XX.app here instead would let the release
+          # artifacts and the thing CI verified drift apart.
+          if [[ -d /Applications/Xcode.app ]]; then
+            sudo xcode-select --switch /Applications/Xcode.app
+          else
+            echo "::warning::/Applications/Xcode.app is missing; using the pre-selected developer directory."
+          fi
+          xcodebuild -version
+          swift --version
+
+          # The build product of one compiler is not readable by another, so the
+          # cache key below carries the toolchain build number: an image refresh
+          # that bumps Xcode busts the cache instead of failing the build with
+          # unintelligible "module compiled with Swift X" errors.
+          xcode_build="$(xcodebuild -version | sed -n 's/^Build version //p' | head -1)"
+          if [[ -z "$xcode_build" ]]; then
+            xcode_build="unknown"
+          fi
+          echo "xcode_build=$xcode_build" >> "$GITHUB_OUTPUT"
+
+          # The floor is 6.3 — the oldest toolchain empirically known to build
+          # these sources — not the 6.1 in Package.swift's swift-tools-version,
+          # which only governs the manifest format. Swift 6.1.2 (Xcode 16.4)
+          # parses the manifest fine and then fails the test target outright:
+          # `@MainActor` XCTestCase subclasses with async setUp/tearDown raise
+          # "sending value of non-Sendable type 'XCTestCase'". 6.2 is untested,
+          # so the floor sits at the version we have actually built on rather
+          # than the earliest that might work.
+          swift_version="$(swift --version 2>&1 | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p' | head -1)"
+          if [[ -z "$swift_version" ]]; then
+            echo "::error::Could not determine the Swift version of the selected toolchain."
+            exit 1
+          fi
+          major="${swift_version%%.*}"
+          minor=0
+          if [[ "$swift_version" == *.* ]]; then
+            rest="${swift_version#*.}"
+            minor="${rest%%.*}"
+          fi
+          if (( major < 6 || (major == 6 && minor < 3) )); then
+            echo "::error::Swift $swift_version cannot build this package (needs 6.3+). Xcode 16.4/Swift 6.1 fails the test target on non-Sendable XCTestCase."
+            exit 1
+          fi
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # `.build` holds the compiled modules; the shared cache holds the
+          # cloned dependency (Sparkle) so a rerun does not re-fetch it.
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          # Package.resolved pins the exact dependency revisions, so its hash is
+          # what makes a restored `.build` valid. A miss is harmless: SwiftPM
+          # resolves and builds from scratch, just slower.
+          key: swiftpm-${{ runner.os }}-${{ steps.toolchain.outputs.xcode_build }}-${{ hashFiles('Package.resolved') }}
+          # Fall back to any cache from the same toolchain — most of the compiled
+          # output survives a dependency bump, and SwiftPM re-resolves whatever
+          # no longer matches Package.resolved.
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ steps.toolchain.outputs.xcode_build }}-
+
+      - name: Build
+        shell: bash
+        run: swift build
+
+      # Runs headless on the runner: no window server, no TCC grants, no network
+      # fixtures. Any test needing those must stay out of this suite.
+      - name: Test
+        shell: bash
+        run: swift test
