@@ -301,4 +301,160 @@ final class CalendarKitTests: XCTestCase {
         let days = dots(start: start, end: start, calendar: calendar)
         XCTAssertEqual(days, [date(2027, 2, 1, calendar: calendar)])
     }
+
+    // MARK: - Per-calendar filtering
+
+    /// Stands in for an `EKEvent`: the filter only ever needs an owning-calendar identifier, so the
+    /// tests never touch EventKit or the user's real calendars.
+    private struct StubEvent: Equatable {
+        let title: String
+        let calendarID: String?
+    }
+
+    private let work = StubEvent(title: "Standup", calendarID: "work")
+    private let home = StubEvent(title: "Dinner", calendarID: "home")
+    private let orphan = StubEvent(title: "Unowned", calendarID: nil)
+
+    private func visible(_ events: [StubEvent], excluding excluded: Set<String>) -> [StubEvent] {
+        CalendarKit.visibleEvents(events, excludedCalendarIDs: excluded) { $0.calendarID }
+    }
+
+    func testNoExclusionsShowsEverything() {
+        XCTAssertEqual(visible([work, home, orphan], excluding: []), [work, home, orphan])
+    }
+
+    func testExcludedCalendarsEventsAreHidden() {
+        XCTAssertEqual(visible([work, home], excluding: ["work"]), [home])
+    }
+
+    func testFilteringPreservesOrder() {
+        let events = [home, work, home, work]
+        XCTAssertEqual(visible(events, excluding: ["work"]), [home, home])
+    }
+
+    func testExcludingEveryCalendarLeavesNothing() {
+        XCTAssertEqual(visible([work, home], excluding: ["work", "home"]), [])
+    }
+
+    func testUnknownCalendarStaysVisible() {
+        // The whole point of storing exclusions: a calendar nobody has hidden — including one added
+        // after the filter was last edited — must still show up.
+        XCTAssertEqual(visible([work, home], excluding: ["archive"]), [work, home])
+    }
+
+    func testEventWithNoOwningCalendarStaysVisible() {
+        XCTAssertEqual(visible([orphan], excluding: ["work", "home"]), [orphan])
+    }
+
+    func testIsCalendarVisibleMatchesTheExclusionSet() {
+        XCTAssertFalse(CalendarKit.isCalendarVisible("work", excludedCalendarIDs: ["work"]))
+        XCTAssertTrue(CalendarKit.isCalendarVisible("home", excludedCalendarIDs: ["work"]))
+        XCTAssertTrue(CalendarKit.isCalendarVisible(nil, excludedCalendarIDs: ["work"]))
+    }
+
+    // MARK: - Toggling the filter
+
+    func testHidingACalendarAddsItToTheExclusions() {
+        let updated = CalendarKit.excludedCalendarIDs([], setting: "work", visible: false)
+        XCTAssertEqual(updated, ["work"])
+    }
+
+    func testShowingACalendarRemovesItFromTheExclusions() {
+        let updated = CalendarKit.excludedCalendarIDs(["work", "home"], setting: "work", visible: true)
+        XCTAssertEqual(updated, ["home"])
+    }
+
+    func testTogglingIsIdempotent() {
+        XCTAssertEqual(CalendarKit.excludedCalendarIDs(["work"], setting: "work", visible: false), ["work"])
+        XCTAssertEqual(CalendarKit.excludedCalendarIDs([], setting: "work", visible: true), [])
+    }
+
+    func testHideThenShowRoundTripsToTheOriginalSet() {
+        let hidden = CalendarKit.excludedCalendarIDs(["home"], setting: "work", visible: false)
+        XCTAssertEqual(CalendarKit.excludedCalendarIDs(hidden, setting: "work", visible: true), ["home"])
+    }
+
+    // MARK: - Filter persistence
+
+    func testExclusionsRoundTripThroughDefaults() {
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(CalendarKit.persistedExcludedCalendarIDs(defaults: defaults), [])
+
+        CalendarKit.persistExcludedCalendarIDs(["work", "home"], defaults: defaults)
+        XCTAssertEqual(CalendarKit.persistedExcludedCalendarIDs(defaults: defaults), ["work", "home"])
+
+        CalendarKit.persistExcludedCalendarIDs([], defaults: defaults)
+        XCTAssertEqual(
+            CalendarKit.persistedExcludedCalendarIDs(defaults: defaults),
+            [],
+            "Clearing the filter must leave nothing behind to hide calendars later."
+        )
+    }
+
+    func testPersistedExclusionsAreStoredSorted() {
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        CalendarKit.persistExcludedCalendarIDs(["work", "archive", "home"], defaults: defaults)
+        XCTAssertEqual(
+            defaults.stringArray(forKey: DefaultsKey.calendarExcludedCalendarIDs),
+            ["archive", "home", "work"]
+        )
+    }
+
+    // MARK: - Calendar.app deep links
+
+    func testEventShowURLCarriesTheOccurrenceDate() {
+        let calendar = makeCalendar()
+        let occurrence = date(2027, 2, 10, calendar: calendar).addingTimeInterval(9 * 3600 + 30 * 60)
+        let url = CalendarKit.eventShowURL(eventIdentifier: "ABC-123", occurrenceDate: occurrence)
+        XCTAssertEqual(
+            url?.absoluteString,
+            "ical://ekevent/20270210T093000Z/ABC-123?method=show&options=more"
+        )
+    }
+
+    func testEventShowURLWithoutAnOccurrenceDateOmitsTheStamp() {
+        let url = CalendarKit.eventShowURL(eventIdentifier: "ABC-123", occurrenceDate: nil)
+        XCTAssertEqual(url?.absoluteString, "ical://ekevent/ABC-123?method=show&options=more")
+    }
+
+    func testTwoOccurrencesOfOneSeriesGetDistinctURLs() {
+        // Every occurrence of a recurring event shares one `eventIdentifier`, so the occurrence date
+        // is the only thing that tells Calendar.app which one to open.
+        let calendar = makeCalendar()
+        let first = CalendarKit.eventShowURL(
+            eventIdentifier: "SERIES",
+            occurrenceDate: date(2027, 2, 10, calendar: calendar)
+        )
+        let second = CalendarKit.eventShowURL(
+            eventIdentifier: "SERIES",
+            occurrenceDate: date(2027, 2, 17, calendar: calendar)
+        )
+        XCTAssertNotNil(first)
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testEventShowURLIsNilWithoutAnIdentifier() {
+        let calendar = makeCalendar()
+        let occurrence = date(2027, 2, 10, calendar: calendar)
+        XCTAssertNil(CalendarKit.eventShowURL(eventIdentifier: nil, occurrenceDate: occurrence))
+        XCTAssertNil(CalendarKit.eventShowURL(eventIdentifier: "", occurrenceDate: occurrence))
+    }
+
+    func testEventShowURLEscapesAwkwardIdentifiers() {
+        // EventKit identifiers are opaque; a space or a hash must not truncate or break the URL.
+        let url = CalendarKit.eventShowURL(eventIdentifier: "id with space#1", occurrenceDate: nil)
+        XCTAssertEqual(url?.absoluteString, "ical://ekevent/id%20with%20space%231?method=show&options=more")
+    }
+
+    func testUTCStampIsIndependentOfTheHostTimezone() {
+        // The stamp is always UTC: the same instant must serialise identically wherever the test runs.
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(CalendarKit.utcStamp(for: instant), "20270115T080000Z")
+    }
 }

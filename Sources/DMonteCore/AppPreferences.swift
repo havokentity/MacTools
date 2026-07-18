@@ -63,6 +63,9 @@ public enum DefaultsKey {
     public static let volumeMixerOutputRoutes = "tool.volumeMixer.outputRoutes"
     public static let windowManagerShortcuts = "tool.windowManager.shortcuts"
     public static let audioRouterPresets = "tool.audioRouter.presets"
+    /// Calendars the user has hidden. Excluded rather than included, so a calendar added later shows
+    /// up by default instead of silently vanishing.
+    public static let calendarExcludedCalendarIDs = "tool.calendar.excludedCalendarIDs"
     public static let toolboxRecentToolIDs = "toolbox.recentToolIDs"
 
     static let obsoleteKeys = [
@@ -111,6 +114,7 @@ public enum AppDefaults {
             DefaultsKey.volumeMixerOutputRoutes: [:],
             DefaultsKey.windowManagerShortcuts: [:],
             DefaultsKey.toolboxRecentToolIDs: [],
+            DefaultsKey.calendarExcludedCalendarIDs: [],
             DefaultsKey.focusTimerFocusMinutes: 25,
             DefaultsKey.focusTimerShortBreakMinutes: 5,
             DefaultsKey.focusTimerLongBreakMinutes: 15,

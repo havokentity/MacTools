@@ -158,4 +158,106 @@ public enum CalendarKit {
         formatter.dateFormat = "LLLL yyyy"
         return formatter.string(from: date)
     }
+
+    // MARK: - Per-calendar filtering
+
+    /// Whether events owned by `calendarID` should be shown.
+    ///
+    /// The filter is stored as the set of *excluded* calendars, so anything unknown — a calendar the
+    /// user has never touched, one added after the last time the filter was edited, or an event whose
+    /// owning calendar EventKit could not resolve — is visible. Storing the inclusions instead would
+    /// make a newly-added calendar silently invisible.
+    public static func isCalendarVisible(_ calendarID: String?, excludedCalendarIDs: Set<String>) -> Bool {
+        guard let calendarID else { return true }
+        return !excludedCalendarIDs.contains(calendarID)
+    }
+
+    /// Filters `events` down to those whose owning calendar is not excluded, preserving order.
+    ///
+    /// Generic over the element and its calendar lookup so the rule lives here — free of EventKit —
+    /// and can be applied identically to `EKEvent`s (for the month-grid dots) and to the view's own
+    /// row model (for the day/upcoming lists).
+    public static func visibleEvents<Event>(
+        _ events: [Event],
+        excludedCalendarIDs: Set<String>,
+        calendarID: (Event) -> String?
+    ) -> [Event] {
+        guard !excludedCalendarIDs.isEmpty else { return events }
+        return events.filter { isCalendarVisible(calendarID($0), excludedCalendarIDs: excludedCalendarIDs) }
+    }
+
+    /// The exclusion set that results from showing (`visible == true`) or hiding a single calendar.
+    /// Pure so the toggle can be asserted without touching user defaults.
+    public static func excludedCalendarIDs(
+        _ excluded: Set<String>,
+        setting calendarID: String,
+        visible: Bool
+    ) -> Set<String> {
+        var result = excluded
+        if visible {
+            result.remove(calendarID)
+        } else {
+            result.insert(calendarID)
+        }
+        return result
+    }
+
+    // MARK: - Filter persistence
+
+    /// The persisted set of hidden calendar identifiers. Never migrates or prunes identifiers that no
+    /// longer resolve: an account can be temporarily offline, and dropping its identifier would make a
+    /// deliberately hidden calendar reappear the next time it comes back.
+    public static func persistedExcludedCalendarIDs(defaults: UserDefaults) -> Set<String> {
+        Set(defaults.stringArray(forKey: DefaultsKey.calendarExcludedCalendarIDs) ?? [])
+    }
+
+    /// Persists the hidden-calendar set. Sorted on the way out so the stored plist is stable and
+    /// diffable rather than reordering on every write.
+    public static func persistExcludedCalendarIDs(_ identifiers: Set<String>, defaults: UserDefaults) {
+        defaults.set(identifiers.sorted(), forKey: DefaultsKey.calendarExcludedCalendarIDs)
+    }
+
+    // MARK: - Click-through to Calendar.app
+
+    /// The `ical://` URL that reveals an event in Calendar.app, or `nil` when the event has no
+    /// identifier to address.
+    ///
+    /// - Parameters:
+    ///   - eventIdentifier: `EKEvent.eventIdentifier` — the *series* identifier, which every
+    ///     occurrence of a recurring event shares.
+    ///   - occurrenceDate: `EKEvent.occurrenceDate`, the occurrence's originally scheduled start.
+    ///     Because the identifier alone cannot distinguish two occurrences, it is prefixed as a UTC
+    ///     timestamp path component; without it Calendar.app opens the series' first occurrence.
+    ///     A detached (moved) occurrence keeps its original date, which is exactly what this URL
+    ///     needs, so the stamp must not be taken from `startDate`.
+    public static func eventShowURL(eventIdentifier: String?, occurrenceDate: Date?) -> URL? {
+        guard let eventIdentifier, !eventIdentifier.isEmpty,
+              let escaped = eventIdentifier.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            return nil
+        }
+        // `options=more` opens the full inspector rather than the compact popover.
+        let query = "?method=show&options=more"
+        guard let occurrenceDate else {
+            return URL(string: "ical://ekevent/\(escaped)\(query)")
+        }
+        return URL(string: "ical://ekevent/\(utcStamp(for: occurrenceDate))/\(escaped)\(query)")
+    }
+
+    /// `yyyyMMddTHHmmssZ` in UTC, the shape Calendar.app's URL scheme expects for the occurrence path
+    /// component. Built from `DateComponents` rather than a `DateFormatter` so it needs no shared
+    /// mutable formatter state and no locale.
+    static func utcStamp(for date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        return String(
+            format: "%04d%02d%02dT%02d%02d%02dZ",
+            parts.year ?? 0,
+            parts.month ?? 0,
+            parts.day ?? 0,
+            parts.hour ?? 0,
+            parts.minute ?? 0,
+            parts.second ?? 0
+        )
+    }
 }
