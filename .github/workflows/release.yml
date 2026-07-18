@@ -29,6 +29,17 @@ permissions:
 # asset uploads, leaving a release whose appcast.xml and zip came from different
 # builds. Sparkle would then serve that mismatch to users as a broken update.
 concurrency:
+  # One group for the whole workflow, deliberately not keyed on the tag: a tag
+  # push and a workflow_dispatch republish of that same version arrive with
+  # different `github.ref`, so a per-tag group would let exactly the two runs
+  # that most need serializing race each other.
+  #
+  # Known cost of the single group: GitHub keeps only the newest PENDING run per
+  # group, so three tags pushed back-to-back drop the middle one. That failure is
+  # safe (nothing is published and the tag still exists) and is recovered by
+  # re-running this workflow manually with version/tag_name set for the tag that
+  # was skipped — the tag exists, so the run rebuilds from it and publishes
+  # normally without needing force_republish.
   group: ${{ github.workflow }}
   # NEVER cancel a release that is already running. Between `gh release create`
   # and the asset uploads there is a window where the release exists with no (or
@@ -37,11 +48,6 @@ concurrency:
   # processing. Waiting costs minutes; a half-published release costs every user
   # on that version a broken update.
   cancel-in-progress: false
-  # Known cost of a single group: GitHub keeps only the newest PENDING run per
-  # group, so three tags pushed back-to-back drop the middle one. That failure is
-  # safe (nothing is published and the tag still exists) and is recovered by
-  # re-running this workflow manually with version/tag_name set for the tag that
-  # was skipped.
 
 jobs:
   release:
@@ -49,16 +55,28 @@ jobs:
     # Pinned, NOT macos-latest: `latest` migrates to a new image — and a new
     # Xcode/Swift toolchain — on GitHub's schedule, which would silently change
     # the compiler that produces signed, notarized bytes for real users, possibly
-    # between a tag being cut and that same tag being republished. macos-15 ships
-    # Xcode 16.x (Swift 6.1), exactly the swift-tools-version this package
-    # declares; the package deploys to macOS 14 and guards its only newer API use
-    # with `#available(macOS 14.2, *)`, so nothing here needs a later SDK. The
-    # pin also fixes the runner ARCHITECTURE (macos-15 is Apple silicon): the
-    # shipped app is single-arch, and Scripts/fetch_ffmpeg.sh selects its pinned
-    # ffmpeg build from `uname -m`, so the image decides what users download.
+    # between a tag being cut and that same tag being republished from identical
+    # source.
+    #
+    # The pin must freeze the toolchain that is ALREADY shipping, not move to a
+    # different one. Every release from v0.9.1 through v0.13.0 ran `macos-latest`
+    # and landed on the macos-26-arm64 image (checked in the run logs), and the
+    # package is developed against that same generation, so macos-26 is a no-op
+    # today and purely removes the future migration. Do NOT "play it safe" by
+    # pinning to an older image: swift-tools-version 6.1 in Package.swift is a
+    # MINIMUM the manifest format requires, not the toolchain the sources are
+    # known to compile under, so dropping to macos-15 (Xcode 16.x) would build
+    # releases on a compiler and SDK that have never compiled this package —
+    # discovered only on a real tag push, with the release blocked.
+    #
+    # The pin also fixes the runner ARCHITECTURE: the shipped app is single-arch
+    # and Scripts/fetch_ffmpeg.sh selects its pinned ffmpeg build from `uname -m`,
+    # so the image decides which binary users download. macos-26 is Apple
+    # silicon, the same arch macos-latest has been resolving to.
+    #
     # Bump this line deliberately, after building and installing a release from
     # the new image.
-    runs-on: macos-15
+    runs-on: macos-26
     # Bounded, but generous enough for the real work: a cold release build
     # compiles 20+ targets and then waits on Apple's notary service, which is
     # queue-dependent and can take tens of minutes. The default 6-hour timeout
