@@ -23,10 +23,48 @@ on:
 permissions:
   contents: write
 
+# Serialize every release run repository-wide. Two runs publishing at the same
+# time — a re-pushed tag, or a tag push landing while a manual republish is in
+# flight — can both create/edit the same GitHub release and interleave their
+# asset uploads, leaving a release whose appcast.xml and zip came from different
+# builds. Sparkle would then serve that mismatch to users as a broken update.
+concurrency:
+  group: ${{ github.workflow }}
+  # NEVER cancel a release that is already running. Between `gh release create`
+  # and the asset uploads there is a window where the release exists with no (or
+  # only some) artifacts — cancelling lands in exactly that half-published state
+  # — and cancelling during notarization abandons a submission Apple is still
+  # processing. Waiting costs minutes; a half-published release costs every user
+  # on that version a broken update.
+  cancel-in-progress: false
+  # Known cost of a single group: GitHub keeps only the newest PENDING run per
+  # group, so three tags pushed back-to-back drop the middle one. That failure is
+  # safe (nothing is published and the tag still exists) and is recovered by
+  # re-running this workflow manually with version/tag_name set for the tag that
+  # was skipped.
+
 jobs:
   release:
     name: Build and publish release
-    runs-on: macos-latest
+    # Pinned, NOT macos-latest: `latest` migrates to a new image — and a new
+    # Xcode/Swift toolchain — on GitHub's schedule, which would silently change
+    # the compiler that produces signed, notarized bytes for real users, possibly
+    # between a tag being cut and that same tag being republished. macos-15 ships
+    # Xcode 16.x (Swift 6.1), exactly the swift-tools-version this package
+    # declares; the package deploys to macOS 14 and guards its only newer API use
+    # with `#available(macOS 14.2, *)`, so nothing here needs a later SDK. The
+    # pin also fixes the runner ARCHITECTURE (macos-15 is Apple silicon): the
+    # shipped app is single-arch, and Scripts/fetch_ffmpeg.sh selects its pinned
+    # ffmpeg build from `uname -m`, so the image decides what users download.
+    # Bump this line deliberately, after building and installing a release from
+    # the new image.
+    runs-on: macos-15
+    # Bounded, but generous enough for the real work: a cold release build
+    # compiles 20+ targets and then waits on Apple's notary service, which is
+    # queue-dependent and can take tens of minutes. The default 6-hour timeout
+    # would let one wedged run (a notarytool call that never returns) hold the
+    # concurrency slot above for most of a day.
+    timeout-minutes: 90
 
     steps:
       # The `secrets` context is NOT available in a step `if:`, so this step
@@ -128,6 +166,26 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
           echo "$version" > VERSION
+
+      - name: Run test suite
+        # THE release gate: a tag push must never publish code the suite has not
+        # passed. Ordering is the whole point of this step —
+        #   • after "Resolve version", because that step may `git checkout` the
+        #     tag being released, so this tests the exact source that will be
+        #     packaged rather than whatever ref triggered the run;
+        #   • before the signing/notary steps, so a red suite means the
+        #     Developer ID cert and the notary .p8 are never even decoded onto
+        #     the runner's disk.
+        # Debug configuration on purpose: it is what the headless suite is
+        # written and run against day to day. package_app.sh compiles the
+        # shipped binaries separately with `swift build -c release`.
+        shell: bash
+        # A wedged test process would otherwise burn the job budget above and
+        # starve packaging + notarization of the time they need; fail it on its
+        # own much shorter clock instead.
+        timeout-minutes: 30
+        run: |
+          swift test
 
       - name: Import Developer ID signing certificate
         # Only runs when the signing secrets are configured; otherwise the build
