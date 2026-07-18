@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/havokentity/MacTools/actions/workflows/ci.yml/badge.svg)](https://github.com/havokentity/MacTools/actions/workflows/ci.yml)
 
-A native macOS menu bar tool box — 20 fast, focused utilities in one lightweight Swift app, inspired by the convenience of Parallels Toolbox.
+A native macOS menu bar tool box — 21 fast, focused utilities in one lightweight Swift app, inspired by the convenience of Parallels Toolbox.
 
 Open the tool box from the menu bar, search for what you need, and launch it. Each tool is a self-contained helper with its own polished SwiftUI interface; tools that run continuously (like System Monitor and Clipboard History) add their own menu bar item.
 
@@ -42,13 +42,14 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Keep Awake** | Prevent sleep, optionally for a set duration |
 | **Maintenance** | Handy Finder/system toggles and cache/index refreshes |
 | **Dev Tools** | JSON, Base64, URL, hashing, UUID, timestamp, and case utilities |
+| **Snippets** | A searchable library of reusable text — click one to paste it into the app you came from |
 
 ### Permissions
 
 A few tools ask macOS for access the first time you use them, and degrade gracefully if you decline:
 
 - **Window Manager** — Accessibility (to move other apps' windows)
-- **Clipboard History** — Accessibility (to paste into the active app)
+- **Clipboard History** / **Snippets** — Accessibility (to paste into the active app)
 - **Grab Text** / **QR Studio** (screen scan) — Screen Recording
 - **Volume Mixer** — System Audio Recording (`NSAudioCaptureUsageDescription`, to tap each app's audio for per‑app volume and routing)
 - **Calendar** — Calendar access

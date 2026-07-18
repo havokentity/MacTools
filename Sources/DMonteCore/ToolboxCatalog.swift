@@ -64,7 +64,8 @@ public enum ToolboxCatalog {
         ToolboxTool(id: "colorPicker", title: "Color Picker", iconName: "eyedropper.halffull", tint: .mint, bundleID: prefix + "colorpicker", appName: "DMonte Color Picker.app", executableName: "DMonteColorPicker", arguments: ["--open"]),
         ToolboxTool(id: "grabText", title: "Grab Text", iconName: "text.viewfinder", tint: contrastGreen, bundleID: prefix + "grabtext", appName: "DMonte Grab Text.app", executableName: "DMonteGrabText", arguments: ["--open"]),
         ToolboxTool(id: "focusTimer", title: "Focus Timer", iconName: "timer", tint: .red, bundleID: prefix + "focustimer", appName: "DMonte Focus Timer.app", executableName: "DMonteFocusTimer", arguments: ["--open"]),
-        ToolboxTool(id: "windowManager", title: "Window Manager", iconName: "macwindow.on.rectangle", tint: .blue, bundleID: prefix + "windowmanager", appName: "DMonte Window Manager.app", executableName: "DMonteWindowManager", arguments: ["--open"])
+        ToolboxTool(id: "windowManager", title: "Window Manager", iconName: "macwindow.on.rectangle", tint: .blue, bundleID: prefix + "windowmanager", appName: "DMonte Window Manager.app", executableName: "DMonteWindowManager", arguments: ["--open"]),
+        ToolboxTool(id: "snippets", title: "Snippets", iconName: "note.text", tint: .indigo, bundleID: prefix + "snippets", appName: "DMonte Snippets.app", executableName: "DMonteSnippets", arguments: ["--open"])
     ]
 }
 
