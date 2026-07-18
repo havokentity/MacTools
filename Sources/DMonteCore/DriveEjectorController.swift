@@ -222,9 +222,10 @@ public final class DriveEjectorController: NSObject, ObservableObject {
             return
         }
 
-        // Standardised because the row IDs come from `mountedVolumeURLs`, and a marker keyed on a
-        // differently-spelled path for the same mount point would silently match nothing.
-        announcedUnmounts[url.standardizedFileURL.path] = Date()
+        // Through the shared identity because the row IDs come from `mountedVolumeURLs`, and a
+        // marker keyed on a differently-spelled path for the same mount point would silently match
+        // nothing — leaving the row pressable while its unmount is already under way.
+        announcedUnmounts[DriveEjectorKit.volumeIdentity(for: url)] = Date()
         recomputeBusyVolumeIDs()
 
         // A denied unmount posts nothing further, so this is the only thing that will release the

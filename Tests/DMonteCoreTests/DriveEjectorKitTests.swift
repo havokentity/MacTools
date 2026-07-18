@@ -163,6 +163,7 @@ final class DriveEjectorKitTests: XCTestCase {
         )
 
         XCTAssertEqual(DriveEjectorKit.verdict(for: messyRoot), .bootVolume)
+        XCTAssertEqual(messyRoot.id, "/", "The startup disk must not acquire a second identity")
     }
 
     /// The external-boot case one level deeper than the startup volume itself. When a Mac boots
@@ -362,6 +363,60 @@ final class DriveEjectorKitTests: XCTestCase {
 
     func testDescriptorIdentityIsTheMountPoint() {
         XCTAssertEqual(usbStick.id, "/Volumes/USB Stick")
+    }
+
+    /// Identity is canonical, so the same mount point spelled three different ways is one volume.
+    /// This is what lets a busy marker keyed on a `willUnmount` notification's URL match the row
+    /// built from `mountedVolumeURLs`; without it a row would stay pressable mid-unmount.
+    func testDescriptorIdentityIsCanonical() {
+        for spelling in ["/Volumes/USB Stick", "/Volumes/USB Stick/", "/Volumes/./USB Stick", "/Volumes/Other/../USB Stick"] {
+            XCTAssertEqual(
+                descriptor(path: spelling, name: "USB Stick").id,
+                usbStick.id,
+                "\(spelling) names the same mount point and must produce the same identity"
+            )
+        }
+    }
+
+    /// The descriptor's own mount point is canonicalised too — it is the URL handed to
+    /// `unmountAndEjectDevice`, so it must name the same volume the safety rule cleared.
+    func testDescriptorURLIsCanonicalised() {
+        XCTAssertEqual(descriptor(path: "/Volumes/Other/../USB Stick", name: "USB Stick").url.path, "/Volumes/USB Stick")
+    }
+
+    /// A busy marker and a row ID derived from different spellings of one mount point must collide,
+    /// which is the whole point of routing both through `volumeIdentity(for:)`.
+    func testBusyMarkerMatchesARowBuiltFromADifferentSpelling() {
+        let announcement = DriveEjectorKit.volumeIdentity(for: URL(fileURLWithPath: "/Volumes/Other/../USB Stick/"))
+        XCTAssertTrue(
+            DriveEjectorKit.liveUnmountAnnouncements(
+                [announcement: Date()],
+                mountedIDs: [usbStick.id],
+                now: Date(),
+                grace: 15
+            ).keys.contains(usbStick.id),
+            "An unmount announced for a non-canonical path must keep the matching row busy"
+        )
+    }
+
+    /// Canonicalising identity must not weaken the rule: a system-volume-group member reached
+    /// through a non-canonical path is still refused.
+    func testNonCanonicalSystemVolumePathsAreStillBlocked() {
+        for path in ["/System/Volumes/Data/", "/System/Volumes/./VM", "/Volumes/../System/Volumes/Preboot", "/System/Volumes/Update/.."] {
+            let onExternalBootMedia = descriptor(
+                path: path,
+                name: "Data",
+                isRootFileSystem: false,
+                isInternal: false,
+                isRemovable: true,
+                isEjectable: true
+            )
+            XCTAssertEqual(
+                DriveEjectorKit.verdict(for: onExternalBootMedia),
+                .bootVolume,
+                "\(path) resolves inside the running system's volume group and must never be offered"
+            )
+        }
     }
 
     func testBlockedReasonsReadAsSentencesAndEligibleHasNone() {

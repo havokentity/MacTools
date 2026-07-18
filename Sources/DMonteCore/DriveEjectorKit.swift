@@ -9,7 +9,8 @@ import Foundation
 /// the permissive branch. `DriveEjectorKit.verdict(for:)` keeps them apart and refuses anything
 /// it cannot positively clear.
 public struct VolumeDescriptor: Identifiable, Sendable, Equatable {
-    /// Mount point. Doubles as the identity: only one volume can occupy a mount point at a time.
+    /// Mount point, always in canonical spelling. Doubles as the identity: only one volume can
+    /// occupy a mount point at a time.
     public let url: URL
     /// Display name (`volumeNameKey`), falling back to the mount point's last path component.
     public let name: String
@@ -26,7 +27,7 @@ public struct VolumeDescriptor: Identifiable, Sendable, Equatable {
     /// Free capacity in bytes; `0` when unavailable.
     public let freeBytes: UInt64
 
-    public var id: String { url.path }
+    public var id: String { DriveEjectorKit.volumeIdentity(for: url) }
 
     /// Bytes in use, clamped at zero so a stale free-space reading can never produce an underflow.
     public var usedBytes: UInt64 {
@@ -43,7 +44,11 @@ public struct VolumeDescriptor: Identifiable, Sendable, Equatable {
         totalBytes: UInt64,
         freeBytes: UInt64
     ) {
-        self.url = url
+        // Canonicalised on the way in so that the mount point handed to `unmountAndEjectDevice`,
+        // the path the safety rule compares, and the identity the busy-marker bookkeeping keys on
+        // are the same string. A row whose ID disagreed with an in-flight unmount marker would
+        // re-enable itself mid-unmount, which on this tool means offering to eject a disk twice.
+        self.url = url.standardizedFileURL
         self.name = name
         self.isRootFileSystem = isRootFileSystem
         self.isInternal = isInternal
@@ -126,6 +131,18 @@ public enum DriveEjectorKit {
     /// the rule outright. Stated here so both paths inherit the same guarantee.
     private static let systemVolumeGroupRoot = "/System/Volumes"
 
+    /// The one definition of “which volume is this”, shared by the descriptors, the safety rule and
+    /// the controller's busy markers.
+    ///
+    /// Mount-point URLs reach the tool from three unrelated sources — `mountedVolumeURLs`, the
+    /// `NSWorkspace` unmount notifications, and whatever a caller passes to `eject(volumeAt:)` — and
+    /// nothing guarantees they spell the same mount point identically. Every comparison in the tool
+    /// goes through here so a `..`, a trailing slash or a stray `.` cannot make two names for one
+    /// disk look like two disks.
+    public static func volumeIdentity(for url: URL) -> String {
+        url.standardizedFileURL.path
+    }
+
     /// Decides whether a volume may be ejected. Deliberately biased towards refusing.
     ///
     /// Order matters: the catastrophic case is checked first and by three independent signals, so
@@ -136,7 +153,7 @@ public enum DriveEjectorKit {
         // Checked before the removable flags because a Mac booted from an external USB disk reports
         // that disk as removable *and* ejectable — exactly the combination that would otherwise
         // wave the startup disk straight through.
-        let path = descriptor.url.standardizedFileURL.path
+        let path = volumeIdentity(for: descriptor.url)
         if path == "/" || descriptor.isRootFileSystem == true {
             return .bootVolume
         }
@@ -269,7 +286,9 @@ public enum DriveEjectorKit {
         }
 
         do {
-            try NSWorkspace.shared.unmountAndEjectDevice(at: url)
+            // The descriptor's canonical mount point, not the caller's spelling: the volume that
+            // was cleared and the volume that gets unmounted must be named by the same string.
+            try NSWorkspace.shared.unmountAndEjectDevice(at: descriptor.url)
             return .ejected
         } catch {
             return .failed(failureMessage(for: error))
