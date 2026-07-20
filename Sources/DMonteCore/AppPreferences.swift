@@ -61,6 +61,9 @@ public enum DefaultsKey {
     public static let volumeMixerSmartFilter = "tool.volumeMixer.smartFilter"
     public static let volumeMixerIncludedDefaultIgnoredApps = "tool.volumeMixer.includedDefaultIgnoredApps"
     public static let volumeMixerOutputRoutes = "tool.volumeMixer.outputRoutes"
+    /// Stable keys of apps the user pressed "stop processing" on. Persisted so the stop survives a
+    /// relaunch instead of the automatic policy re-tapping an app whose gain is still below unity.
+    public static let volumeMixerStoppedApps = "tool.volumeMixer.stoppedApps"
     public static let windowManagerShortcuts = "tool.windowManager.shortcuts"
     public static let audioRouterPresets = "tool.audioRouter.presets"
     public static let toolboxRecentToolIDs = "toolbox.recentToolIDs"
