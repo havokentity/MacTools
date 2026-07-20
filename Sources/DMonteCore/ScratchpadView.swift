@@ -55,7 +55,7 @@ public struct ScratchpadPopoverView: View {
 
     private var header: some View {
         HStack(spacing: s(8)) {
-            Image(systemName: "note.text")
+            Image(systemName: "square.and.pencil")
                 .font(.system(size: s(15), weight: .semibold))
                 .foregroundStyle(accent)
 

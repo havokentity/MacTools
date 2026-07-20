@@ -58,7 +58,7 @@ final class ScratchpadAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func statusIcon() -> NSImage {
-        let image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Scratchpad") ?? NSImage()
+        let image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "Scratchpad") ?? NSImage()
         image.isTemplate = true
         return image
     }
