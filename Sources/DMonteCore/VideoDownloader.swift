@@ -209,6 +209,20 @@ fileprivate struct VideoDownloaderPreferences: Sendable {
         }
     }
 
+    /// Identifies the *file* this download will produce, for duplicate detection.
+    ///
+    /// Keyed on the settings that change the output rather than on all of them: the same link
+    /// fetched as MP3 and as M4A, or at 1080p and at 4K, yields different files and both are
+    /// legitimate. Settings that do not alter what lands on disk — cookie source, save folder —
+    /// are deliberately excluded, so re-queueing a link after changing those is still recognised
+    /// as the repeat request it is.
+    var outputVariant: String {
+        switch downloadMode {
+        case .video: "video:\(quality.rawValue)"
+        case .audioOnly: "audio:\(audioFormat.rawValue)"
+        }
+    }
+
     @MainActor
     static var current: VideoDownloaderPreferences {
         let defaults = AppDefaults.shared
@@ -259,10 +273,17 @@ final class VideoDownloaderModel: ObservableObject {
         var outputDirectory: String?
         /// Final file path reported by yt-dlp after a successful download.
         var outputFilePath: String?
+        /// What this row will actually produce — audio in a given container, or video at a given
+        /// quality. Duplicate detection compares this alongside the URL, because the same link
+        /// downloaded as MP3 and as M4A are two different files, not one repeated request.
+        var variant: String
     }
 
     @Published var urlText = ""
     @Published var isDropTargeted = false
+    /// Shown when a paste is refused as already queued, so the field clearing itself is
+    /// explained rather than looking like the app dropped the link.
+    @Published var duplicateNotice: String?
     @Published var downloads: [DownloadItem] = []
 
     private static let maximumConcurrentDownloads = 3
@@ -378,13 +399,24 @@ final class VideoDownloaderModel: ObservableObject {
             return
         }
 
+        let preferences = VideoDownloaderPreferences.current
         let normalizedURL = Self.normalizedURLString(url)
-        guard !downloads.contains(where: { Self.normalizedURLString($0.url) == normalizedURL }) else {
+        let variant = preferences.outputVariant
+
+        // Compared on URL *and* output: the same link queued as MP3 after M4A produces a
+        // different file, so it is a new download rather than a repeat. Keying on the URL alone
+        // silently refused it.
+        let existing = downloads.first {
+            Self.normalizedURLString($0.url) == normalizedURL && $0.variant == variant
+        }
+        guard existing == nil else {
+            // Say so. Clearing the field without a word looks identical to the app ignoring the
+            // paste, which is how this was reported.
+            duplicateNotice = "Already queued as \(preferences.queueDetail)."
             urlText = ""
             return
         }
-
-        let preferences = VideoDownloaderPreferences.current
+        duplicateNotice = nil
         let item = DownloadItem(
             id: UUID(),
             url: url,
@@ -397,7 +429,8 @@ final class VideoDownloaderModel: ObservableObject {
             state: .queued,
             retryCount: 0,
             outputDirectory: preferences.saveDirectoryPath,
-            outputFilePath: nil
+            outputFilePath: nil,
+            variant: variant
         )
 
         downloads.append(item)
@@ -1389,6 +1422,18 @@ public struct VideoDownloaderWindowView: View {
                         .onSubmit {
                             model.startDownload()
                         }
+                        .onChange(of: model.urlText) { _, _ in
+                            // Typing again means the user has moved on from the refusal.
+                            model.duplicateNotice = nil
+                        }
+
+                    if let notice = model.duplicateNotice {
+                        Text(notice)
+                            .font(.system(size: layout.queueTitleFontSize))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     HStack(spacing: layout.buttonSpacing) {
                         Button("Paste Link") {

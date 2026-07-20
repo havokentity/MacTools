@@ -507,9 +507,50 @@ final class VideoDownloaderTests: XCTestCase {
         XCTAssertFalse(VideoSubtitleMode.off.allowsSubtitleFailures)
     }
 
+    // MARK: - Duplicate detection across output formats
+
+    /// The same link queued as M4A and then as MP3 produces two different files, so the second
+    /// request is not a duplicate. Keying duplicate detection on the URL alone silently refused
+    /// it — and cleared the field without a word, which read as the app ignoring the paste.
+    func testSameURLInADifferentAudioFormatIsNotADuplicate() {
+        let url = "https://example.com/watch?v=abc"
+        let m4a = makeDownloadItem(url: url, state: .queued, variant: "audio:m4a")
+        let mp3 = makeDownloadItem(url: url, state: .queued, variant: "audio:mp3")
+
+        XCTAssertNotEqual(m4a.variant, mp3.variant)
+        XCTAssertEqual(
+            VideoDownloaderModel.normalizedURLString(m4a.url),
+            VideoDownloaderModel.normalizedURLString(mp3.url),
+            "The URLs match — it is the output format that makes these distinct downloads"
+        )
+    }
+
+    /// The same link at the same output still is one, so re-pasting does not queue it twice.
+    func testSameURLInTheSameFormatIsADuplicate() {
+        let url = "https://example.com/watch?v=abc"
+        let first = makeDownloadItem(url: url, state: .queued, variant: "audio:mp3")
+        let second = makeDownloadItem(url: url, state: .downloading, variant: "audio:mp3")
+
+        XCTAssertEqual(first.variant, second.variant)
+        XCTAssertEqual(
+            VideoDownloaderModel.normalizedURLString(first.url),
+            VideoDownloaderModel.normalizedURLString(second.url)
+        )
+    }
+
+    /// Video quality changes the file too, so the same rule has to hold on that side.
+    func testSameURLAtADifferentVideoQualityIsNotADuplicate() {
+        let url = "https://example.com/watch?v=abc"
+        let hd = makeDownloadItem(url: url, state: .queued, variant: "video:hd1080")
+        let max = makeDownloadItem(url: url, state: .queued, variant: "video:maximum")
+
+        XCTAssertNotEqual(hd.variant, max.variant)
+    }
+
     private func makeDownloadItem(
         url: String,
-        state: VideoDownloaderModel.DownloadState
+        state: VideoDownloaderModel.DownloadState,
+        variant: String = "video:maximum"
     ) -> VideoDownloaderModel.DownloadItem {
         VideoDownloaderModel.DownloadItem(
             id: UUID(),
@@ -523,7 +564,8 @@ final class VideoDownloaderTests: XCTestCase {
             state: state,
             retryCount: 0,
             outputDirectory: nil,
-            outputFilePath: nil
+            outputFilePath: nil,
+            variant: variant
         )
     }
 }
