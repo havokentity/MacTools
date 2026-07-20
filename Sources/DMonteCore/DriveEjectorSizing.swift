@@ -6,6 +6,19 @@ public enum DriveEjectorSizing {
         return NSSize(width: (340 * scale).rounded(), height: (450 * scale).rounded())
     }
 
+    /// The settings overlay, which is centred *over* the panel and therefore must never be wider
+    /// than it. A hard-coded width looks right only at `currentScale == 1`; on a Mac whose menu
+    /// bar is thinner than 26pt the panel shrinks and the sheet does not, so it overflows equally
+    /// on both sides and its first and last characters are clipped. Width is capped at the panel
+    /// so that cannot happen at any scale.
+    public static func settingsSize() -> NSSize {
+        let scale = currentScale
+        return NSSize(
+            width: min((340 * scale).rounded(), preferredSize().width),
+            height: (330 * scale).rounded()
+        )
+    }
+
     static var currentScale: CGFloat {
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let screenScale = visibleFrame.height / 950

@@ -354,7 +354,7 @@ private struct DriveEjectorSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 340, height: 330)
+        .frame(width: DriveEjectorSizing.settingsSize().width, height: DriveEjectorSizing.settingsSize().height)
     }
 
     private func settingRow<Trailing: View>(title: String, @ViewBuilder trailing: () -> Trailing) -> some View {
