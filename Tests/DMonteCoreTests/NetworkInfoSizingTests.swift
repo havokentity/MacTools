@@ -29,12 +29,15 @@ final class NetworkInfoSizingTests: XCTestCase {
         XCTAssertLessThanOrEqual(settings.height, panel.height)
     }
 
-    /// Both sizes derive from the same scale, so the sheet must shrink with the panel rather than
-    /// staying pinned at its full-size literal.
-    func testSettingsScalesWithPanel() {
-        let scale = NetworkInfoSizing.currentScale
+    /// The sheet should be as large as it was designed to be, shrinking only as far as the panel
+    /// forces. Asserting the contract rather than restating the arithmetic: when this rule changed
+    /// from "scale with the panel" to "cap at the panel", the tests that restated the formula
+    /// failed while the ones asserting the relationship kept passing.
+    func testSettingsUsesItsDesignSizeUnlessThePanelIsSmaller() {
+        let panel = NetworkInfoSizing.preferredSize()
         let settings = NetworkInfoSizing.settingsSize()
-        XCTAssertEqual(settings.width, min((340 * scale).rounded(), NetworkInfoSizing.preferredSize().width))
-        XCTAssertEqual(settings.height, (300 * scale).rounded())
+
+        XCTAssertEqual(settings.width, min(340, panel.width), accuracy: 1)
+        XCTAssertEqual(settings.height, min(300, panel.height), accuracy: 1)
     }
 }
