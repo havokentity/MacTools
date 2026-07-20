@@ -251,7 +251,7 @@ public struct SnippetsPopoverView: View {
 
     private var footer: some View {
         HStack(spacing: s(10)) {
-            footerHint("⏎", "Paste")
+            footerHint("⏎", controller.pasteTargetName.map { "Paste into \($0)" } ?? "Copy")
             footerHint("⌘N", "New")
             footerHint("⌘E", "Edit")
             Spacer()
@@ -378,9 +378,12 @@ private struct SnippetRow: View {
     private func rowButton(systemImage: String, help: String, isEnabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: s(11)))
+                .font(.system(size: s(12)))
                 .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.35))
-                .frame(width: s(18), height: s(18))
+                // Hit area, not glyph size: an 18pt target between three neighbours is easy to
+                // miss, and missing one used to land on the row underneath and paste.
+                .frame(width: s(26), height: s(24))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)

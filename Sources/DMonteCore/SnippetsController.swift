@@ -35,7 +35,14 @@ public final class SnippetsController: ObservableObject {
     @Published public private(set) var showToken = 0
 
     /// The app to paste into — captured by the delegate before the panel takes focus.
-    public var pasteTarget: NSRunningApplication?
+    public var pasteTarget: NSRunningApplication? {
+        didSet { pasteTargetName = pasteTarget?.localizedName }
+    }
+
+    /// Name of that app, published so the footer can say where ⏎ will land. Without it a paste
+    /// into an app with no focused text field is indistinguishable from the panel merely closing,
+    /// which is exactly how the "Return does nothing" report started.
+    @Published public private(set) var pasteTargetName: String?
     /// Set by the delegate; dismisses the panel (returning focus) right before a paste.
     public var onRequestClose: (() -> Void)?
 
@@ -218,10 +225,14 @@ public final class SnippetsController: ObservableObject {
     /// Returns true if the key was consumed; false lets it reach the focused control so the user
     /// can keep typing.
     public func handleKey(_ event: NSEvent) -> Bool {
-        // Normalize away Caps Lock so exact modifier checks aren't defeated by it.
+        // Compare only the modifiers a shortcut is allowed to care about. Arrow keys always
+        // report `.numericPad` and `.function` alongside whatever the user held, so an exact
+        // `flags == .command` is never true for ⌘↑ / ⌘↓ — the reorder shortcuts fell through to
+        // the plain-arrow cases below and moved the selection instead of the snippet.
+        let meaningfulModifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
         let flags = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)
-            .subtracting(.capsLock)
+            .intersection(meaningfulModifiers)
         let isCommandOnly = flags == .command
 
         // While the editor is open every key belongs to it — arrows move the caret, Return
