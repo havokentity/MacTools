@@ -22,16 +22,16 @@ final class MicControlSizingTests: XCTestCase {
         )
     }
 
-    /// Both sizes have to move together. Pinning only the panel would let a later edit reintroduce
-    /// a literal sheet width that passes the check above at today's scale and fails at another.
-    func testBothSizesScaleTogether() {
-        let scale = MicControlSizing.currentScale
+    /// The sheet should be as large as it was designed to be, shrinking only as far as the panel
+    /// forces. Asserting the contract rather than restating the arithmetic: when this rule changed
+    /// from "scale with the panel" to "cap at the panel", the tests that restated the formula
+    /// failed while the ones asserting the relationship kept passing.
+    func testSettingsUsesItsDesignSizeUnlessThePanelIsSmaller() {
         let panel = MicControlSizing.preferredSize()
         let settings = MicControlSizing.settingsSize()
 
-        XCTAssertEqual(panel.width, (320 * scale).rounded(), accuracy: 1)
-        XCTAssertEqual(settings.width, min((320 * scale).rounded(), panel.width), accuracy: 1)
-        XCTAssertEqual(settings.height, (300 * scale).rounded(), accuracy: 1)
+        XCTAssertEqual(settings.width, min(320, panel.width), accuracy: 1)
+        XCTAssertEqual(settings.height, min(300, panel.height), accuracy: 1)
     }
 
     /// The scale is derived from live screen and menu-bar metrics, so the guarantee has to hold
