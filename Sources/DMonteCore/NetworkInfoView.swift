@@ -360,7 +360,7 @@ private struct NetworkInfoSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 340, height: 300)
+        .frame(width: NetworkInfoSizing.settingsSize().width, height: NetworkInfoSizing.settingsSize().height)
     }
 
     private func settingRow<Trailing: View>(title: String, @ViewBuilder trailing: () -> Trailing) -> some View {
