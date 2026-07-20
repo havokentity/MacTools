@@ -27,5 +27,15 @@
 	-->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+
+	<!--
+	  Same rule, same reason, for the Calendar helper: tccd records its request
+	  against the container, so kTCCServiceCalendar is refused a prompt unless
+	  the container carries the calendars entitlement. Symptom is identical —
+	  the tool asks, nothing appears, and Privacy & Security ▸ Calendars offers
+	  no way to add the app by hand.
+	-->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 </dict>
 </plist>

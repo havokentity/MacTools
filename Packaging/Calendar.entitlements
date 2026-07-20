@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Entitlements for the Calendar helper. Identical to DMonte.entitlements
+	  (the helper baseline) except for the calendars key below.
+
+	  Under the Hardened Runtime, TCC refuses to even show the consent dialog
+	  for kTCCServiceCalendar unless the requesting subject carries
+	  com.apple.security.personal-information.calendars — the same rule that
+	  already bit the microphone (see DMonteApp.entitlements). The failure is
+	  silent: no prompt, no entry in System Settings ▸ Privacy & Security ▸
+	  Calendars, and that list has no "+" to add an app by hand, so there is no
+	  way to recover from the UI.
+
+	  The container needs it too, for the same attribution reason documented in
+	  DMonteApp.entitlements — this file alone is not sufficient.
+	-->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+</dict>
+</plist>

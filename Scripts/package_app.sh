@@ -178,6 +178,7 @@ BASE_ENTITLEMENTS="$ROOT_DIR/Packaging/DMonte.entitlements"
 APP_ENTITLEMENTS="$ROOT_DIR/Packaging/DMonteApp.entitlements"
 VOLUMEMIXER_ENTITLEMENTS="$ROOT_DIR/Packaging/VolumeMixer.entitlements"
 AUDIOROUTER_ENTITLEMENTS="$ROOT_DIR/Packaging/AudioRouter.entitlements"
+CALENDAR_ENTITLEMENTS="$ROOT_DIR/Packaging/Calendar.entitlements"
 YTDLP_ENTITLEMENTS="$ROOT_DIR/Packaging/ytdlp.entitlements"
 
 # Hardened runtime + secure timestamp are only meaningful with a real identity;
@@ -263,6 +264,9 @@ for entry in "${HELPERS[@]}"; do
   elif [[ "$exe" == "DMonteAudioRouter" ]]; then
     # Needs the audio-input entitlement for the "listen to an input" monitor.
     helper_entitlements="$AUDIOROUTER_ENTITLEMENTS"
+  elif [[ "$exe" == "DMonteCalendar" ]]; then
+    # Hardened Runtime refuses a calendar prompt without this entitlement.
+    helper_entitlements="$CALENDAR_ENTITLEMENTS"
   fi
   sign_one "$HELPERS_DIR/$app/Contents/MacOS/$exe" "$helper_entitlements"
   sign_one "$HELPERS_DIR/$app" "$helper_entitlements"
