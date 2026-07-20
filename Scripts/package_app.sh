@@ -175,6 +175,7 @@ fi
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 BASE_ENTITLEMENTS="$ROOT_DIR/Packaging/DMonte.entitlements"
+APP_ENTITLEMENTS="$ROOT_DIR/Packaging/DMonteApp.entitlements"
 VOLUMEMIXER_ENTITLEMENTS="$ROOT_DIR/Packaging/VolumeMixer.entitlements"
 AUDIOROUTER_ENTITLEMENTS="$ROOT_DIR/Packaging/AudioRouter.entitlements"
 YTDLP_ENTITLEMENTS="$ROOT_DIR/Packaging/ytdlp.entitlements"
@@ -267,8 +268,11 @@ for entry in "${HELPERS[@]}"; do
   sign_one "$HELPERS_DIR/$app" "$helper_entitlements"
 done
 
-# 4. Finally the outer app (seals everything signed above).
-sign_one "$APP_DIR" "$BASE_ENTITLEMENTS"
+# 4. Finally the outer app (seals everything signed above). It signs with
+# APP_ENTITLEMENTS, not BASE_ENTITLEMENTS: TCC attributes a nested helper's
+# microphone use to the container, so the audio-input entitlement has to be
+# here as well as on the Audio Router helper. See DMonteApp.entitlements.
+sign_one "$APP_DIR" "$APP_ENTITLEMENTS"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   echo "Signed ad-hoc (TCC grants will not persist; not notarizable)"

@@ -1,13 +1,31 @@
 import Accelerate
+import AppKit
 import AVFoundation
 import CoreAudio
 import Foundation
+import os
 import os.lock
+
+/// Outcome of the microphone gate. Distinguishes the states macOS treats very
+/// differently: `.denied` is user-revocable in System Settings, `.restricted`
+/// is not (MDM profile / Screen Time), and `.missingUsageDescription` means the
+/// running binary can't legally ask at all.
+public enum MicrophoneAccess: Sendable, Equatable {
+    case granted
+    case denied
+    case restricted
+    case missingUsageDescription
+}
 
 /// Microphone authorization gate for input monitoring. Capturing a hardware
 /// input device is treated by macOS as microphone use, so the first monitor
 /// must obtain consent.
 public enum AudioMonitorPermission {
+    /// Logged via `os_log` (not stderr) so the gate stays diagnosable when the
+    /// toolbox launches this helper via `NSWorkspace` and stderr goes nowhere —
+    /// the only launch path that matters to users.
+    private static let log = Logger(subsystem: "com.havokentity.mactools.audiorouter", category: "microphone")
+
     /// Whether the running binary declares a microphone usage string. Without it,
     /// any audio-input access aborts the process via TCC, so input monitoring is
     /// unavailable (notably in `swift run` builds — use the packaged app).
@@ -15,24 +33,45 @@ public enum AudioMonitorPermission {
         Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil
     }
 
-    /// Resolves to `true` when the app may capture audio input, prompting once
-    /// if permission has not yet been decided.
-    public static func ensureMicrophoneAccess() async -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+    /// Resolves the app's right to capture audio input, prompting once if
+    /// permission has not yet been decided.
+    public static func ensureMicrophoneAccess() async -> MicrophoneAccess {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        log.notice("gate: authorizationStatus=\(status.rawValue, privacy: .public) usageDescription=\(hasUsageDescription, privacy: .public)")
+
+        switch status {
         case .authorized:
-            return true
+            return .granted
+        case .restricted:
+            return .restricted
+        case .denied:
+            return .denied
         case .notDetermined:
             // macOS aborts the process (TCC SIGABRT) the moment it accesses the
             // microphone — via `requestAccess` OR the actual CoreAudio capture —
             // if the running binary has no `NSMicrophoneUsageDescription`. That
             // key only exists in the packaged Info.plist, not in a `swift run`
             // build, so refuse rather than crash when it's absent.
-            guard hasUsageDescription else { return false }
-            return await withCheckedContinuation { continuation in
+            guard hasUsageDescription else {
+                log.error("gate: no NSMicrophoneUsageDescription — refusing to ask")
+                return .missingUsageDescription
+            }
+            // This helper is an LSUIElement agent, so when the toolbox launches
+            // it, it is not the active app and TCC can decline to present the
+            // consent dialog at all — the request then resolves false with no
+            // prompt shown and no entry added to System Settings ▸ Microphone
+            // (that list has no "+", so a silent failure leaves the user with no
+            // way in). Activating first gives the dialog a foreground app to
+            // attach to.
+            await MainActor.run { NSApp.activate() }
+            let granted = await withCheckedContinuation { continuation in
                 AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) }
             }
-        default:
-            return false
+            log.notice("gate: requestAccess granted=\(granted, privacy: .public)")
+            return granted ? .granted : .denied
+        @unknown default:
+            log.error("gate: unknown authorizationStatus \(status.rawValue, privacy: .public)")
+            return .denied
         }
     }
 }
