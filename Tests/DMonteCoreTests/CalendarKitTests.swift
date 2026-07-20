@@ -462,24 +462,34 @@ final class CalendarKitTests: XCTestCase {
 
     // MARK: - Calendar.app deep links
 
-    func testEventShowURLCarriesTheOccurrenceDate() {
+    func testEventShowURLPutsTheIdentifierInTheOnlyPathComponent() {
         let calendar = makeCalendar()
         let occurrence = date(2027, 2, 10, calendar: calendar).addingTimeInterval(9 * 3600 + 30 * 60)
         let url = CalendarKit.eventShowURL(eventIdentifier: "ABC-123", occurrenceDate: occurrence)
-        XCTAssertEqual(
-            url?.absoluteString,
-            "ical://ekevent/20270210T093000Z/ABC-123?method=show&options=more"
-        )
-    }
-
-    func testEventShowURLWithoutAnOccurrenceDateOmitsTheStamp() {
-        let url = CalendarKit.eventShowURL(eventIdentifier: "ABC-123", occurrenceDate: nil)
         XCTAssertEqual(url?.absoluteString, "ical://ekevent/ABC-123?method=show&options=more")
     }
 
-    func testTwoOccurrencesOfOneSeriesGetDistinctURLs() {
-        // Every occurrence of a recurring event shares one `eventIdentifier`, so the occurrence date
-        // is the only thing that tells Calendar.app which one to open.
+    func testEventShowURLIsTheSameWithOrWithoutAnOccurrenceDate() {
+        let calendar = makeCalendar()
+        let withDate = CalendarKit.eventShowURL(
+            eventIdentifier: "ABC-123",
+            occurrenceDate: date(2027, 2, 10, calendar: calendar)
+        )
+        let withoutDate = CalendarKit.eventShowURL(eventIdentifier: "ABC-123", occurrenceDate: nil)
+        XCTAssertEqual(withDate, withoutDate)
+    }
+
+    /// KNOWN LIMITATION, asserted so it is visible rather than forgotten.
+    ///
+    /// Every occurrence of a recurring event shares one `eventIdentifier`, so this URL cannot
+    /// distinguish them — all occurrences open the same event. An earlier version prefixed the
+    /// occurrence date to disambiguate, which produced distinct URLs that Calendar.app did not
+    /// accept at all: it opened on today's date instead of the event. A URL that works and is
+    /// imprecise beats one that is precise and does nothing.
+    ///
+    /// Whatever replaces this has to be confirmed against a live Calendar.app; no unit test can
+    /// tell us which shape that app actually resolves.
+    func testOccurrencesOfOneSeriesCurrentlyShareAURL() {
         let calendar = makeCalendar()
         let first = CalendarKit.eventShowURL(
             eventIdentifier: "SERIES",
@@ -490,7 +500,7 @@ final class CalendarKitTests: XCTestCase {
             occurrenceDate: date(2027, 2, 17, calendar: calendar)
         )
         XCTAssertNotNil(first)
-        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(first, second)
     }
 
     func testEventShowURLIsNilWithoutAnIdentifier() {
@@ -516,9 +526,9 @@ final class CalendarKitTests: XCTestCase {
         )
         XCTAssertEqual(
             url?.absoluteString,
-            "ical://ekevent/20270210T000000Z/acct%2Fone:evt?method=show&options=more"
+            "ical://ekevent/acct%2Fone:evt?method=show&options=more"
         )
-        XCTAssertEqual(url?.pathComponents.count, 3, "Expected /, the date stamp, and the identifier.")
+        XCTAssertEqual(url?.pathComponents.count, 2, "Expected / and the identifier — a slash inside the identifier must not split it.")
         XCTAssertEqual(url?.pathComponents.last, "acct/one:evt")
     }
 

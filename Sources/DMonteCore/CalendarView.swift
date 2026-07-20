@@ -111,7 +111,11 @@ public final class CalendarController: ObservableObject {
     /// Current calendar-access state, drives the permission banner.
     @Published public private(set) var accessState: CalendarAccessState = .notDetermined
     /// Days (midnight Dates) in the visible month that have at least one event — used for grid dots.
-    @Published public private(set) var daysWithEvents: Set<Date> = []
+    /// Distinct calendar colours per day, in stable order — drives the month-grid dots.
+    ///
+    /// A day is "has events" when its entry is non-empty, so this replaces the old `Set<Date>`
+    /// rather than sitting beside it: two sources for the same fact drift.
+    @Published public private(set) var eventColorsByDay: [Date: [CGColor]] = [:]
     /// Events on the selected day, time-sorted.
     @Published public private(set) var selectedDayEvents: [CalendarEventItem] = []
     /// Events over the next ~7 days, time-sorted.
@@ -289,7 +293,13 @@ public final class CalendarController: ObservableObject {
     }
 
     public func hasEvents(on date: Date) -> Bool {
-        daysWithEvents.contains(calendar.startOfDay(for: date))
+        !(eventColorsByDay[calendar.startOfDay(for: date)] ?? []).isEmpty
+    }
+
+    /// Up to `limit` distinct calendar colours for the day, so a day holding a work event and a
+    /// personal one shows both rather than one colour standing in for everything.
+    public func eventColors(on date: Date, limit: Int = 3) -> [CGColor] {
+        Array((eventColorsByDay[calendar.startOfDay(for: date)] ?? []).prefix(limit))
     }
 
     // MARK: - Event loading
@@ -298,7 +308,7 @@ public final class CalendarController: ObservableObject {
     /// not granted: it simply clears the event lists (the grid still works without permission).
     public func reloadEvents() {
         guard accessState == .authorized else {
-            daysWithEvents = []
+            eventColorsByDay = [:]
             selectedDayEvents = []
             upcomingEvents = []
             calendarSources = []
@@ -320,7 +330,7 @@ public final class CalendarController: ObservableObject {
         guard let monthStart = calendar.date(from: components),
               let dayRange = calendar.range(of: .day, in: .month, for: monthStart),
               let monthEnd = calendar.date(byAdding: .day, value: dayRange.count, to: monthStart) else {
-            daysWithEvents = []
+            eventColorsByDay = [:]
             return
         }
 
@@ -328,20 +338,32 @@ public final class CalendarController: ObservableObject {
         // rule, in one place, drives the dots and both lists.
         let predicate = store.predicateForEvents(withStart: monthStart, end: monthEnd, calendars: nil)
         let events = visible(store.events(matching: predicate))
-        var days: Set<Date> = []
+        var colorsByDay: [Date: [CGColor]] = [:]
         for event in events {
             guard let start = event.startDate else { continue }
-            days.formUnion(
-                Self.eventDays(
-                    start: start,
-                    end: event.endDate ?? start,
-                    monthStart: monthStart,
-                    monthEnd: monthEnd,
-                    calendar: calendar
-                )
+            let days = Self.eventDays(
+                start: start,
+                end: event.endDate ?? start,
+                monthStart: monthStart,
+                monthEnd: monthEnd,
+                calendar: calendar
             )
+            guard let color = event.calendar?.cgColor else {
+                // Still mark the day: a colourless calendar must not make its events invisible.
+                for day in days where colorsByDay[day] == nil { colorsByDay[day] = [] }
+                continue
+            }
+            for day in days {
+                var existing = colorsByDay[day] ?? []
+                // Distinct colours only — a day with six work events should show one work dot,
+                // not six identical ones.
+                if !existing.contains(where: { CalendarKit.colorsMatch($0, color) }) {
+                    existing.append(color)
+                }
+                colorsByDay[day] = existing
+            }
         }
-        daysWithEvents = days
+        eventColorsByDay = colorsByDay
     }
 
     private func reloadSelectedDayEvents() {
@@ -735,9 +757,25 @@ public struct CalendarPopoverView: View {
                     Text("\(day.day)")
                         .font(.system(size: s(13), weight: day.isToday ? .bold : .medium))
                         .foregroundStyle(dayTextColor(isToday: day.isToday, isSelected: selected))
-                    Circle()
-                        .fill(controller.hasEvents(on: day.date) ? accent : Color.clear)
-                        .frame(width: s(4), height: s(4))
+                    // One dot per distinct calendar colour on the day, so a work event and a
+                    // personal one are told apart at a glance instead of both reading as the
+                    // accent. Capped at three: the cell is 34pt tall and the dots have to stay
+                    // legible. A colourless calendar still gets a dot, in the accent.
+                    HStack(spacing: s(2)) {
+                        let colors = controller.eventColors(on: day.date)
+                        if colors.isEmpty {
+                            Circle()
+                                .fill(controller.hasEvents(on: day.date) ? accent : Color.clear)
+                                .frame(width: s(4), height: s(4))
+                        } else {
+                            ForEach(Array(colors.enumerated()), id: \.offset) { _, color in
+                                Circle()
+                                    .fill(Color(cgColor: color))
+                                    .frame(width: s(4), height: s(4))
+                            }
+                        }
+                    }
+                    .frame(height: s(4))
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: s(34))

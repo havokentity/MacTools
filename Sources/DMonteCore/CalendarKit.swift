@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Pure, UI-free month-grid math used by the menu-bar Calendar tool. Everything here is Foundation
@@ -246,17 +247,39 @@ public enum CalendarKit {
     ///     timestamp path component; without it Calendar.app opens the series' first occurrence.
     ///     A detached (moved) occurrence keeps its original date, which is exactly what this URL
     ///     needs, so the stamp must not be taken from `startDate`.
+    /// Whether two calendar colours are the same to the eye.
+    ///
+    /// Compared componentwise in a shared colour space rather than with `==`: `CGColor` equality
+    /// also considers the colour space object, so the same visual red arriving from two calendars
+    /// can compare unequal and produce two identical-looking dots on one day.
+    public static func colorsMatch(_ lhs: CGColor, _ rhs: CGColor, tolerance: CGFloat = 0.01) -> Bool {
+        guard let a = lhs.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil),
+              let b = rhs.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil),
+              let ca = a.components, let cb = b.components,
+              ca.count == cb.count else {
+            return lhs == rhs
+        }
+        return zip(ca, cb).allSatisfy { abs($0 - $1) <= tolerance }
+    }
+
     public static func eventShowURL(eventIdentifier: String?, occurrenceDate: Date?) -> URL? {
         guard let eventIdentifier, !eventIdentifier.isEmpty,
               let escaped = eventIdentifier.addingPercentEncoding(withAllowedCharacters: pathComponentAllowed) else {
             return nil
         }
         // `options=more` opens the full inspector rather than the compact popover.
-        let query = "?method=show&options=more"
-        guard let occurrenceDate else {
-            return URL(string: "ical://ekevent/\(escaped)\(query)")
-        }
-        return URL(string: "ical://ekevent/\(utcStamp(for: occurrenceDate))/\(escaped)\(query)")
+        //
+        // The identifier is the only path component. An earlier version prefixed the occurrence
+        // date — `ical://ekevent/<stamp>/<id>` — reasoning that recurring occurrences share one
+        // identifier and the date would disambiguate them. Calendar.app does not accept that
+        // shape: reported from a real install, it launched and then sat on today's date instead
+        // of the event, which is what an unresolvable URL looks like from the outside.
+        //
+        // `occurrenceDate` is kept in the signature because callers pass it and because pinning
+        // the right occurrence is still the open question — see the tests, which lock in the
+        // shape rather than the behaviour, since only a live Calendar.app can confirm the latter.
+        _ = occurrenceDate
+        return URL(string: "ical://ekevent/\(escaped)?method=show&options=more")
     }
 
     /// `.urlPathAllowed` minus `/`. The identifier is one path component, but EventKit identifiers are
