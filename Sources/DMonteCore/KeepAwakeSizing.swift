@@ -17,7 +17,11 @@ public enum KeepAwakeSizing {
     /// scaling would inset it noticeably while fixing nothing.
     public static func settingsSize() -> NSSize {
         let panel = preferredSize()
-        return NSSize(width: min(320, panel.width), height: min(230, panel.height))
+        // Leave room for the 18pt padding PreferencesOverlay adds around the sheet on every
+        // side: a sheet sized to the full panel becomes panel+36 once padded and spills
+        // the panel, dragging the content behind it off both edges.
+        let overlayChrome: CGFloat = 36
+        return NSSize(width: min(320, panel.width - overlayChrome), height: min(230, panel.height - overlayChrome))
     }
 
     static var currentScale: CGFloat {
