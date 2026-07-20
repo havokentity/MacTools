@@ -259,6 +259,6 @@ private struct MicControlSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 320, height: 300)
+        .frame(width: MicControlSizing.settingsSize().width, height: MicControlSizing.settingsSize().height)
     }
 }
