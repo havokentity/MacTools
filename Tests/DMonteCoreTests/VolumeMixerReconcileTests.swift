@@ -12,17 +12,46 @@ final class VolumeMixerReconcileTests: XCTestCase {
         isActive: Bool = true,
         gain: Float = 1,
         hasCustomRoute: Bool = false,
-        manualOverride: Bool? = nil
+        manualOverride: Bool? = nil,
+        isIgnored: Bool = false
     ) -> Bool {
         AppVolumeMixerController.shouldRunProcessing(
             isActive: isActive,
             gain: gain,
             hasCustomRoute: hasCustomRoute,
-            manualOverride: manualOverride
+            manualOverride: manualOverride,
+            isIgnored: isIgnored
         )
     }
 
     // MARK: - Automatic policy (no manual override)
+
+    // MARK: - Ignore is a hard stop
+
+    /// Ignoring an app is a denylist action, so its engine must be released regardless of the
+    /// settings that would otherwise keep it running — attenuation, a custom route, or an
+    /// explicit play override. This is what makes an ignored app play back untouched.
+    func testIgnoredAttenuatedTargetDoesNotProcess() {
+        XCTAssertFalse(shouldRun(gain: 0.4, isIgnored: true))
+    }
+
+    func testIgnoredMutedTargetDoesNotProcess() {
+        XCTAssertFalse(shouldRun(gain: 0, isIgnored: true))
+    }
+
+    func testIgnoredTargetWithCustomRouteDoesNotProcess() {
+        XCTAssertFalse(shouldRun(gain: 1, hasCustomRoute: true, isIgnored: true))
+    }
+
+    func testIgnoreOverridesAnExplicitPlay() {
+        XCTAssertFalse(shouldRun(gain: 0.4, manualOverride: true, isIgnored: true))
+    }
+
+    /// Un-ignoring restores normal policy: the gain was left persisted, so an attenuated app
+    /// resumes processing at its old level once it is no longer ignored.
+    func testUnignoringRestoresProcessing() {
+        XCTAssertTrue(shouldRun(gain: 0.4, isIgnored: false))
+    }
 
     func testAttenuatedActiveTargetProcesses() {
         XCTAssertTrue(shouldRun(gain: 0.5))
