@@ -234,6 +234,10 @@ public final class SnippetsController: ObservableObject {
             .intersection(.deviceIndependentFlagsMask)
             .intersection(meaningfulModifiers)
         let isCommandOnly = flags == .command
+        // ⌥⌘ for reorder rather than plain ⌘: bare ⌘↑ / ⌘↓ collide with Mission Control and
+        // space-switching shortcuts on many setups, and a system shortcut is consumed before this
+        // local monitor ever sees the event, so the app cannot win that race. Option steps aside.
+        let isCommandOption = flags == [.command, .option]
 
         // While the editor is open every key belongs to it — arrows move the caret, Return
         // inserts a newline — except Escape, which cancels the session.
@@ -246,10 +250,10 @@ public final class SnippetsController: ObservableObject {
         }
 
         switch Int(event.keyCode) {
-        case 126 where isCommandOnly: // ⌘↑ move the selected snippet up
+        case 126 where isCommandOption: // ⌥⌘↑ move the selected snippet up
             if let selectedID { move(selectedID, by: -1) }
             return true
-        case 125 where isCommandOnly: // ⌘↓ move the selected snippet down
+        case 125 where isCommandOption: // ⌥⌘↓ move the selected snippet down
             if let selectedID { move(selectedID, by: 1) }
             return true
         case 126: // up arrow

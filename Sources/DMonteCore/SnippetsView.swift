@@ -255,7 +255,7 @@ public struct SnippetsPopoverView: View {
             footerHint("⌘N", "New")
             footerHint("⌘E", "Edit")
             Spacer()
-            footerHint("⌘↑↓", "Reorder")
+            footerHint("⌥⌘↑↓", "Reorder")
         }
         .padding(.horizontal, s(14))
         .padding(.top, s(6))
@@ -368,8 +368,8 @@ private struct SnippetRow: View {
 
     private var rowActions: some View {
         HStack(spacing: s(2)) {
-            rowButton(systemImage: "chevron.up", help: "Move up", isEnabled: canMoveUp, action: onMoveUp)
-            rowButton(systemImage: "chevron.down", help: "Move down", isEnabled: canMoveDown, action: onMoveDown)
+            rowButton(systemImage: "chevron.up", help: "Move up (⌥⌘↑)", isEnabled: canMoveUp, action: onMoveUp)
+            rowButton(systemImage: "chevron.down", help: "Move down (⌥⌘↓)", isEnabled: canMoveDown, action: onMoveDown)
             rowButton(systemImage: "pencil", help: "Edit", isEnabled: true, action: onEdit)
             rowButton(systemImage: "trash", help: "Delete", isEnabled: true, action: onDelete)
         }
