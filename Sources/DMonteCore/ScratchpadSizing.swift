@@ -9,16 +9,17 @@ public enum ScratchpadSizing {
     }
 
     /// The settings overlay, which is centred *over* the panel and therefore must never be wider
-    /// than it. A hard-coded width looks right only at `currentScale == 1`; on a Mac whose menu
-    /// bar is thinner than 26pt the panel shrinks and the sheet does not, so it overflows equally
-    /// on both sides and its first and last characters are clipped. Width is capped at the panel
-    /// so that cannot happen at any scale.
+    /// than it. A hard-coded size looks right only at `currentScale == 1`; on a Mac whose menu bar
+    /// is thinner than 26pt the panel shrinks and the sheet does not, so it overflows equally on
+    /// both sides and its first and last characters are clipped.
+    ///
+    /// Capped at the panel rather than scaled with it. The sheet's contents are laid out at this
+    /// size with unscaled padding, so shrinking it further than the panel demands would squeeze
+    /// them for no reason — and on the tools whose sheet is already narrower than their panel,
+    /// scaling would inset it noticeably while fixing nothing.
     public static func settingsSize() -> NSSize {
-        let scale = currentScale
-        return NSSize(
-            width: min((320 * scale).rounded(), preferredSize().width),
-            height: (290 * scale).rounded()
-        )
+        let panel = preferredSize()
+        return NSSize(width: min(320, panel.width), height: min(290, panel.height))
     }
 
     static var currentScale: CGFloat {
