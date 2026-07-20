@@ -30,8 +30,8 @@ final class DriveEjectorSizingTests: XCTestCase {
         let panel = DriveEjectorSizing.preferredSize()
         let settings = DriveEjectorSizing.settingsSize()
 
-        XCTAssertEqual(settings.width, min(340, panel.width), accuracy: 1)
-        XCTAssertEqual(settings.height, min(330, panel.height), accuracy: 1)
+        XCTAssertEqual(settings.width, min(340, panel.width - 36), accuracy: 1)
+        XCTAssertEqual(settings.height, min(330, panel.height - 36), accuracy: 1)
     }
 
     /// The scale is derived from live screen and menu-bar metrics, so the guarantee has to hold
