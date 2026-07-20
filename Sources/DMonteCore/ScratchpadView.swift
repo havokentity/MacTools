@@ -487,6 +487,6 @@ private struct ScratchpadSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 320, height: 290)
+        .frame(width: ScratchpadSizing.settingsSize().width, height: ScratchpadSizing.settingsSize().height)
     }
 }
