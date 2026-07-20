@@ -37,7 +37,7 @@ final class NetworkInfoSizingTests: XCTestCase {
         let panel = NetworkInfoSizing.preferredSize()
         let settings = NetworkInfoSizing.settingsSize()
 
-        XCTAssertEqual(settings.width, min(340, panel.width), accuracy: 1)
-        XCTAssertEqual(settings.height, min(300, panel.height), accuracy: 1)
+        XCTAssertEqual(settings.width, min(340, panel.width - 36), accuracy: 1)
+        XCTAssertEqual(settings.height, min(300, panel.height - 36), accuracy: 1)
     }
 }
