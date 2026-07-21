@@ -30,6 +30,12 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Yahushad Monte</string>
+	<!-- Present for the same reason as the microphone key below: TCC attributes a nested
+	     helper's calendar request to this container, and refuses to prompt without the string. -->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Show your events in the menu-bar calendar.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Show your events in the menu-bar calendar.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>DMonte uses audio input for the Audio Router's "listen to an input" feature, which plays an input device through an output device on this Mac only.</string>
 	<key>SUEnableInstallerLauncherService</key>

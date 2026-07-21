@@ -409,6 +409,16 @@ public final class AppVolumeMixerController: ObservableObject {
         for id in audioEngines.keys {
             manualProcessingOverrides[id] = false
         }
+        shutdownProcessing()
+    }
+
+    /// Releases the taps without recording any user intent. Quitting is not a gesture: the engines
+    /// have to stop so the process can exit cleanly, but nothing on this path may touch
+    /// `manualProcessingOverrides`, which is persisted. Marking them here would write a force-off
+    /// for every app that merely happened to be processing at quit, and the next launch would
+    /// restore all of them as stops the user never asked for — slider still reading 40% while the
+    /// audio plays at full volume.
+    public func shutdownProcessing() {
         for engine in audioEngines.values {
             engine.stop()
         }
@@ -572,8 +582,14 @@ public final class AppVolumeMixerController: ObservableObject {
 
     /// Rebuilds the overrides map from a persisted stopped-keys list: every stored key is a
     /// force-off. The inverse of `stoppedKeys(from:)`.
+    ///
+    /// Duplicates are collapsed rather than trapped. `stoppedKeys(from:)` cannot emit a repeat — it
+    /// reads a dictionary — but this list comes back off disk, and a hand-edited or half-merged
+    /// prefs plist is outside our control. `Dictionary(uniqueKeysWithValues:)` would crash the tool
+    /// on launch for a value that has one obvious reading: the key is stopped, however many times
+    /// it was written.
     nonisolated static func overrides(fromStoppedKeys keys: [String]) -> [String: Bool] {
-        Dictionary(uniqueKeysWithValues: keys.map { ($0, false) })
+        Dictionary(keys.map { ($0, false) }, uniquingKeysWith: { first, _ in first })
     }
 
     private func scheduleGainPersistence(_ gain: Float, forKey key: String) {

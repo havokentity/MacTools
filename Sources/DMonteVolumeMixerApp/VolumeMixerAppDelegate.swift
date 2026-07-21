@@ -78,7 +78,9 @@ final class VolumeMixerAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func cleanup() {
-        controller?.stopProcessing()
+        // Teardown, not the footer gesture: `stopProcessing()` persists a force-off for every live
+        // engine, which on quit would resurrect as stops the user never pressed.
+        controller?.shutdownProcessing()
         panelHost?.removeOutsideClickMonitor()
         panelHost?.stopObservingShowNotifications()
     }

@@ -18,6 +18,10 @@ final class ScratchpadAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDefaults.registerDefaults()
 
+        // Without a main menu, AppKit never matches ⌘C/⌘V/⌘A/⌘Z, so they are dead in
+        // this tool's text fields. The menu is never drawn; it exists for the shortcuts.
+        HelperMainMenu.installEditMenuIfNeeded()
+
         let host = HelperPanelHost(
             configuration: HelperPanelHost.Configuration(
                 sizing: .preferred({ ScratchpadSizing.preferredSize() })

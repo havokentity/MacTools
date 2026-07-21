@@ -89,32 +89,39 @@ public final class AudioSwitcherController: ObservableObject {
         refreshVolumeAndMute()
     }
 
+    /// Re-reads volume and mute from the current default output.
+    ///
+    /// Every write is guarded on an actual change. These are `@Published`, and `@Published` does not
+    /// dedupe: assigning the same value still fires `objectWillChange` and re-evaluates the whole
+    /// popover. CoreAudio posts a VolumeScalar notification for *every* step of a slider drag, so
+    /// unconditional writes here re-render the popover on each step — the `isAdjustingVolume` guard
+    /// holds `volume` steady, but the redundant publishes alone are enough to make the drag stutter.
     private func refreshVolumeAndMute() {
         guard let outputID = defaultOutputID else {
-            volumeSupported = false
-            muteSupported = false
-            volume = 0
-            isMuted = false
+            if volumeSupported { volumeSupported = false }
+            if muteSupported { muteSupported = false }
+            if volume != 0 { volume = 0 }
+            if isMuted { isMuted = false }
             return
         }
         if let vol = AudioDeviceKit.volume(for: outputID) {
-            volumeSupported = true
+            if !volumeSupported { volumeSupported = true }
             // Don't yank the slider out from under an active drag.
-            if !isAdjustingVolume {
+            if !isAdjustingVolume, volume != vol {
                 volume = vol
             }
         } else {
-            volumeSupported = false
-            if !isAdjustingVolume {
+            if volumeSupported { volumeSupported = false }
+            if !isAdjustingVolume, volume != 0 {
                 volume = 0
             }
         }
         if let muted = AudioDeviceKit.isMuted(outputID) {
-            muteSupported = true
-            isMuted = muted
+            if !muteSupported { muteSupported = true }
+            if isMuted != muted { isMuted = muted }
         } else {
-            muteSupported = false
-            isMuted = false
+            if muteSupported { muteSupported = false }
+            if isMuted { isMuted = false }
         }
     }
 
@@ -172,6 +179,12 @@ public struct AudioSwitcherPopoverView: View {
         .padding(AudioSwitcherSizing.outerPadding)
         .frame(width: AudioSwitcherSizing.panelWidth, height: AudioSwitcherSizing.panelHeight)
         .frostedPanel(cornerRadius: 18)
+        // The drag latch is only ever cleared by the slider's own `onEditingChanged(false)`. Dismiss
+        // the popover mid-drag and that callback never arrives, so the latch stays set — and because
+        // the controller is a `@StateObject` that outlives an open/close cycle, volume would stop
+        // tracking the hardware for the rest of the process. Releasing it here also re-reads the
+        // device, so the next open shows the true level rather than the value the drag left behind.
+        .onDisappear { controller.setVolumeEditing(false) }
     }
 
     // MARK: - Header

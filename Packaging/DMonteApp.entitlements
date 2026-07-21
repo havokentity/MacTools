@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Entitlements for the OUTER toolbox app only. Identical to
+	  DMonte.entitlements (the helper baseline) except for the audio-input key
+	  below, which the outer app needs even though it never captures audio
+	  itself.
+
+	  macOS attributes a nested helper's microphone use to the containing app:
+	  when the Audio Router helper asks for the mic, tccd records the request
+	  against Sub:{com.havokentity.mactools}, not the helper. Under the Hardened
+	  Runtime, TCC then requires com.apple.security.device.audio-input on that
+	  subject — and if it is absent, it does not merely deny, it refuses to show
+	  the consent dialog at all and writes a permanent denial:
+
+	    Prompting policy for hardened runtime; service: kTCCServiceMicrophone
+	    requires entitlement com.apple.security.device.audio-input but it is
+	    missing ... Policy disallows prompt for Sub:{com.havokentity.mactools}
+
+	  The failure is silent and unrecoverable from the UI, because System
+	  Settings ▸ Privacy & Security ▸ Microphone has no "+" to add an app by
+	  hand — the list is only ever populated by a successful request. The helper
+	  carrying the entitlement (AudioRouter.entitlements) is not sufficient on
+	  its own; the container must carry it too.
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!--
+	  Same rule, same reason, for the Calendar helper: tccd records its request
+	  against the container, so kTCCServiceCalendar is refused a prompt unless
+	  the container carries the calendars entitlement. Symptom is identical —
+	  the tool asks, nothing appears, and Privacy & Security ▸ Calendars offers
+	  no way to add the app by hand.
+	-->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+</dict>
+</plist>

@@ -215,12 +215,22 @@ public final class AudioRouterController: ObservableObject {
         }
         let gain = newMonitorGain
         Task { [weak self] in
-            let granted = await AudioMonitorPermission.ensureMicrophoneAccess()
+            let access = await AudioMonitorPermission.ensureMicrophoneAccess()
             guard let self else { return }
-            guard granted else {
-                self.statusMessage = AudioMonitorPermission.hasUsageDescription
-                    ? "Allow microphone access in System Settings ▸ Privacy & Security ▸ Microphone to listen to an input"
-                    : "Input monitoring needs the installed app — microphone permission isn’t available in this build"
+            guard access == .granted else {
+                switch access {
+                case .denied:
+                    self.statusMessage = "Allow microphone access in System Settings ▸ Privacy & Security ▸ Microphone to listen to an input"
+                case .restricted:
+                    // The list has no "+" to add us by hand, and the user can't
+                    // grant this themselves — say so rather than sending them to
+                    // a settings pane where nothing is listed.
+                    self.statusMessage = "Microphone access is blocked by a device policy (MDM or Screen Time) — it can’t be granted here"
+                case .missingUsageDescription:
+                    self.statusMessage = "Input monitoring needs the installed app — microphone permission isn’t available in this build"
+                case .granted:
+                    break
+                }
                 return
             }
             let engine = AudioMonitorEngine()
