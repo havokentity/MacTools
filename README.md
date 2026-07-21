@@ -41,7 +41,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Calendar** | Menu bar month view with your upcoming events |
 | **Keep Awake** | Prevent sleep, optionally for a set duration |
 | **Maintenance** | Handy Finder/system toggles and cache/index refreshes |
-| **Dev Tools** | JSON, Base64, URL, hashing, UUID, timestamp, and case utilities |
+| **Dev Tools** | JSON, Base64, JWT, URL, hashing, UUID, timestamp, and case utilities |
 
 ### Permissions
 

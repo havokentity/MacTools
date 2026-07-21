@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org) and the
   and runs the full test suite on a pinned macOS runner, using the same
   toolchain the release workflow ships with. Previously only version tags ran
   CI, so a branch could go unverified until release day.
+- **Dev Tools** JWT decoder: paste a token to see its header and payload as
+  pretty-printed JSON, with `iat`/`nbf`/`exp` rendered as UTC dates plus a
+  relative hint and a live/expired badge. The signature is shown verbatim and
+  explicitly marked as unverified.
 
 ## [0.13.0] — 2026-07-12
 
