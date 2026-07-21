@@ -14,16 +14,19 @@ public enum GrabTextKit {
     /// empty array if the file is missing, can't be decoded, or holds no text.
     /// Synchronous so callers can run it off the main actor via `Task.detached`.
     public static func recognizeText(in imageURL: URL) -> [String] {
-        guard FileManager.default.fileExists(atPath: imageURL.path) else {
-            return []
-        }
-
-        guard let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            return []
-        }
-
+        guard let cgImage = loadImage(at: imageURL) else { return [] }
         return recognizeText(cgImage: cgImage)
+    }
+
+    /// Decodes the image file at `imageURL`, or nil when it is missing or is not something
+    /// ImageIO can read. Exposed separately because `recognizeText(in:)` folds both of those
+    /// into the same empty array as "this image has no text", and a caller that must report
+    /// the difference to the user (Clipboard History's Copy Text from Image) needs to see it.
+    public static func loadImage(at imageURL: URL) -> CGImage? {
+        guard FileManager.default.fileExists(atPath: imageURL.path) else { return nil }
+
+        guard let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
     /// Recognizes text in `cgImage` using Vision. Returns the top candidate string
