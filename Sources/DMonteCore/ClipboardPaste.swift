@@ -118,6 +118,36 @@ public enum ClipboardPaste {
         // it is — the caller would show the permission banner.
         guard copyToPasteboard(entry, store: store, asPlainText: asPlainText) else { return true }
 
+        return pasteCopiedContent(into: target)
+    }
+
+    /// Puts plain `text` on the pasteboard and pastes it into `target`, stamped as coming from
+    /// `sourceBundleID` (the nspasteboard.org convention every clipboard manager reads). Shared
+    /// by the tools that paste text they generated rather than text they captured — Snippets —
+    /// so the permission handling and the ⌘V synthesis have exactly one implementation.
+    ///
+    /// Same contract as `paste(_:store:asPlainText:into:)`: false means only that Accessibility
+    /// is missing; the text is on the clipboard either way, ready for a manual ⌘V.
+    @discardableResult
+    public static func pasteText(
+        _ text: String,
+        sourceBundleID: String,
+        into target: NSRunningApplication?
+    ) -> Bool {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setString(sourceBundleID, forType: sourceType)
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([item])
+
+        return pasteCopiedContent(into: target)
+    }
+
+    /// Activates `target` and synthesizes ⌘V into it. Assumes the pasteboard already holds what
+    /// should land there.
+    private static func pasteCopiedContent(into target: NSRunningApplication?) -> Bool {
         guard hasAccessibilityPermission else {
             promptForAccessibilityPermission()
             return false

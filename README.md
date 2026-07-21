@@ -43,13 +43,15 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Keep Awake** | Prevent sleep, optionally for a set duration |
 | **Maintenance** | Handy Finder/system toggles and cache/index refreshes |
 | **Dev Tools** | JSON, Base64, JWT, URL, hashing, UUID, timestamp, and case utilities |
+| **Dev Tools** | JSON, Base64, URL, hashing, UUID, timestamp, and case utilities |
+| **Snippets** | A searchable library of reusable text — click one to paste it into the app you came from |
 
 ### Permissions
 
 A few tools ask macOS for access the first time you use them, and degrade gracefully if you decline:
 
 - **Window Manager** — Accessibility (to move other apps' windows)
-- **Clipboard History** — Accessibility (to paste into the active app)
+- **Clipboard History** / **Snippets** — Accessibility (to paste into the active app)
 - **Grab Text** / **QR Studio** (screen scan) — Screen Recording
 - **Volume Mixer** — System Audio Recording (`NSAudioCaptureUsageDescription`, to tap each app's audio for per‑app volume and routing)
 - **Calendar** — Calendar access

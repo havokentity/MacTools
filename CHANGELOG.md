@@ -16,6 +16,14 @@ adheres to [Semantic Versioning](https://semver.org) and the
   offers one, and says so plainly when a device exposes no mute control instead
   of offering a button that does nothing. Setting a device's mute switch is not
   audio capture, so it needs no microphone permission.
+- **Snippets**, a new menu bar tool: a searchable library of reusable text.
+  Click a snippet (or press ⏎ on the top search hit) to copy it and paste it
+  straight into the app you were working in, the way Clipboard History does.
+  Snippets are created, edited, reordered and deleted in the popover and stored
+  locally with owner-only permissions. Each one can opt into date/time
+  placeholders — `{date}`, `{time}` and `{datetime}` are replaced as it pastes;
+  anything else in braces is left alone. Pasting needs Accessibility access;
+  without it the snippet is still copied and the popover says so.
 - Continuous integration: every push and pull request now builds the package
   and runs the full test suite on a pinned macOS runner, using the same
   toolchain the release workflow ships with. Previously only version tags ran
