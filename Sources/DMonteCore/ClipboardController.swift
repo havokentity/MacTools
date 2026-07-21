@@ -16,6 +16,12 @@ public final class ClipboardController: ObservableObject {
     @Published public var needsAccessibility = false
     /// Bumped each time the panel is summoned so the view can refocus search + scroll to top.
     @Published public private(set) var showToken = 0
+    /// Inline status line for the OCR action ("Copy Text from Image"); nil when there is nothing
+    /// to report. This tool has no alerts, so every OCR outcome — including failure — surfaces
+    /// here or nowhere.
+    @Published public private(set) var ocrStatus: String?
+    /// The image entry whose OCR run is in flight, so its row can show a spinner. nil when idle.
+    @Published public private(set) var ocrEntryID: ClipboardEntry.ID?
 
     /// The app to paste into — captured by the delegate before the panel takes focus.
     public var pasteTarget: NSRunningApplication?
@@ -67,6 +73,13 @@ public final class ClipboardController: ObservableObject {
         searchText = ""
         typeFilter = nil
         needsAccessibility = !ClipboardPaste.hasAccessibilityPermission
+        // A result from a previous visit describes an entry the user is no longer looking at,
+        // and the row it belongs to may not even be on screen — stale, so drop it. A run still
+        // in flight is not stale: clearing its caption would leave a row spinning with nothing
+        // on screen to say why.
+        if ocrEntryID == nil {
+            ocrStatus = nil
+        }
         selectFirst()
         showToken &+= 1
     }
@@ -150,6 +163,62 @@ public final class ClipboardController: ObservableObject {
     public func clearAll() {
         store.clear(includingPinned: false)
         ensureSelectionValid()
+    }
+
+    // MARK: - OCR
+
+    /// Recognizes the text in an image entry's backing file and puts it on the clipboard.
+    ///
+    /// Vision's accurate recognizer is far too slow to run inline — a full-screen screenshot
+    /// costs the better part of a second — so the work goes to a detached task and the row shows
+    /// a spinner meanwhile. Nothing is written to the pasteboard unless there is text to write:
+    /// clearing it for a blank result would destroy whatever the user had copied and replace it
+    /// with nothing.
+    public func extractText(from entry: ClipboardEntry) {
+        guard entry.kind == .image else { return }
+        // One run at a time. Recognition is CPU-hungry, and two runs racing would leave the
+        // status line describing whichever finished last rather than the row the user clicked.
+        // The UI disables every trigger while `ocrEntryID != nil`, so reaching this guard means
+        // a non-UI caller raced us; dropping the request silently is right only because the
+        // user cannot get here by clicking.
+        guard ocrEntryID == nil else { return }
+
+        guard let fileName = entry.imageFileName else {
+            ocrStatus = ClipboardOCRKit.statusMessage(for: .imageUnavailable)
+            return
+        }
+        let imageURL = store.imagesURL(for: fileName)
+
+        ocrEntryID = entry.id
+        ocrStatus = ClipboardOCRKit.inProgressMessage
+
+        // Deliberately not retained for cancellation: a run the user already paid the CPU for
+        // should still land on the clipboard even if the panel closes underneath it, and the
+        // detached child wouldn't honour cancellation anyway.
+        Task { [weak self] in
+            // Task.detached's closure is @Sendable, so it does not inherit this class's
+            // @MainActor isolation — recognition genuinely leaves the main thread.
+            let outcome = await Task.detached(priority: .userInitiated) {
+                ClipboardOCRKit.recognize(imageURL: imageURL)
+            }.value
+
+            // Land the text before touching `self`: the user already paid for the recognition,
+            // so it belongs on the clipboard even if this controller went away while Vision was
+            // working. Only the status line is worth dropping in that case.
+            if case let .text(text) = outcome {
+                ClipboardPaste.copyRecognizedText(text)
+            }
+
+            guard let self else { return }
+            self.ocrEntryID = nil
+            self.ocrStatus = ClipboardOCRKit.statusMessage(for: outcome)
+        }
+    }
+
+    /// Hides the OCR status line. It otherwise persists until the panel is next summoned, so a
+    /// result stays readable while the user keeps working in the list.
+    public func dismissOCRStatus() {
+        ocrStatus = nil
     }
 
     // MARK: - Key handling (called from the delegate's local key monitor)
