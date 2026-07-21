@@ -182,4 +182,43 @@ final class VolumeMixerReconcileTests: XCTestCase {
         )
     }
 
+    /// Quitting must not look like the footer gesture. `stopProcessing()` marks every live engine
+    /// force-off, and that write is persisted — so routing teardown through it brings back every app
+    /// that merely happened to be playing at quit as a stop the user never pressed, with the row's
+    /// slider reading 40% while the audio plays at full volume. Asserted at the source level because
+    /// the real path runs through CoreAudio and the shared prefs domain, neither of which a unit
+    /// test may touch.
+    func testQuitTearsDownWithoutPersistingAStop() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests/DMonteCoreTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // repo root
+        let source = try String(
+            contentsOf: repoRoot.appendingPathComponent("Sources/DMonteVolumeMixerApp/VolumeMixerAppDelegate.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(
+            source.contains("shutdownProcessing()"),
+            "Quit must release the taps through the non-persisting teardown"
+        )
+        XCTAssertFalse(
+            source.contains("controller?.stopProcessing()"),
+            "stopProcessing() persists a force-off per live engine — it is the footer gesture, not teardown"
+        )
+    }
+
+    /// The stopped-keys list is read back off disk, so it is not ours to trust: a hand-edited or
+    /// half-merged prefs plist can carry the same key twice. Building the map with
+    /// `Dictionary(uniqueKeysWithValues:)` traps on that, which crashes the tool on launch — for a
+    /// value whose meaning is unambiguous. A repeat must collapse, not kill the process.
+    func testDuplicatePersistedKeysCollapseInsteadOfCrashing() {
+        let restored = AppVolumeMixerController.overrides(fromStoppedKeys: ["a.app", "a.app", "b.app"])
+        XCTAssertEqual(restored, ["a.app": false, "b.app": false])
+        XCTAssertFalse(
+            shouldRun(gain: 0.4, manualOverride: restored["a.app"]),
+            "A duplicated key still means stopped"
+        )
+    }
+
 }
