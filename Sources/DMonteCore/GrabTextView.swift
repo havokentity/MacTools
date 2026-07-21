@@ -6,35 +6,51 @@ import SwiftUI
 /// selectable result area with a Copy button and a character/line count. Content is
 /// scaled to match the menu-bar/display scale so it fits the scaled panel (same
 /// approach as the other tools).
+///
+/// The state lives in `GrabTextController` rather than here because the global capture hotkey
+/// starts the same flow while this window is closed — see the controller for why sharing the
+/// in-flight guard matters.
 public struct GrabTextWindowView: View {
+    @ObservedObject var controller: GrabTextController
     var onQuit: () -> Void
 
-    @State private var isGrabbing = false
-    @State private var recognizedText = ""
-    @State private var statusMessage = "Drag to select a region of the screen to grab its text."
-    @State private var copyAutomatically: Bool = GrabTextWindowView.initialCopyAutomatically()
+    @State private var isShowingSettings = false
 
     private let layout = GrabTextLayout.current
 
-    public init(onQuit: @escaping () -> Void) {
+    public init(controller: GrabTextController, onQuit: @escaping () -> Void) {
+        self.controller = controller
         self.onQuit = onQuit
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            header
+        ZStack {
+            VStack(spacing: 0) {
+                header
 
-            VStack(spacing: layout.contentSpacing) {
-                grabButton
-                copyToggle
-                resultArea
-                Spacer(minLength: 0)
+                VStack(spacing: layout.contentSpacing) {
+                    grabButton
+                    hotKeyHint
+                    copyToggle
+                    resultArea
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, layout.contentHorizontalPadding)
+                .padding(.bottom, layout.contentBottomPadding)
             }
-            .padding(.horizontal, layout.contentHorizontalPadding)
-            .padding(.bottom, layout.contentBottomPadding)
+
+            if isShowingSettings {
+                PreferencesOverlay(cornerRadius: 18) {
+                    GrabTextSettingsView(
+                        controller: controller,
+                        onClose: { isShowingSettings = false }
+                    )
+                }
+            }
         }
         .frame(width: layout.windowSize.width, height: layout.windowSize.height)
         .frostedPanel(cornerRadius: 18)
+        .onAppear { controller.refreshEnvironment() }
     }
 
     // MARK: - Header
@@ -58,8 +74,16 @@ public struct GrabTextWindowView: View {
 
             Spacer()
 
-            Color.clear
-                .frame(width: layout.headerButtonSize, height: layout.headerButtonSize)
+            Button {
+                isShowingSettings = true
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: layout.closeIconSize, weight: .semibold))
+                    .foregroundStyle(hotKeyNeedsAttention ? Color.orange : Color.secondary)
+                    .frame(width: layout.headerButtonSize, height: layout.headerButtonSize)
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
         }
         .padding(.horizontal, layout.headerHorizontalPadding)
         .padding(.top, layout.headerTopPadding)
@@ -70,9 +94,9 @@ public struct GrabTextWindowView: View {
 
     private var grabButton: some View {
         Button {
-            startGrab()
+            controller.startGrab()
         } label: {
-            Label(isGrabbing ? "Selecting region…" : "Grab Text", systemImage: "text.viewfinder")
+            Label(controller.isGrabbing ? "Selecting region…" : "Grab Text", systemImage: "text.viewfinder")
                 .font(.system(size: layout.primaryButtonFontSize, weight: .bold))
                 .foregroundStyle(Color.white)
                 .frame(maxWidth: .infinity)
@@ -82,22 +106,52 @@ public struct GrabTextWindowView: View {
                 .contentShape(RoundedRectangle(cornerRadius: layout.buttonCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(isGrabbing)
-        .opacity(isGrabbing ? 0.5 : 1)
+        .disabled(controller.isGrabbing)
+        .opacity(controller.isGrabbing ? 0.5 : 1)
         .padding(.top, layout.previewTopPadding)
     }
 
+    /// One line under the button telling the user the shortcut exists — a global hotkey nobody
+    /// knows about is the same as no hotkey. Turns into the problem when there is one.
+    private var hotKeyHint: some View {
+        HStack(spacing: layout.buttonRowSpacing / 2) {
+            Image(systemName: hotKeyNeedsAttention ? "exclamationmark.triangle.fill" : "command")
+                .font(.system(size: layout.captionFontSize, weight: .semibold))
+            Text(hotKeyHintText)
+                .font(.system(size: layout.captionFontSize, weight: .medium))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(hotKeyNeedsAttention ? Color.orange : Color.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var hotKeyNeedsAttention: Bool {
+        controller.registrationFailure != nil || controller.secureInputBlocked
+    }
+
+    private var hotKeyHintText: String {
+        if controller.registrationFailure != nil {
+            return "The capture shortcut is already claimed by another app — pick a different one in Settings."
+        }
+        if controller.secureInputBlocked {
+            return "macOS Secure Input is blocking global shortcuts right now."
+        }
+        guard let shortcut = controller.shortcut else {
+            return "No capture shortcut set — assign one in Settings."
+        }
+        return "Press \(shortcut.displayString) anywhere to grab text without opening this window."
+    }
+
     private var copyToggle: some View {
-        Toggle(isOn: $copyAutomatically) {
+        Toggle(isOn: $controller.copyAutomatically) {
             Text("Copy automatically")
                 .font(.system(size: layout.fieldFontSize, weight: .medium))
                 .foregroundStyle(Color.primary)
         }
         .toggleStyle(.checkbox)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: copyAutomatically) { _, newValue in
-            AppDefaults.shared.set(newValue, forKey: DefaultsKey.grabTextCopyAutomatically)
-        }
     }
 
     // MARK: - Result area
@@ -114,9 +168,8 @@ public struct GrabTextWindowView: View {
 
                 Spacer()
 
-                actionButton(title: "Copy", systemImage: "doc.on.doc", isEnabled: !recognizedText.isEmpty) {
-                    copyToPasteboard(recognizedText)
-                    statusMessage = "Copied to clipboard."
+                actionButton(title: "Copy", systemImage: "doc.on.doc", isEnabled: !controller.recognizedText.isEmpty) {
+                    controller.copyRecognizedText()
                 }
             }
         }
@@ -125,8 +178,8 @@ public struct GrabTextWindowView: View {
     @ViewBuilder
     private var resultBox: some View {
         ScrollView {
-            if recognizedText.isEmpty {
-                Text(statusMessage)
+            if controller.recognizedText.isEmpty {
+                Text(controller.statusMessage)
                     .font(.system(size: layout.fieldFontSize, weight: .medium))
                     .foregroundStyle(Color.secondary)
                     .multilineTextAlignment(.leading)
@@ -134,7 +187,7 @@ public struct GrabTextWindowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(layout.cardPadding)
             } else {
-                Text(recognizedText)
+                Text(controller.recognizedText)
                     .font(.system(size: layout.fieldFontSize, weight: .regular, design: .default))
                     .foregroundStyle(Color.primary)
                     .textSelection(.enabled)
@@ -155,10 +208,11 @@ public struct GrabTextWindowView: View {
     }
 
     private var countSummary: String {
-        let chars = recognizedText.count
-        let lines = recognizedText.isEmpty
+        let text = controller.recognizedText
+        let chars = text.count
+        let lines = text.isEmpty
             ? 0
-            : recognizedText.split(separator: "\n", omittingEmptySubsequences: false).count
+            : text.split(separator: "\n", omittingEmptySubsequences: false).count
         return "\(chars) chars · \(lines) lines"
     }
 
@@ -190,101 +244,167 @@ public struct GrabTextWindowView: View {
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.4)
     }
-
-    // MARK: - Actions
-
-    private func startGrab() {
-        guard !isGrabbing else {
-            return
-        }
-
-        isGrabbing = true
-        recognizedText = ""
-        statusMessage = "Drag to select the region containing text…"
-
-        Task {
-            let result = await GrabTextRunner.grabRegion()
-            // Back on the main actor here — safe to touch @State.
-            isGrabbing = false
-
-            switch result {
-            case .cancelled:
-                statusMessage = "Grab cancelled. Click Grab Text to try again."
-            case let .failure(reason):
-                statusMessage = reason
-            case let .success(text):
-                if text.isEmpty {
-                    statusMessage = "No text found in that region. Try again."
-                } else {
-                    recognizedText = text
-                    if copyAutomatically {
-                        copyToPasteboard(text)
-                        statusMessage = "Copied to clipboard."
-                    } else {
-                        statusMessage = ""
-                    }
-                }
-            }
-        }
-    }
-
-    private func copyToPasteboard(_ string: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(string, forType: .string)
-    }
-
-    // Reads the toggle's stored value, defaulting to `true` even if unregistered.
-    private static func initialCopyAutomatically() -> Bool {
-        if AppDefaults.shared.object(forKey: DefaultsKey.grabTextCopyAutomatically) == nil {
-            return true
-        }
-        return AppDefaults.shared.bool(forKey: DefaultsKey.grabTextCopyAutomatically)
-    }
 }
 
-/// Runs the interactive screen capture and Vision OCR off the main actor. The heavy
-/// work (spawning `screencapture` and running Vision) happens in a detached task; the
-/// result is returned to the awaiting caller, which is back on its original actor.
-private enum GrabTextRunner {
-    enum Outcome: Sendable {
-        case success(String)
-        case cancelled
-        case failure(String)
+/// The settings sheet: recording the global capture shortcut, the reasons it might not be working,
+/// and the Screen Recording grant the capture itself depends on.
+private struct GrabTextSettingsView: View {
+    @ObservedObject var controller: GrabTextController
+    @StateObject private var recorder = ShortcutRecorder()
+    @State private var notice: String?
+    var onClose: () -> Void
+
+    /// The recorder is keyed by a slot token; Grab Text has exactly one.
+    private enum Slot: Hashable { case captureShortcut }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Grab Text Settings")
+                    .font(.system(size: 16, weight: .bold))
+                Spacer()
+                Button {
+                    recorder.cancel()
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+            }
+
+            shortcutRow
+
+            if let message = problemMessage {
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("Click the shortcut, then press the new keys. Esc cancels.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            permissionSection
+
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .frame(width: GrabTextSizing.settingsSize().width, height: GrabTextSizing.settingsSize().height)
+        .onAppear { controller.refreshEnvironment() }
+        .onDisappear { recorder.cancel() }
     }
 
-    static func grabRegion() async -> Outcome {
-        await Task.detached(priority: .userInitiated) { () -> Outcome in
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("dmonte-grabtext-\(UUID().uuidString).png")
+    private var shortcutRow: some View {
+        HStack(spacing: 10) {
+            Text("Capture shortcut")
+                .font(.system(size: 13, weight: .semibold))
 
-            defer {
-                try? FileManager.default.removeItem(at: tempURL)
+            Spacer()
+
+            Button {
+                beginRecording()
+            } label: {
+                Text(shortcutLabel)
+                    .font(.system(size: 13, weight: .medium, design: recorder.isRecording(Slot.captureShortcut) ? .default : .rounded))
+                    .foregroundStyle(shortcutTint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(recorder.isRecording(Slot.captureShortcut) ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.07))
+                    )
             }
+            .buttonStyle(.plain)
+            .help("Click to record a new capture shortcut")
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            // -i: interactive region selection, -x: silence the capture sound.
-            process.arguments = ["-i", "-x", tempURL.path]
-
-            do {
-                try process.run()
-            } catch {
-                return .failure("Couldn't start screen capture: \(error.localizedDescription)")
+            Button("Clear") {
+                recorder.cancel()
+                notice = nil
+                controller.disableShortcut()
             }
+            .font(.system(size: 11))
+            .disabled(controller.shortcut == nil)
 
-            process.waitUntilExit()
-
-            // screencapture writes no file when the user presses Escape to cancel.
-            guard FileManager.default.fileExists(atPath: tempURL.path) else {
-                return .cancelled
+            Button("Default") {
+                recorder.cancel()
+                notice = nil
+                controller.resetShortcut()
             }
+            .font(.system(size: 11))
+        }
+    }
 
-            let lines = GrabTextKit.recognizeText(in: tempURL)
-            let joined = lines.joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return .success(joined)
-        }.value
+    private var shortcutLabel: String {
+        if recorder.isRecording(Slot.captureShortcut) { return "Press keys…" }
+        return controller.shortcut?.displayString ?? "Off"
+    }
+
+    private var shortcutTint: Color {
+        if recorder.isRecording(Slot.captureShortcut) { return .accentColor }
+        if controller.registrationFailure != nil { return .orange }
+        return .primary.opacity(0.85)
+    }
+
+    /// The first thing standing between the user and a working shortcut, if anything is.
+    private var problemMessage: String? {
+        if let notice { return notice }
+        if controller.secureInputBlocked {
+            return "macOS Secure Input is blocking all global shortcuts right now (a password field, the lock screen, or a stuck loginwindow). They resume automatically when it ends."
+        }
+        if let status = controller.registrationFailure {
+            return "macOS refused this shortcut (error \(status)) — another app already owns it exclusively. Pick a different combination."
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private var permissionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(
+                controller.hasScreenRecordingAccess ? "Screen Recording access granted" : "Screen Recording access needed",
+                systemImage: controller.hasScreenRecordingAccess ? "checkmark.shield" : "lock.shield"
+            )
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(controller.hasScreenRecordingAccess ? Color.secondary : Color.orange)
+
+            Text("Grabbing text means photographing part of your screen, which macOS gates behind Screen Recording. Without it a capture comes back blank rather than failing outright, so Grab Text says so instead of reporting \u{201C}no text found\u{201D}.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !controller.hasScreenRecordingAccess {
+                Button("Open Screen Recording Settings") {
+                    controller.requestScreenRecordingAccess()
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
+        }
+    }
+
+    private func beginRecording() {
+        notice = nil
+        if recorder.isRecording(Slot.captureShortcut) {
+            recorder.cancel()
+            return
+        }
+        recorder.begin(
+            for: Slot.captureShortcut,
+            suspendHotKeys: { controller.suspendHotKeyForRecording() },
+            resumeHotKeys: { controller.resumeHotKeyAfterRecording() }
+        ) { shortcut in
+            guard let shortcut else { return } // Esc — cancelled
+            switch controller.assignShortcut(shortcut) {
+            case .assigned:
+                notice = nil
+            case .needsModifiers:
+                notice = "Add at least one of ⌘ ⌃ ⌥ (function keys may stand alone)."
+            }
+        }
     }
 }
 
@@ -297,7 +417,7 @@ private struct GrabTextLayout {
 
     var windowSize: NSSize { GrabTextSizing.preferredSize() }
 
-    var contentSpacing: CGFloat { 12 * scale }
+    var contentSpacing: CGFloat { 10 * scale }
     var contentHorizontalPadding: CGFloat { 24 * scale }
     var contentBottomPadding: CGFloat { 18 * scale }
 
@@ -310,7 +430,7 @@ private struct GrabTextLayout {
 
     var previewTopPadding: CGFloat { 6 * scale }
 
-    var resultHeight: CGFloat { 200 * scale }
+    var resultHeight: CGFloat { 180 * scale }
     var fieldCornerRadius: CGFloat { 8 * scale }
     var fieldFontSize: CGFloat { 13 * scale }
     var captionFontSize: CGFloat { 11 * scale }

@@ -30,7 +30,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Uninstall Apps** | Remove apps and their leftover support files |
 | **Download Video** | Save videos from the web (bundled, checksum‑verified yt‑dlp) |
 | **Image Converter** | Batch convert / resize / compress images (HEIC, JPEG, PNG, …) |
-| **Grab Text** | OCR any region of the screen straight to your clipboard |
+| **Grab Text** | OCR any region of the screen straight to your clipboard, from a global shortcut (⌃⌥G) |
 | **QR Studio** | Generate QR codes and scan them from the screen |
 | **Color Picker** | System eyedropper with hex / RGB / HSL and a recent‑colors palette |
 | **Window Manager** | Snap windows to halves, thirds, and corners with global shortcuts (⌃⌥ + arrows) |

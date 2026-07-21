@@ -4,6 +4,8 @@ import SwiftUI
 
 @MainActor
 final class GrabTextAppDelegate: NSObject, NSApplicationDelegate {
+    private let controller = GrabTextController()
+
     private var statusItem: HelperStatusItem?
     private var windowHost: HelperWindowHost?
 
@@ -15,9 +17,10 @@ final class GrabTextAppDelegate: NSObject, NSApplicationDelegate {
                 title: "DMonte Grab Text",
                 sizing: .fixed(preferredSize: { GrabTextSizing.preferredSize() })
             ),
-            makeContent: { [weak self] in
+            makeContent: { [controller, weak self] in
                 NSHostingController(
                     rootView: GrabTextWindowView(
+                        controller: controller,
                         onQuit: {
                             self?.quitGrabText()
                         }
@@ -45,6 +48,15 @@ final class GrabTextAppDelegate: NSObject, NSApplicationDelegate {
 
         host.observeShowNotification(named: grabTextShowWindowNotification)
 
+        // A hotkey grab deliberately leaves the window closed — that is the point of the shortcut.
+        // It only comes forward when the result needs the user: a failure, a missing permission, or
+        // recognized text that "copy automatically" was off for and would otherwise be lost.
+        controller.onHotKeyResultNeedsAttention = { [weak self] in
+            NSApp.activate(ignoringOtherApps: true)
+            self?.windowHost?.show(relativeTo: self?.statusItem?.button)
+        }
+        controller.registerHotKey()
+
         if CommandLine.arguments.contains("--open") || statusItem == nil {
             DispatchQueue.main.async { [weak self] in
                 self?.windowHost?.show()
@@ -53,6 +65,7 @@ final class GrabTextAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        controller.unregisterHotKey()
         windowHost?.tearDownForTermination()
         statusItem?.remove()
     }
