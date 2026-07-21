@@ -147,4 +147,39 @@ final class VolumeMixerReconcileTests: XCTestCase {
         XCTAssertEqual(AppVolumeMixerController.unmuteRestoreGain(stashed: 1.5), 1)
         XCTAssertEqual(AppVolumeMixerController.unmuteRestoreGain(stashed: 0.75), 0.75, accuracy: 0.0001)
     }
+
+    // MARK: - Stop-processing persistence
+
+    /// Only the force-off keys are persisted, sorted; a force-on is session-scoped and left out.
+    func testStoppedKeysArePersistedButPlaysAreNot() {
+        let overrides: [String: Bool] = ["b.app": false, "a.app": false, "c.app": true]
+        XCTAssertEqual(
+            AppVolumeMixerController.stoppedKeys(from: overrides),
+            ["a.app", "b.app"]
+        )
+    }
+
+    func testNoStoppedKeysProducesAnEmptyList() {
+        XCTAssertTrue(AppVolumeMixerController.stoppedKeys(from: ["a.app": true]).isEmpty)
+        XCTAssertTrue(AppVolumeMixerController.stoppedKeys(from: [:]).isEmpty)
+    }
+
+    /// Round trip: what is persisted rebuilds a map that stops exactly those apps and no others.
+    func testStoppedKeysRoundTripToForceOffOverrides() {
+        let restored = AppVolumeMixerController.overrides(fromStoppedKeys: ["a.app", "b.app"])
+        XCTAssertEqual(restored, ["a.app": false, "b.app": false])
+        // And that map yields no processing for a stopped, still-attenuated app.
+        XCTAssertFalse(shouldRun(gain: 0.4, manualOverride: restored["a.app"]))
+    }
+
+    func testRestoredStopSurvivesTheReconciler() {
+        // The exact reported bug: stop an attenuated app, relaunch, it must stay stopped.
+        let persisted = AppVolumeMixerController.stoppedKeys(from: ["spotify": false])
+        let afterRelaunch = AppVolumeMixerController.overrides(fromStoppedKeys: persisted)
+        XCTAssertFalse(
+            shouldRun(gain: 0.4, manualOverride: afterRelaunch["spotify"]),
+            "A stopped app must not be re-tapped by the automatic policy after a relaunch"
+        )
+    }
+
 }

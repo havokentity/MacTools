@@ -58,8 +58,16 @@ public final class AppVolumeMixerController: ObservableObject {
     /// `false` = user pressed stop — never auto-restart.
     /// Absent  = automatic policy (see `shouldRunProcessing`).
     /// A force-off is cleared when the user adjusts that target's gain — the
-    /// natural "re-engage" gesture. Session-scoped by design.
-    private var manualProcessingOverrides: [String: Bool] = [:]
+    /// natural "re-engage" gesture.
+    ///
+    /// The force-off half is persisted (see `didSet`): "stop processing this app" is a durable
+    /// decision, and without persistence the automatic policy re-tapped the app on the next launch
+    /// because its gain was still below unity. Force-on is left session-scoped — it only matters at
+    /// unity gain with no route, where it is an inaudible pass-through tap not worth carrying across
+    /// launches.
+    private var manualProcessingOverrides: [String: Bool] = [:] {
+        didSet { persistStopOverrides() }
+    }
     private var refreshTask: Task<Void, Never>?
     private var refreshWorkTask: Task<Void, Never>?
     private var refreshRequestID = 0
@@ -70,6 +78,10 @@ public final class AppVolumeMixerController: ObservableObject {
         let defaults = AppDefaults.shared
         self.hideIgnoredApps = (defaults.object(forKey: DefaultsKey.volumeMixerHideIgnoredApps) as? Bool) ?? true
         self.smartFilter = (defaults.object(forKey: DefaultsKey.volumeMixerSmartFilter) as? Bool) ?? true
+        // Restore the "stopped" apps before the first reconcile so it honours them. Assigning here
+        // does not trigger `didSet` (it never fires during init), so no redundant write-back.
+        let stoppedKeys = defaults.stringArray(forKey: DefaultsKey.volumeMixerStoppedApps) ?? []
+        self.manualProcessingOverrides = Self.overrides(fromStoppedKeys: stoppedKeys)
         refresh()
         startAutoRefresh()
         // The debounced gain write has to survive quit, and the `deinit` flush
@@ -541,6 +553,27 @@ public final class AppVolumeMixerController: ObservableObject {
             activeTargetIDs: Set(audioEngines.keys),
             errorMessage: keepError ? sessionState.errorMessage : nil
         )
+    }
+
+    /// Persists exactly the current force-off keys, so a "stop processing" survives a relaunch.
+    /// Called from `manualProcessingOverrides`'s `didSet`, so every mutation — stop, the natural
+    /// re-engage on a gain change, a force-on that replaces a stop — keeps the stored set exact.
+    /// Written synchronously: a stop is a discrete action, not a debounced stream, and it must be
+    /// on disk before the user quits.
+    private func persistStopOverrides() {
+        AppDefaults.shared.set(Self.stoppedKeys(from: manualProcessingOverrides), forKey: DefaultsKey.volumeMixerStoppedApps)
+    }
+
+    /// The persisted form of the overrides: the force-off keys only, sorted for a stable write.
+    /// Force-on (`true`) is intentionally excluded — see `manualProcessingOverrides`.
+    nonisolated static func stoppedKeys(from overrides: [String: Bool]) -> [String] {
+        overrides.compactMap { $0.value == false ? $0.key : nil }.sorted()
+    }
+
+    /// Rebuilds the overrides map from a persisted stopped-keys list: every stored key is a
+    /// force-off. The inverse of `stoppedKeys(from:)`.
+    nonisolated static func overrides(fromStoppedKeys keys: [String]) -> [String: Bool] {
+        Dictionary(uniqueKeysWithValues: keys.map { ($0, false) })
     }
 
     private func scheduleGainPersistence(_ gain: Float, forKey key: String) {
