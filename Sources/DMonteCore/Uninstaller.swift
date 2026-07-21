@@ -118,6 +118,97 @@ enum UninstallerSelection {
     }
 }
 
+/// What the last uninstall has to say for itself.
+///
+/// The success line and the failure line are two halves of one outcome rather than alternatives.
+/// A sweep that trashes three items out of `~/Library` and is refused on two out of `/Library` has
+/// to report both: told only about the failure, the user goes hunting in `~/Library` for files
+/// that are already in the Trash, or re-runs the sweep.
+struct UninstallerFeedback: Equatable, Sendable {
+    /// What did move. Rendered in the secondary colour.
+    var status: String?
+
+    /// What did not. Rendered in red, *underneath* the status line rather than instead of it.
+    var failure: String?
+
+    static let empty = UninstallerFeedback()
+
+    var isEmpty: Bool {
+        status == nil && failure == nil
+    }
+
+    /// macOS refused the bundle itself, so the sweep never ran and nothing moved.
+    static func bundleRefused(reason: String) -> UninstallerFeedback {
+        UninstallerFeedback(failure: reason)
+    }
+
+    /// The bundle moved and there was nothing else to do — either no leftovers were found or the
+    /// user unticked every row in the review sheet.
+    static func bundleTrashed(appName: String) -> UninstallerFeedback {
+        UninstallerFeedback(status: "Moved \(appName) to Trash.")
+    }
+
+    /// The bundle moved and the sweep ran. Both lines are filled in when the sweep was partial,
+    /// which is the common case: the tool is not privileged, so the `/Library` rows usually fail
+    /// while the `~/Library` ones succeed.
+    static func sweepFinished(appName: String, result: LeftoverRemovalResult) -> UninstallerFeedback {
+        var feedback = UninstallerFeedback()
+
+        // "and 0 support items (Zero KB)" is technically true and reads like a malfunction, so a
+        // sweep that moved nothing reports the bundle alone and lets the failure line explain why.
+        if result.trashedCount == 0 {
+            feedback.status = "Moved \(appName) to Trash."
+        } else {
+            let noun = result.trashedCount == 1 ? "item" : "items"
+            feedback.status = "Moved \(appName) and \(result.trashedCount) support \(noun) (\(result.trashedBytes.bytesString)) to Trash."
+        }
+
+        if let firstFailure = result.failures.first {
+            feedback.failure = result.failures.count == 1
+                ? "Could not remove \(firstFailure.path): \(firstFailure.reason)"
+                : "Could not remove \(result.failures.count) support items. First: \(firstFailure.path) — \(firstFailure.reason)"
+        }
+
+        return feedback
+    }
+}
+
+/// Everything the details pane draws, resolved in one pass.
+///
+/// The feedback is a field of the pane rather than something the selected-app branch renders, and
+/// that is the entire point of the type: uninstalling the last app matching the current search
+/// leaves nothing selected, and that is precisely the case where the user most needs to hear that
+/// half the sweep was refused. Nested inside the selected-app branch, that report was silently
+/// dropped exactly when it mattered.
+struct UninstallerDetailsPane: Equatable, Sendable {
+    /// The app whose details are shown, or nil when the list has nothing to show.
+    let app: InstalledApplication?
+
+    /// The stand-in shown when `app` is nil. Non-nil exactly when `app` is nil.
+    let placeholder: String?
+
+    /// The outcome of the last uninstall, shown whether or not an app is selected.
+    let feedback: UninstallerFeedback
+
+    var showsFeedback: Bool {
+        !feedback.isEmpty
+    }
+
+    static func resolve(
+        filteredApps: [InstalledApplication],
+        selectedID: InstalledApplication.ID?,
+        feedback: UninstallerFeedback
+    ) -> UninstallerDetailsPane {
+        let app = UninstallerSelection.selectedApp(in: filteredApps, selectedID: selectedID)
+
+        return UninstallerDetailsPane(
+            app: app,
+            placeholder: app == nil ? (filteredApps.isEmpty ? "No apps found" : "Select an app") : nil,
+            feedback: feedback
+        )
+    }
+}
+
 public struct UninstallerPopoverView: View {
     var onQuit: () -> Void
 
@@ -127,8 +218,7 @@ public struct UninstallerPopoverView: View {
     @State private var isScanning = true
     @State private var isSizing = false
     @State private var scanToken = UUID()
-    @State private var errorMessage: String?
-    @State private var statusMessage: String?
+    @State private var feedback = UninstallerFeedback.empty
     @State private var review: LeftoverReview?
     @State private var selectedLeftoverIDs: Set<String> = []
     @State private var isPreparingRemoval = false
@@ -242,7 +332,7 @@ public struct UninstallerPopoverView: View {
                     LazyVStack(spacing: 4) {
                         ForEach(filteredApps) { app in
                             AppRow(app: app, isSelected: app.id == selectedApp?.id) {
-                                selectedAppID = app.id
+                                select(app)
                             }
                         }
                     }
@@ -254,16 +344,26 @@ public struct UninstallerPopoverView: View {
     }
 
     private var details: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let selectedApp {
+        // Resolved in one pass, up front, because the uninstall report belongs to the pane and not
+        // to the selected app: trashing the last app that matches the current search leaves nothing
+        // selected, and that is exactly the moment the user most needs to hear that the /Library
+        // half of the sweep was refused.
+        let pane = UninstallerDetailsPane.resolve(
+            filteredApps: filteredApps,
+            selectedID: selectedAppID,
+            feedback: feedback
+        )
+
+        return VStack(alignment: .leading, spacing: 14) {
+            if let app = pane.app {
                 HStack(alignment: .top, spacing: 14) {
-                    AppIcon(url: selectedApp.url, size: 64)
+                    AppIcon(url: app.url, size: 64)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(selectedApp.name)
+                        Text(app.name)
                             .font(.system(size: 22, weight: .bold))
 
-                        Text(selectedApp.path)
+                        Text(app.path)
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
@@ -272,7 +372,7 @@ public struct UninstallerPopoverView: View {
 
                     Spacer()
 
-                    Text(selectedApp.sizeLabel)
+                    Text(app.sizeLabel)
                         .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
@@ -283,21 +383,13 @@ public struct UninstallerPopoverView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
 
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.red)
-                } else if let statusMessage {
-                    Text(statusMessage)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
+                feedbackLines(pane.feedback, alignment: .leading)
 
                 Spacer()
 
                 HStack {
                     Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([selectedApp.url])
+                        NSWorkspace.shared.activateFileViewerSelecting([app.url])
                     } label: {
                         Label("Reveal", systemImage: "finder")
                     }
@@ -310,7 +402,7 @@ public struct UninstallerPopoverView: View {
                     }
 
                     Button(role: .destructive) {
-                        beginUninstall(selectedApp)
+                        beginUninstall(app)
                     } label: {
                         Label("Move to Trash", systemImage: "trash")
                     }
@@ -324,15 +416,46 @@ public struct UninstallerPopoverView: View {
                         .font(.system(size: 34, weight: .semibold))
                         .foregroundStyle(.secondary)
 
-                    Text(filteredApps.isEmpty ? "No apps found" : "Select an app")
+                    Text(pane.placeholder ?? "")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary)
+
+                    feedbackLines(pane.feedback, alignment: .center)
                 }
                 .frame(maxWidth: .infinity)
                 Spacer()
             }
         }
         .padding(22)
+    }
+
+    /// Both halves of the last uninstall's outcome, stacked rather than chosen between. They are
+    /// not alternatives: a sweep that moved three items out of `~/Library` and was refused on two
+    /// out of `/Library` has to report both, or the user goes hunting in `~/Library` for files
+    /// that are already in the Trash.
+    private func feedbackLines(_ feedback: UninstallerFeedback, alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 4) {
+            if let status = feedback.status {
+                Text(status)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let failure = feedback.failure {
+                Text(failure)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+        }
+        .multilineTextAlignment(alignment == .center ? .center : .leading)
+    }
+
+    /// Moves the selection, and drops the previous uninstall's report along with it. The report
+    /// names the app it describes, so leaving it on screen under a different app's name, path and
+    /// size reads as a claim that *this* app was just trashed.
+    private func select(_ app: InstalledApplication) {
+        selectedAppID = app.id
+        feedback = .empty
     }
 
     private var filteredApps: [InstalledApplication] {
@@ -348,7 +471,7 @@ public struct UninstallerPopoverView: View {
         scanToken = token
         isScanning = true
         isSizing = false
-        errorMessage = nil
+        feedback = .empty
         let scannedApps = await Task.detached(priority: .userInitiated) {
             ApplicationScanner.scan()
         }.value
@@ -427,8 +550,7 @@ public struct UninstallerPopoverView: View {
             }
         }
 
-        errorMessage = nil
-        statusMessage = nil
+        feedback = .empty
         isPreparingRemoval = true
 
         // The names of the *other* installed apps are what lets the display-name fallback refuse
@@ -466,16 +588,16 @@ public struct UninstallerPopoverView: View {
             var resultingURL: NSURL?
             try FileManager.default.trashItem(at: app.url, resultingItemURL: &resultingURL)
         } catch {
-            errorMessage = error.localizedDescription
+            feedback = .bundleRefused(reason: error.localizedDescription)
             return
         }
 
         apps.removeAll { $0.id == app.id }
         selectedAppID = filteredApps.first?.id
-        errorMessage = nil
+        feedback = .empty
 
         guard !chosen.isEmpty else {
-            statusMessage = "Moved \(app.name) to Trash."
+            feedback = .bundleTrashed(appName: app.name)
             return
         }
 
@@ -487,13 +609,7 @@ public struct UninstallerPopoverView: View {
             }.value
 
             isRemoving = false
-            statusMessage = "Moved \(app.name) and \(result.trashedCount) support \(result.trashedCount == 1 ? "item" : "items") (\(result.trashedBytes.bytesString)) to Trash."
-
-            if let firstFailure = result.failures.first {
-                errorMessage = result.failures.count == 1
-                    ? "Could not remove \(firstFailure.path): \(firstFailure.reason)"
-                    : "Could not remove \(result.failures.count) support items. First: \(firstFailure.path) — \(firstFailure.reason)"
-            }
+            feedback = .sweepFinished(appName: app.name, result: result)
         }
     }
 }

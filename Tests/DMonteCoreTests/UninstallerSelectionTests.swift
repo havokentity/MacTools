@@ -37,4 +37,147 @@ final class UninstallerSelectionTests: XCTestCase {
 
         XCTAssertNil(selected)
     }
+
+    // MARK: - The details pane
+
+    /// The regression this file exists for. Uninstalling the last app that matches the current
+    /// search is the *common* case — users search to find the app they want gone — and it is also
+    /// the case where the leftover sweep has most likely been half-refused, because the tool is
+    /// not privileged and cannot touch `/Library`. Rendering the report inside the selected-app
+    /// branch threw it away exactly then, and the user walked away believing the machine was clean.
+    func testDetailsPaneStillReportsTheSweepWhenTheUninstallEmptiedTheList() {
+        var apps = [alpha, beta]
+        let searchText = "Alpha"
+
+        // What `performUninstall` does after macOS accepts the bundle.
+        apps.removeAll { $0.id == alpha.id }
+        let filtered = UninstallerSelection.filteredApps(apps, query: searchText)
+        let selectedID = filtered.first?.id
+        let feedback = UninstallerFeedback.sweepFinished(
+            appName: alpha.name,
+            result: LeftoverRemovalResult(
+                trashedCount: 3,
+                trashedBytes: 412_000_000,
+                failures: [
+                    LeftoverRemovalFailure(path: "/Library/Caches/com.example.alpha", reason: "Permission denied")
+                ]
+            )
+        )
+
+        XCTAssertTrue(filtered.isEmpty)
+        XCTAssertNil(selectedID)
+
+        let pane = UninstallerDetailsPane.resolve(
+            filteredApps: filtered,
+            selectedID: selectedID,
+            feedback: feedback
+        )
+
+        XCTAssertNil(pane.app)
+        XCTAssertEqual(pane.placeholder, "No apps found")
+        XCTAssertTrue(pane.showsFeedback)
+        XCTAssertEqual(pane.feedback, feedback)
+    }
+
+    func testDetailsPaneCarriesTheFeedbackAlongsideASelectedApp() {
+        let filtered = UninstallerSelection.filteredApps([alpha, beta], query: "")
+        let feedback = UninstallerFeedback.bundleTrashed(appName: "Gamma")
+
+        let pane = UninstallerDetailsPane.resolve(
+            filteredApps: filtered,
+            selectedID: beta.id,
+            feedback: feedback
+        )
+
+        XCTAssertEqual(pane.app, beta)
+        XCTAssertNil(pane.placeholder)
+        XCTAssertEqual(pane.feedback, feedback)
+    }
+
+    func testDetailsPaneShowsNoFeedbackWhenNothingHasHappenedYet() {
+        let pane = UninstallerDetailsPane.resolve(
+            filteredApps: [],
+            selectedID: nil,
+            feedback: .empty
+        )
+
+        XCTAssertNil(pane.app)
+        XCTAssertFalse(pane.showsFeedback)
+    }
+
+    // MARK: - Uninstall feedback
+
+    /// A partial sweep has to say both halves. Reporting only the failure sends the user hunting
+    /// in `~/Library` for files that are already in the Trash, or re-running the sweep.
+    func testSweepFeedbackReportsWhatMovedAndWhatDidNot() {
+        let feedback = UninstallerFeedback.sweepFinished(
+            appName: "Alpha",
+            result: LeftoverRemovalResult(
+                trashedCount: 3,
+                trashedBytes: 412_000_000,
+                failures: [
+                    LeftoverRemovalFailure(path: "/Library/Caches/com.example.alpha", reason: "Permission denied"),
+                    LeftoverRemovalFailure(path: "/Library/Logs/com.example.alpha", reason: "Permission denied")
+                ]
+            )
+        )
+
+        XCTAssertNotNil(feedback.status)
+        XCTAssertTrue(feedback.status?.contains("Alpha") == true)
+        XCTAssertTrue(feedback.status?.contains("3 support items") == true)
+
+        XCTAssertTrue(feedback.failure?.contains("2 support items") == true)
+        XCTAssertTrue(feedback.failure?.contains("/Library/Caches/com.example.alpha") == true)
+    }
+
+    func testSweepFeedbackNamesTheOnlyFailureOutright() {
+        let feedback = UninstallerFeedback.sweepFinished(
+            appName: "Alpha",
+            result: LeftoverRemovalResult(
+                trashedCount: 1,
+                trashedBytes: 1024,
+                failures: [LeftoverRemovalFailure(path: "/Library/Caches/com.example.alpha", reason: "Permission denied")]
+            )
+        )
+
+        XCTAssertTrue(feedback.status?.contains("1 support item ") == true)
+        XCTAssertEqual(feedback.failure, "Could not remove /Library/Caches/com.example.alpha: Permission denied")
+    }
+
+    func testSweepFeedbackDropsTheItemCountWhenEverySweepFailed() {
+        let feedback = UninstallerFeedback.sweepFinished(
+            appName: "Alpha",
+            result: LeftoverRemovalResult(
+                trashedCount: 0,
+                trashedBytes: 0,
+                failures: [LeftoverRemovalFailure(path: "/Library/Caches/com.example.alpha", reason: "Permission denied")]
+            )
+        )
+
+        XCTAssertEqual(feedback.status, "Moved Alpha to Trash.")
+        XCTAssertNotNil(feedback.failure)
+    }
+
+    func testSweepFeedbackWithNoFailuresHasNothingRedToSay() {
+        let feedback = UninstallerFeedback.sweepFinished(
+            appName: "Alpha",
+            result: LeftoverRemovalResult(trashedCount: 2, trashedBytes: 2048)
+        )
+
+        XCTAssertNotNil(feedback.status)
+        XCTAssertNil(feedback.failure)
+    }
+
+    func testRefusedBundleReportsOnlyTheFailure() {
+        let feedback = UninstallerFeedback.bundleRefused(reason: "Operation not permitted")
+
+        XCTAssertNil(feedback.status)
+        XCTAssertEqual(feedback.failure, "Operation not permitted")
+        XCTAssertFalse(feedback.isEmpty)
+    }
+
+    func testEmptyFeedbackIsEmpty() {
+        XCTAssertTrue(UninstallerFeedback.empty.isEmpty)
+        XCTAssertFalse(UninstallerFeedback.bundleTrashed(appName: "Alpha").isEmpty)
+    }
 }
