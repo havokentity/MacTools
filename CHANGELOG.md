@@ -7,10 +7,43 @@ adheres to [Semantic Versioning](https://semver.org) and the
 ## [Unreleased]
 
 ### Added
+- **Mic Control**, a new tool: mutes and unmutes the default input device
+  system‑wide, so every app listening to it goes quiet at once. The menu bar
+  icon is the point — a slashed mic when you're muted, a filled one when you're
+  live — and CoreAudio property listeners keep it truthful when something else
+  (a meeting app, Control Center, unplugging the mic) changes the state behind
+  its back. Shows the device's input level as a slider where the hardware
+  offers one, and says so plainly when a device exposes no mute control instead
+  of offering a button that does nothing. Setting a device's mute switch is not
+  audio capture, so it needs no microphone permission.
+- **Snippets**, a new menu bar tool: a searchable library of reusable text.
+  Click a snippet (or press ⏎ on the top search hit) to copy it and paste it
+  straight into the app you were working in, the way Clipboard History does.
+  Snippets are created, edited, reordered and deleted in the popover and stored
+  locally with owner-only permissions. Each one can opt into date/time
+  placeholders — `{date}`, `{time}` and `{datetime}` are replaced as it pastes;
+  anything else in braces is left alone. Pasting needs Accessibility access;
+  without it the snippet is still copied and the popover says so.
 - Continuous integration: every push and pull request now builds the package
   and runs the full test suite on a pinned macOS runner, using the same
   toolchain the release workflow ships with. Previously only version tags ran
   CI, so a branch could go unverified until release day.
+- **Dev Tools** JWT decoder: paste a token to see its header and payload as
+  pretty-printed JSON, with `iat`/`nbf`/`exp` rendered as UTC dates plus a
+  relative hint and a live/expired badge. The signature is shown verbatim and
+  explicitly marked as unverified.
+- **Drive Ejector**: a new menu bar tool that lists mounted external volumes
+  with their capacity and free space and ejects them individually or all at
+  once. Only removable, non-internal volumes are ever listed, and every volume
+  is re-checked against the mount table the moment before it is ejected, so the
+  startup disk and internal drives cannot be unmounted even if a listed row goes
+  stale. Nothing is ever force-unmounted: when a file is open or Spotlight is
+  still indexing, the disk stays mounted and macOS's own reason is shown inline.
+  The list updates live as disks are plugged in and removed.
+- **Scratchpad** — a new menu bar tool: an always-there plain-text notepad with
+  multiple named notes, autosave (debounced while typing, flushed when the panel
+  closes and at quit, one atomically written file per note), a live
+  word/character/line count, copy-all, and an undoable clear.
 - **Network Info**: a new menu bar tool showing the active interface and its
   type, local IPv4, subnet mask, router, IPv6, and the configured DNS servers,
   with every value click‑to‑copy. Local details are read from `getifaddrs` and

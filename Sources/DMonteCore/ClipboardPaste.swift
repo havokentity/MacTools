@@ -85,6 +85,23 @@ public enum ClipboardPaste {
         return true
     }
 
+    /// Places text recognized out of an image entry on the pasteboard, as plain text only.
+    ///
+    /// Deliberately *not* stamped with the nspasteboard source marker the other writers here
+    /// use: that marker exists to keep paste-backs of an existing entry out of history, whereas
+    /// this text is new content the user just produced and will want to find later. Letting the
+    /// monitor record it cannot loop — the recorded entry is text, "Copy Text from Image" only
+    /// exists on image entries, and a run only ever starts from an explicit user gesture — so
+    /// the chain is one step deep and self-terminating.
+    ///
+    /// `pasteboard` is injectable so the marker-free contract above — the thing that decides
+    /// whether the monitor records the result — can be asserted against a private pasteboard
+    /// instead of the user's real clipboard.
+    public static func copyRecognizedText(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     /// Copies the entry then pastes it into `target` (the app that was frontmost before our
     /// panel appeared). The result answers "is Accessibility the problem?", not "did the paste
     /// happen": false only when the permission is missing (content is still copied and the
@@ -101,6 +118,36 @@ public enum ClipboardPaste {
         // it is — the caller would show the permission banner.
         guard copyToPasteboard(entry, store: store, asPlainText: asPlainText) else { return true }
 
+        return pasteCopiedContent(into: target)
+    }
+
+    /// Puts plain `text` on the pasteboard and pastes it into `target`, stamped as coming from
+    /// `sourceBundleID` (the nspasteboard.org convention every clipboard manager reads). Shared
+    /// by the tools that paste text they generated rather than text they captured — Snippets —
+    /// so the permission handling and the ⌘V synthesis have exactly one implementation.
+    ///
+    /// Same contract as `paste(_:store:asPlainText:into:)`: false means only that Accessibility
+    /// is missing; the text is on the clipboard either way, ready for a manual ⌘V.
+    @discardableResult
+    public static func pasteText(
+        _ text: String,
+        sourceBundleID: String,
+        into target: NSRunningApplication?
+    ) -> Bool {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setString(sourceBundleID, forType: sourceType)
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([item])
+
+        return pasteCopiedContent(into: target)
+    }
+
+    /// Activates `target` and synthesizes ⌘V into it. Assumes the pasteboard already holds what
+    /// should land there.
+    private static func pasteCopiedContent(into target: NSRunningApplication?) -> Bool {
         guard hasAccessibilityPermission else {
             promptForAccessibilityPermission()
             return false

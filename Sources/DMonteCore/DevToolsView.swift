@@ -5,6 +5,7 @@ import SwiftUI
 private enum DevTool: String, CaseIterable, Identifiable {
     case json
     case base64
+    case jwt
     case url
     case hash
     case uuid
@@ -17,6 +18,7 @@ private enum DevTool: String, CaseIterable, Identifiable {
         switch self {
         case .json: "JSON"
         case .base64: "Base64"
+        case .jwt: "JWT"
         case .url: "URL"
         case .hash: "Hash"
         case .uuid: "UUID"
@@ -29,6 +31,7 @@ private enum DevTool: String, CaseIterable, Identifiable {
         switch self {
         case .json: "curlybraces"
         case .base64: "arrow.left.arrow.right.square"
+        case .jwt: "key.fill"
         case .url: "link"
         case .hash: "number"
         case .uuid: "wand.and.stars"
@@ -158,6 +161,9 @@ public struct DevToolsWindowView: View {
                 }
             )
             .id(DevTool.base64)
+        case .jwt:
+            JWTPane(layout: layout)
+                .id(DevTool.jwt)
         case .url:
             TransformPane(
                 title: "URL",
@@ -202,6 +208,12 @@ public struct DevToolsWindowView: View {
         case .invalidURLEncoding: "Invalid percent-encoding."
         case .invalidEpoch: "Invalid timestamp."
         case .emptyInput: "Enter some text to begin."
+        case let .invalidJWTStructure(count):
+            count == 5
+                ? "This is an encrypted JWE (5 segments); only signed JWTs can be decoded."
+                : "Not a JWT: expected 3 dot-separated segments, found \(count)."
+        case let .invalidJWTSegment(part): "The \(part.label) segment is not valid base64url."
+        case let .invalidJWTJSON(part): "The \(part.label) segment did not decode to a JSON object."
         }
     }
 }
@@ -400,6 +412,173 @@ fileprivate struct TransformPane: View {
             return .success("")
         }
         return transform(input, mode)
+    }
+}
+
+// MARK: - JWT pane
+
+fileprivate struct JWTPane: View {
+    var layout: DevToolsLayout
+    @State private var input = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: layout.paneSpacing) {
+            SectionLabel(layout: layout, text: "Token")
+
+            EditorBox(
+                layout: layout,
+                text: $input,
+                placeholder: "Paste a JWT here…",
+                isEditable: true,
+                isError: false
+            )
+            .frame(height: layout.jwtInputHeight)
+
+            switch decoded {
+            case .none:
+                Text("Header, payload and claims appear here once a token is pasted.")
+                    .font(.system(size: layout.editorFontSize))
+                    .foregroundStyle(.secondary.opacity(0.55))
+                Spacer()
+            case let .failure(error):
+                Text(DevToolsWindowView.message(for: error))
+                    .font(.system(size: layout.editorFontSize, weight: .semibold))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            case let .success(token):
+                results(for: token)
+            }
+        }
+        .padding(layout.detailPadding)
+    }
+
+    /// `nil` while the field is blank, so an untouched pane shows guidance instead of the
+    /// "enter some text" error every other empty input would produce.
+    private var decoded: Result<DevToolsKit.DecodedJWT, DevToolsKit.DevToolsError>? {
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return DevToolsKit.decodeJWT(input)
+    }
+
+    @ViewBuilder
+    private func results(for token: DevToolsKit.DecodedJWT) -> some View {
+        HStack(spacing: layout.controlSpacing) {
+            badge(text: token.validity.label, color: validityColor(token.validity))
+
+            if let algorithm = token.algorithm {
+                badge(text: algorithm, color: .secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: layout.paneSpacing) {
+                segment(label: "Header", value: token.header, height: layout.jwtHeaderHeight)
+                segment(label: "Payload", value: token.payload, height: layout.jwtPayloadHeight)
+
+                if !token.timeClaims.isEmpty {
+                    SectionLabel(layout: layout, text: "Claims")
+
+                    VStack(spacing: layout.hashRowSpacing) {
+                        ForEach(token.timeClaims, id: \.name) { claim in
+                            JWTClaimRow(layout: layout, claim: claim)
+                        }
+                    }
+                }
+
+                HStack {
+                    SectionLabel(layout: layout, text: "Signature")
+                    Spacer()
+                    CopyButton(layout: layout, value: token.signature.isEmpty ? nil : token.signature)
+                }
+
+                Text(token.signatureDisplay)
+                    .font(.system(size: layout.hashValueFontSize, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(layout.hashRowPadding)
+                    .background(
+                        RoundedRectangle(cornerRadius: layout.editorCornerRadius, style: .continuous)
+                            .fill(Color.black.opacity(0.18))
+                    )
+
+                Label(DevToolsKit.DecodedJWT.signatureNotice, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: layout.sectionLabelFontSize, weight: .semibold))
+                    .foregroundStyle(.orange.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func segment(label: String, value: String, height: CGFloat) -> some View {
+        HStack {
+            SectionLabel(layout: layout, text: label)
+            Spacer()
+            CopyButton(layout: layout, value: value)
+        }
+
+        EditorBox(
+            layout: layout,
+            text: .constant(value),
+            placeholder: "",
+            isEditable: false,
+            isError: false
+        )
+        .frame(height: height)
+    }
+
+    private func badge(text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: layout.sectionLabelFontSize, weight: .heavy))
+            .foregroundStyle(color)
+            .padding(.horizontal, layout.hashRowPadding)
+            .frame(height: layout.jwtBadgeHeight)
+            .background(
+                Capsule().fill(color.opacity(0.16))
+            )
+    }
+
+    private func validityColor(_ validity: DevToolsKit.JWTValidity) -> Color {
+        switch validity {
+        case .active: .green
+        case .expired: .red
+        case .notYetValid: .orange
+        case .unknown: .secondary
+        }
+    }
+}
+
+fileprivate struct JWTClaimRow: View {
+    var layout: DevToolsLayout
+    var claim: DevToolsKit.JWTTimeClaim
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: layout.controlSpacing) {
+            VStack(alignment: .leading, spacing: layout.hashRowInnerSpacing) {
+                Text("\(claim.label) (\(claim.name))")
+                    .font(.system(size: layout.sectionLabelFontSize, weight: .heavy))
+                    .foregroundStyle(.secondary)
+
+                Text(claim.date)
+                    .font(.system(size: layout.hashValueFontSize, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(claim.relative)
+                .font(.system(size: layout.hashValueFontSize, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(layout.hashRowPadding)
+        .background(
+            RoundedRectangle(cornerRadius: layout.editorCornerRadius, style: .continuous)
+                .fill(Color.black.opacity(0.18))
+        )
     }
 }
 
@@ -729,4 +908,11 @@ private struct DevToolsLayout {
 
     // UUID
     var uuidFontSize: CGFloat { 15 * scale }
+
+    // JWT — the pane stacks four blocks, so the fixed heights are kept small enough that the
+    // header and payload are both visible before the reader has to scroll.
+    var jwtInputHeight: CGFloat { 92 * scale }
+    var jwtHeaderHeight: CGFloat { 84 * scale }
+    var jwtPayloadHeight: CGFloat { 150 * scale }
+    var jwtBadgeHeight: CGFloat { 20 * scale }
 }
