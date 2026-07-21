@@ -80,6 +80,12 @@ public final class DiskNode: Identifiable, Sendable {
     public let isDirectory: Bool
     public let size: UInt64
     public let children: [DiskNode]
+    /// True only for the reconciliation placeholder, which stands for bytes the
+    /// volume reports but the walk could not attribute to any file. It borrows the
+    /// volume root's path to be placeable in the treemap, so anything that acts on
+    /// a node's path — reveal, copy, and above all Move to Trash — has to be able
+    /// to tell it apart from a real row (see DiskItemActionPolicy).
+    public let isSynthetic: Bool
 
     public var id: ObjectIdentifier { ObjectIdentifier(self) }
 
@@ -87,12 +93,20 @@ public final class DiskNode: Identifiable, Sendable {
         URL(fileURLWithPath: path)
     }
 
-    public init(path: String, name: String, isDirectory: Bool, size: UInt64, children: [DiskNode]) {
+    public init(
+        path: String,
+        name: String,
+        isDirectory: Bool,
+        size: UInt64,
+        children: [DiskNode],
+        isSynthetic: Bool = false
+    ) {
         self.path = path
         self.name = name
         self.isDirectory = isDirectory
         self.size = size
         self.children = children
+        self.isSynthetic = isSynthetic
     }
 
     public var fileExtension: String {
@@ -294,7 +308,10 @@ public enum DiskScanner {
         return reconciled(root: root, usedBytes: volume.usedBytes)
     }
 
-    private static func reconciled(root: DiskNode, usedBytes: UInt64) -> DiskNode {
+    /// Internal rather than private so a test can pin the one property that keeps a
+    /// Move to Trash away from the volume root: the placeholder this synthesises
+    /// borrows the root's path, and only its `isSynthetic` flag tells it apart.
+    static func reconciled(root: DiskNode, usedBytes: UInt64) -> DiskNode {
         guard usedBytes > root.size else { return root }
         let gap = usedBytes - root.size
         guard gap > usedBytes / 200 else { return root }
@@ -304,7 +321,8 @@ public enum DiskScanner {
             name: unaccountedNodeName,
             isDirectory: false,
             size: gap,
-            children: []
+            children: [],
+            isSynthetic: true
         )
         let children = (root.children + [placeholder]).sorted { $0.size > $1.size }
         return DiskNode(path: root.path, name: root.name, isDirectory: true, size: usedBytes, children: children)
@@ -535,38 +553,115 @@ public struct TreemapRect: Identifiable, Sendable {
 
 struct DiskTreeCache {
     let root: DiskNode
-    let pathByNodeID: [ObjectIdentifier: [DiskNode]]
-    let nodeCount: Int
+    /// One parent reference per node, walked upward on demand by `path(to:)`.
+    /// Storing links rather than a materialised ancestor array per node matters at
+    /// this scale — a boot volume indexes millions of nodes — and it is also what
+    /// makes `applying(_:)` possible: pruning a node leaves every link outside the
+    /// rebuilt spine still correct.
+    private let parentByNodeID: [ObjectIdentifier: DiskNode]
+    /// Membership of the tree, tracked separately because the root has no parent
+    /// link. Without it `path(to:)` could not tell the root from a node that was
+    /// never indexed at all.
+    private let indexedNodeIDs: Set<ObjectIdentifier>
+
+    var nodeCount: Int { indexedNodeIDs.count }
 
     init(root: DiskNode) {
-        var paths: [ObjectIdentifier: [DiskNode]] = [:]
-        var count = 0
-        Self.index(node: root, path: [], paths: &paths, count: &count)
+        var parents: [ObjectIdentifier: DiskNode] = [:]
+        var indexed: Set<ObjectIdentifier> = []
+        Self.index(node: root, parent: nil, parents: &parents, indexed: &indexed)
         self.root = root
-        self.pathByNodeID = paths
-        self.nodeCount = count
+        self.parentByNodeID = parents
+        self.indexedNodeIDs = indexed
+    }
+
+    private init(
+        root: DiskNode,
+        parentByNodeID: [ObjectIdentifier: DiskNode],
+        indexedNodeIDs: Set<ObjectIdentifier>
+    ) {
+        self.root = root
+        self.parentByNodeID = parentByNodeID
+        self.indexedNodeIDs = indexedNodeIDs
     }
 
     func path(to node: DiskNode) -> [DiskNode]? {
-        pathByNodeID[node.id]
+        guard indexedNodeIDs.contains(node.id) else { return nil }
+
+        var chain: [DiskNode] = [node]
+        var cursor = node
+        while let parent = parentByNodeID[cursor.id] {
+            chain.append(parent)
+            cursor = parent
+            // A scanned tree is acyclic so this always terminates at the root; the
+            // bound only makes a corrupted map fail loudly instead of hanging.
+            if chain.count > indexedNodeIDs.count { return nil }
+        }
+
+        return chain.reversed()
+    }
+
+    /// Returns the index updated for a node that has just left the tree, instead of
+    /// rebuilding it from scratch. A rebuild walks every node on the volume — seconds
+    /// on a boot disk — and the tree pane would have to show the trashed row for the
+    /// whole of it. Only two things actually changed: the removed subtree is no longer
+    /// part of the tree, and each of its ancestors was rebuilt at a smaller size, so
+    /// the children of those rebuilt directories need re-pointing. Every other node
+    /// kept its identity and its parent, so its link is still true.
+    func applying(_ removal: DiskTreeRemoval) -> DiskTreeCache {
+        var parents = parentByNodeID
+        var indexed = indexedNodeIDs
+
+        Self.forget(node: removal.removed, parents: &parents, indexed: &indexed)
+
+        // Root first, so each rebuilt directory has already re-pointed the next one
+        // by the time we reach it.
+        for replacement in removal.replacedAncestors {
+            parents.removeValue(forKey: replacement.old.id)
+            indexed.remove(replacement.old.id)
+            indexed.insert(replacement.new.id)
+
+            for child in replacement.new.children {
+                parents[child.id] = replacement.new
+            }
+        }
+
+        // The new root is nobody's child; a stale link here would send path(to:)
+        // walking back into the tree we just replaced.
+        parents.removeValue(forKey: removal.root.id)
+
+        return DiskTreeCache(root: removal.root, parentByNodeID: parents, indexedNodeIDs: indexed)
     }
 
     private static func index(
         node: DiskNode,
-        path: [DiskNode],
-        paths: inout [ObjectIdentifier: [DiskNode]],
-        count: inout Int
+        parent: DiskNode?,
+        parents: inout [ObjectIdentifier: DiskNode],
+        indexed: inout Set<ObjectIdentifier>
     ) {
         // The cache is built on a detached task (see scheduleTreeCacheBuild) because a
         // boot volume holds millions of nodes. Bail per-node when that task is
         // cancelled — a superseded build's partial result is discarded by its caller,
         // so there is no point finishing the walk.
         if Task.isCancelled { return }
-        count += 1
-        let currentPath = path + [node]
-        paths[node.id] = currentPath
+        indexed.insert(node.id)
+        if let parent {
+            parents[node.id] = parent
+        }
         for child in node.children {
-            index(node: child, path: currentPath, paths: &paths, count: &count)
+            index(node: child, parent: node, parents: &parents, indexed: &indexed)
+        }
+    }
+
+    private static func forget(
+        node: DiskNode,
+        parents: inout [ObjectIdentifier: DiskNode],
+        indexed: inout Set<ObjectIdentifier>
+    ) {
+        indexed.remove(node.id)
+        parents.removeValue(forKey: node.id)
+        for child in node.children {
+            forget(node: child, parents: &parents, indexed: &indexed)
         }
     }
 }
@@ -755,6 +850,14 @@ public enum DiskItemPalette {
     }
 }
 
+/// A one-line result of a row action. Equatable (and free of any identifier) so the
+/// auto-dismiss timer can key off the message itself: an identical message posted
+/// twice keeps one timer, a different one restarts the clock.
+private struct DiskActionStatus: Equatable {
+    var text: String
+    var isError: Bool
+}
+
 public struct DiskAnalyzerWindowView: View {
     var onQuit: () -> Void
 
@@ -775,6 +878,12 @@ public struct DiskAnalyzerWindowView: View {
     @State private var scanGates: [String: ScanPauseGate] = [:]
     @State private var pausedVolumeIds: Set<String> = []
     @State private var hoveredNode: DiskNode?
+    /// The row the toolbar buttons and their keyboard shortcuts act on — set by
+    /// clicking a tile or a tree row. Kept apart from `hoveredNode`, which follows
+    /// the pointer and would make ⌘⌫ act on whatever the mouse happened to be over.
+    @State private var focusedNode: DiskNode?
+    @State private var actionStatus: DiskActionStatus?
+    @State private var isTrashInFlight = false
     @State private var isShowingSettings = false
     @State private var fullDiskAccessGranted = true
     @State private var isFullScreen = false
@@ -794,6 +903,9 @@ public struct DiskAnalyzerWindowView: View {
                     volumeStrip
                     summaryPanel
                     breadcrumbBar
+                    if let actionStatus {
+                        actionStatusBanner(actionStatus)
+                    }
                     if showsFullDiskAccessHint {
                         fullDiskAccessHint
                     }
@@ -1039,9 +1151,91 @@ public struct DiskAnalyzerWindowView: View {
                 }
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+
+            rowActionBar
         }
         .frame(height: layout.breadcrumbHeight)
+    }
+
+    /// The keyboard-reachable half of the row actions. The context menu is the
+    /// discoverable route, but a menu that only opens on right-click is unusable
+    /// without a mouse — these buttons carry the same three commands with Finder's
+    /// own shortcuts, and they are what makes the actions reachable by keyboard and
+    /// visible to VoiceOver.
+    private var rowActionBar: some View {
+        HStack(spacing: layout.breadcrumbSpacing) {
+            rowActionButton(.revealInFinder, systemImage: "folder", help: "Reveal in Finder")
+                .keyboardShortcut("r", modifiers: [.command])
+
+            rowActionButton(.copyPath, systemImage: "doc.on.doc", help: "Copy Path")
+                .keyboardShortcut("c", modifiers: [.command, .option])
+
+            rowActionButton(.moveToTrash, systemImage: "trash", help: "Move to Trash")
+                .keyboardShortcut(.delete, modifiers: [.command])
+        }
+    }
+
+    private func rowActionButton(_ action: DiskItemAction, systemImage: String, help: String) -> some View {
+        Button {
+            perform(action, on: focusedNode)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: layout.breadcrumbIconSize, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: layout.breadcrumbButtonSize, height: layout.breadcrumbButtonSize)
+                .background(Color.secondary.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(focusedNode == nil)
+        .opacity(focusedNode == nil ? 0.4 : 1)
+        .help(focusedNode.map { "\(help) — \($0.name)" } ?? "\(help) (select an item first)")
+        .accessibilityLabel(help)
+    }
+
+    private func actionStatusBanner(_ status: DiskActionStatus) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: status.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.system(size: layout.breadcrumbFontSize, weight: .semibold))
+                .foregroundStyle(status.isError ? Color.orange : Color.accentColor)
+
+            Text(status.text)
+                .font(.system(size: layout.breadcrumbFontSize - 1, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            Spacer(minLength: 8)
+
+            Button {
+                actionStatus = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: layout.breadcrumbFontSize - 2, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background((status.isError ? Color.orange : Color.accentColor).opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder((status.isError ? Color.orange : Color.accentColor).opacity(0.35), lineWidth: 0.5)
+        }
+        .task(id: status) {
+            // Transient by design: long enough to read, then out of the way. Keying
+            // the task on the status means a newer message restarts the clock rather
+            // than inheriting whatever was left of the previous one's.
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled, actionStatus == status else { return }
+            actionStatus = nil
+        }
     }
 
     private var fullDiskAccessHint: some View {
@@ -1113,14 +1307,10 @@ public struct DiskAnalyzerWindowView: View {
                                     hoveredNode = nil
                                 }
                             }
-                            .onTapGesture(count: 2) { revealInFinder(node: entry.node) }
+                            .onTapGesture(count: 2) { perform(.revealInFinder, on: entry.node) }
                             .onTapGesture { handleTap(node: entry.node) }
                             .contextMenu {
-                                Button {
-                                    revealInFinder(node: entry.node)
-                                } label: {
-                                    Label("Show in Finder", systemImage: "folder")
-                                }
+                                DiskItemActionMenu { perform($0, on: entry.node) }
                             }
                             .help(tooltip(for: entry.node))
                             // Use .position (not .frame+.offset): offset moves only the
@@ -1199,7 +1389,7 @@ public struct DiskAnalyzerWindowView: View {
                                     layout: layout,
                                     onToggleExpand: toggleTreeExpansion,
                                     onSelect: navigateFromTree,
-                                    onReveal: revealInFinder
+                                    onAction: { perform($0, on: $1) }
                                 )
                             }
                             .padding(.vertical, 4)
@@ -1365,6 +1555,7 @@ public struct DiskAnalyzerWindowView: View {
             self.selectedVolume = nil
             pathStack = []
             hoveredNode = nil
+            focusedNode = nil
         }
 
         if autoSelectFirst, selectedVolume == nil, let first = detected.first {
@@ -1378,6 +1569,8 @@ public struct DiskAnalyzerWindowView: View {
         // the pause button, so background scans keep running unless the user
         // explicitly pauses them.
         hoveredNode = nil
+        focusedNode = nil
+        actionStatus = nil
         selectedVolume = volume
 
         if let cached = treeCaches[volume.id] {
@@ -1415,6 +1608,10 @@ public struct DiskAnalyzerWindowView: View {
         let volumeId = volume.id
         teardownScan(for: volumeId)
         hoveredNode = nil
+        // Both point into the tree this scan is about to replace, and the status
+        // line refers to a row that will no longer exist.
+        focusedNode = nil
+        actionStatus = nil
         fullDiskAccessGranted = FullDiskAccess.isGranted()
 
         let generation = (scanGenerations[volumeId] ?? 0) + 1
@@ -1561,6 +1758,7 @@ public struct DiskAnalyzerWindowView: View {
     private func handleTap(node: DiskNode) {
         expandTreePath(to: node)
         scrollTree(to: node)
+        focusedNode = node
 
         guard node.isDirectory, !node.children.isEmpty else {
             hoveredNode = node
@@ -1588,6 +1786,7 @@ public struct DiskAnalyzerWindowView: View {
             pathStack = Array(path.dropLast())
         }
         hoveredNode = node
+        focusedNode = node
     }
 
     private func toggleTreeExpansion(node: DiskNode) {
@@ -1633,8 +1832,169 @@ public struct DiskAnalyzerWindowView: View {
         hoveredNode = nil
     }
 
+    /// True while nothing on the selected volume can safely be trashed: either the
+    /// scan is still walking it, or its result is still being indexed and there is
+    /// no settled tree to prune the row out of afterwards.
+    private var isTreeUnsettled: Bool {
+        guard let id = selectedVolume?.id else { return true }
+        return scanTasks[id] != nil || treeCacheBuildTasks[id] != nil || treeCaches[id] == nil
+    }
+
+    private func availability(of action: DiskItemAction, for node: DiskNode) -> DiskItemActionAvailability {
+        DiskItemActionPolicy.availability(
+            of: action,
+            for: node,
+            isScanRoot: selectedTreeCache?.root.id == node.id || pathStack.first?.id == node.id,
+            isScanInProgress: isTreeUnsettled || isTrashInFlight
+        )
+    }
+
+    private func perform(_ action: DiskItemAction, on node: DiskNode?) {
+        guard let node else {
+            // Only reachable from the toolbar buttons, which are disabled until a
+            // row is picked; say so rather than doing nothing.
+            actionStatus = DiskActionStatus(text: "Select an item in the treemap or the tree first.", isError: true)
+            return
+        }
+
+        let availability = availability(of: action, for: node)
+        guard availability.isAllowed else {
+            actionStatus = DiskActionStatus(text: availability.reason ?? "", isError: true)
+            return
+        }
+
+        switch action {
+        case .revealInFinder:
+            revealInFinder(node: node)
+        case .copyPath:
+            copyPath(of: node)
+        case .moveToTrash:
+            moveToTrash(node: node)
+        }
+    }
+
     private func revealInFinder(node: DiskNode) {
+        // activateFileViewerSelecting silently does nothing for a path that has gone
+        // away, which would look like a broken menu item, so check first.
+        guard DiskItemProbe.exists(atPath: node.path) else {
+            actionStatus = DiskActionStatus(
+                text: "\(node.name) is no longer at \(node.path). Rescan to refresh the results.",
+                isError: true
+            )
+            return
+        }
         NSWorkspace.shared.activateFileViewerSelecting([node.url])
+    }
+
+    private func copyPath(of node: DiskNode) {
+        // Deliberately not gated on the file still existing: the path of something
+        // that just vanished is exactly what someone pastes into a shell to go
+        // looking for it.
+        if DiskItemPathCopier.copy(path: node.path) {
+            actionStatus = DiskActionStatus(text: DiskItemActionMessage.pathCopied(node.path), isError: false)
+        } else {
+            actionStatus = DiskActionStatus(text: DiskItemActionMessage.pathCopyFailed(name: node.name), isError: true)
+        }
+    }
+
+    private func moveToTrash(node: DiskNode) {
+        guard let volumeId = selectedVolume?.id else { return }
+
+        let prompt = DiskItemActionMessage.trashPrompt(for: node)
+        let alert = NSAlert()
+        alert.messageText = prompt.title
+        alert.informativeText = prompt.detail
+        // Critical rather than warning: a row in this window can be hundreds of
+        // gigabytes, and the folder case takes everything underneath it.
+        alert.alertStyle = node.isDirectory ? .critical : .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Trashing is a filesystem round trip; keep it off the main actor so a slow
+        // volume doesn't freeze the window, and latch a flag so the confirmation
+        // can't be answered twice for the same row while it is in flight.
+        isTrashInFlight = true
+        let path = node.path
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                DiskItemTrasher.moveToTrash(path: path)
+            }.value
+
+            isTrashInFlight = false
+
+            switch result {
+            case .success:
+                let freed = node.size
+                prune(node: node, in: volumeId)
+                actionStatus = DiskActionStatus(
+                    text: DiskItemActionMessage.trashSucceeded(name: node.name, bytes: freed),
+                    isError: false
+                )
+            case .failure(.alreadyGone):
+                // Nothing went wrong — the scan was simply older than the disk. The
+                // row still has to go, because it is describing something that is
+                // not there and is inflating every total above it.
+                prune(node: node, in: volumeId)
+                actionStatus = DiskActionStatus(
+                    text: DiskItemActionMessage.trashFailed(name: node.name, failure: .alreadyGone),
+                    isError: false
+                )
+            case .failure(let failure):
+                // The item is still on disk, so the tree stays exactly as it is.
+                actionStatus = DiskActionStatus(
+                    text: DiskItemActionMessage.trashFailed(name: node.name, failure: failure),
+                    isError: true
+                )
+            }
+        }
+    }
+
+    /// Takes a node that is no longer on disk out of the displayed tree and shrinks
+    /// every directory above it, so the totals keep matching reality instead of
+    /// quietly counting bytes that have been freed.
+    ///
+    /// Keyed by volume rather than by "whatever is selected": trashing is
+    /// asynchronous, and the user may well have clicked another volume's chip while
+    /// the Trash was busy. The tree that has to be corrected is the one the row came
+    /// from, whether or not it is the one on screen.
+    private func prune(node: DiskNode, in volumeId: String) {
+        guard let cache = treeCaches[volumeId],
+              let path = cache.path(to: node),
+              let removal = DiskTreeMutator.removing(nodeAt: path) else {
+            return
+        }
+
+        // Patching the index instead of rebuilding it keeps the tree pane populated;
+        // a rebuild walks every node on the volume and would show the trashed row
+        // for the whole of that walk.
+        treeCaches[volumeId] = cache.applying(removal)
+
+        let replacements = DiskTreeNavigationPatch.replacementMap(for: removal.replacedAncestors)
+        expandedTreeNodeIDs = DiskTreeNavigationPatch.patchedExpansion(
+            expandedTreeNodeIDs,
+            using: removal.replacedAncestors
+        )
+
+        // The breadcrumb, the hover chip and the focused row all describe the volume
+        // currently on screen; leave them alone when the pruned tree is a different
+        // one, or they would start pointing into a tree nobody is looking at.
+        if selectedVolume?.id == volumeId {
+            pathStack = DiskTreeNavigationPatch.patchedPath(
+                pathStack,
+                removing: removal.removed,
+                using: replacements,
+                fallbackRoot: removal.root
+            )
+            hoveredNode = DiskTreeNavigationPatch.patchedSelection(hoveredNode, removing: removal.removed, using: replacements)
+            focusedNode = DiskTreeNavigationPatch.patchedSelection(focusedNode, removing: removal.removed, using: replacements)
+        }
+
+        // Treemap layouts are keyed by node identity, so the rebuilt spine simply
+        // misses the cache and is recomputed on demand until this lands — stale, but
+        // never wrong. Rebuilding also drops the now-unreachable old entries.
+        scheduleTreemapLayoutCache(for: volumeId, root: removal.root)
     }
 
     private func requestQuit() {
@@ -1648,6 +2008,36 @@ public struct DiskAnalyzerWindowView: View {
             task.cancel()
         }
         onQuit()
+    }
+}
+
+/// The row actions, shared verbatim by the treemap tiles and the tree pane so the
+/// two never drift apart. Nothing here is disabled: an action that isn't allowed
+/// for this row explains why when it is chosen (see DiskItemActionPolicy), which
+/// is far more useful than a greyed-out item with no reason attached.
+private struct DiskItemActionMenu: View {
+    var perform: (DiskItemAction) -> Void
+
+    var body: some View {
+        Button {
+            perform(.revealInFinder)
+        } label: {
+            Label("Reveal in Finder", systemImage: "folder")
+        }
+
+        Button {
+            perform(.copyPath)
+        } label: {
+            Label("Copy Path", systemImage: "doc.on.doc")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            perform(.moveToTrash)
+        } label: {
+            Label("Move to Trash", systemImage: "trash")
+        }
     }
 }
 
@@ -1704,7 +2094,7 @@ private struct DiskTreeRow: View {
     var layout: DiskAnalyzerLayout
     var onToggleExpand: (DiskNode) -> Void
     var onSelect: (DiskNode) -> Void
-    var onReveal: (DiskNode) -> Void
+    var onAction: (DiskItemAction, DiskNode) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1758,11 +2148,7 @@ private struct DiskTreeRow: View {
                     onSelect(node)
                 }
                 .contextMenu {
-                    Button {
-                        onReveal(node)
-                    } label: {
-                        Label("Show in Finder", systemImage: "folder")
-                    }
+                    DiskItemActionMenu { onAction($0, node) }
                 }
             }
             .padding(.trailing, 8)
@@ -1780,7 +2166,7 @@ private struct DiskTreeRow: View {
                         layout: layout,
                         onToggleExpand: onToggleExpand,
                         onSelect: onSelect,
-                        onReveal: onReveal
+                        onAction: onAction
                     )
                 }
             }
@@ -2172,6 +2558,11 @@ private struct DiskAnalyzerSettingsView: View {
             }
 
             Text("Click a block to drill into a folder. Double-click reveals it in Finder. External drives appear automatically when mounted.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Right-click any block or tree row for Reveal in Finder (\u{2318}R), Copy Path (\u{2325}\u{2318}C) and Move to Trash (\u{2318}\u{232B}). Trashed items go to the Trash, never straight to deletion, and the totals above shrink to match.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

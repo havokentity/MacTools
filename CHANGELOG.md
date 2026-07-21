@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org) and the
 
 ## [Unreleased]
 
+### Added
+- **Disk Usage Analyzer** can now act on what it finds. Right-click any treemap
+  block or tree row for Reveal in Finder, Copy Path and Move to Trash; the same
+  three commands sit in the breadcrumb bar with Finder's own shortcuts (⌘R, ⌥⌘C
+  and ⌘⌫) so they are reachable without a mouse. Deleting always goes through
+  the Trash, never a straight unlink, and asks first — naming the folder, its
+  full path and the size that is about to move. Afterwards the row disappears
+  and every folder above it shrinks by exactly what left, so the totals stay
+  true instead of pointing at space that has already been freed. A row whose
+  file something else already deleted or moved says so plainly and is dropped
+  from the results rather than failing silently, the volume being analyzed and
+  the "Unaccounted / Inaccessible" estimate are never trashable, and the command
+  is held back while a scan is still walking that volume so a half-measured
+  folder can't be pulled out from under it.
+
 ## [0.14.0] — 2026-07-21
 
 ### Added
