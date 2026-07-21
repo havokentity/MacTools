@@ -301,4 +301,255 @@ final class CalendarKitTests: XCTestCase {
         let days = dots(start: start, end: start, calendar: calendar)
         XCTAssertEqual(days, [date(2027, 2, 1, calendar: calendar)])
     }
+
+    // MARK: - Per-calendar filtering
+
+    /// Stands in for an `EKEvent`: the filter only ever needs an owning-calendar identifier, so the
+    /// tests never touch EventKit or the user's real calendars.
+    private struct StubEvent: Equatable {
+        let title: String
+        let calendarID: String?
+    }
+
+    private let work = StubEvent(title: "Standup", calendarID: "work")
+    private let home = StubEvent(title: "Dinner", calendarID: "home")
+    private let orphan = StubEvent(title: "Unowned", calendarID: nil)
+
+    private func visible(_ events: [StubEvent], excluding excluded: Set<String>) -> [StubEvent] {
+        CalendarKit.visibleEvents(events, excludedCalendarIDs: excluded) { $0.calendarID }
+    }
+
+    func testNoExclusionsShowsEverything() {
+        XCTAssertEqual(visible([work, home, orphan], excluding: []), [work, home, orphan])
+    }
+
+    func testExcludedCalendarsEventsAreHidden() {
+        XCTAssertEqual(visible([work, home], excluding: ["work"]), [home])
+    }
+
+    func testFilteringPreservesOrder() {
+        let events = [home, work, home, work]
+        XCTAssertEqual(visible(events, excluding: ["work"]), [home, home])
+    }
+
+    func testExcludingEveryCalendarLeavesNothing() {
+        XCTAssertEqual(visible([work, home], excluding: ["work", "home"]), [])
+    }
+
+    func testUnknownCalendarStaysVisible() {
+        // The whole point of storing exclusions: a calendar nobody has hidden — including one added
+        // after the filter was last edited — must still show up.
+        XCTAssertEqual(visible([work, home], excluding: ["archive"]), [work, home])
+    }
+
+    func testEventWithNoOwningCalendarStaysVisible() {
+        XCTAssertEqual(visible([orphan], excluding: ["work", "home"]), [orphan])
+    }
+
+    func testIsCalendarVisibleMatchesTheExclusionSet() {
+        XCTAssertFalse(CalendarKit.isCalendarVisible("work", excludedCalendarIDs: ["work"]))
+        XCTAssertTrue(CalendarKit.isCalendarVisible("home", excludedCalendarIDs: ["work"]))
+        XCTAssertTrue(CalendarKit.isCalendarVisible(nil, excludedCalendarIDs: ["work"]))
+    }
+
+    // MARK: - Toggling the filter
+
+    func testHidingACalendarAddsItToTheExclusions() {
+        let updated = CalendarKit.excludedCalendarIDs([], setting: "work", visible: false)
+        XCTAssertEqual(updated, ["work"])
+    }
+
+    func testShowingACalendarRemovesItFromTheExclusions() {
+        let updated = CalendarKit.excludedCalendarIDs(["work", "home"], setting: "work", visible: true)
+        XCTAssertEqual(updated, ["home"])
+    }
+
+    func testTogglingIsIdempotent() {
+        XCTAssertEqual(CalendarKit.excludedCalendarIDs(["work"], setting: "work", visible: false), ["work"])
+        XCTAssertEqual(CalendarKit.excludedCalendarIDs([], setting: "work", visible: true), [])
+    }
+
+    func testHideThenShowRoundTripsToTheOriginalSet() {
+        let hidden = CalendarKit.excludedCalendarIDs(["home"], setting: "work", visible: false)
+        XCTAssertEqual(CalendarKit.excludedCalendarIDs(hidden, setting: "work", visible: true), ["home"])
+    }
+
+    // MARK: - Filter persistence
+
+    func testExclusionsRoundTripThroughDefaults() {
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(CalendarKit.persistedExcludedCalendarIDs(defaults: defaults), [])
+
+        CalendarKit.persistExcludedCalendarIDs(["work", "home"], defaults: defaults)
+        XCTAssertEqual(CalendarKit.persistedExcludedCalendarIDs(defaults: defaults), ["work", "home"])
+
+        CalendarKit.persistExcludedCalendarIDs([], defaults: defaults)
+        XCTAssertEqual(
+            CalendarKit.persistedExcludedCalendarIDs(defaults: defaults),
+            [],
+            "Clearing the filter must leave nothing behind to hide calendars later."
+        )
+    }
+
+    func testPersistedExclusionsAreStoredSorted() {
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        CalendarKit.persistExcludedCalendarIDs(["work", "archive", "home"], defaults: defaults)
+        XCTAssertEqual(
+            defaults.stringArray(forKey: DefaultsKey.calendarExcludedCalendarIDs),
+            ["archive", "home", "work"]
+        )
+    }
+
+    func testPersistenceKeepsIdentifiersThatNoLongerResolve() {
+        // The load-bearing persistence decision: an offline or deleted calendar's identifier must
+        // survive a save/load cycle, otherwise a deliberately hidden calendar un-hides itself the
+        // next time its account comes back.
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        CalendarKit.persistExcludedCalendarIDs(["work", "gone-offline"], defaults: defaults)
+        let loaded = CalendarKit.persistedExcludedCalendarIDs(defaults: defaults)
+        XCTAssertEqual(loaded, ["work", "gone-offline"])
+
+        // Toggling an unrelated calendar must not quietly drop the unresolvable one.
+        let updated = CalendarKit.excludedCalendarIDs(loaded, setting: "home", visible: false)
+        CalendarKit.persistExcludedCalendarIDs(updated, defaults: defaults)
+        XCTAssertEqual(
+            CalendarKit.persistedExcludedCalendarIDs(defaults: defaults),
+            ["work", "gone-offline", "home"]
+        )
+    }
+
+    func testPersistenceSurvivesUnicodeAndEmptyIdentifiers() {
+        let suiteName = "CalendarKitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let awkward: Set<String> = ["", "日本のカレンダー", "a b/c", "🎉"]
+        CalendarKit.persistExcludedCalendarIDs(awkward, defaults: defaults)
+        XCTAssertEqual(CalendarKit.persistedExcludedCalendarIDs(defaults: defaults), awkward)
+    }
+
+    // MARK: - "Is anything actually hidden?"
+
+    func testNothingIsHiddenWithAnEmptyExclusionSet() {
+        XCTAssertFalse(CalendarKit.hasHiddenCalendars(among: ["work", "home"], excludedCalendarIDs: []))
+    }
+
+    func testHidingALiveCalendarCountsAsFiltering() {
+        XCTAssertTrue(CalendarKit.hasHiddenCalendars(among: ["work", "home"], excludedCalendarIDs: ["work"]))
+    }
+
+    func testAStaleExclusionDoesNotCountAsFiltering() {
+        // A calendar deleted (or an account removed) while hidden leaves its identifier behind on
+        // purpose. Nothing is being filtered any more, so the UI must not claim otherwise.
+        XCTAssertFalse(
+            CalendarKit.hasHiddenCalendars(among: ["work", "home"], excludedCalendarIDs: ["deleted"]),
+            "A leftover identifier for a calendar that no longer exists must not light the filter indicator."
+        )
+    }
+
+    func testNoCalendarsMeansNothingIsHidden() {
+        XCTAssertFalse(CalendarKit.hasHiddenCalendars(among: [], excludedCalendarIDs: ["work"]))
+    }
+
+    // MARK: - Calendar.app deep links
+
+    func testEventShowURLPutsTheIdentifierInTheOnlyPathComponent() {
+        let calendar = makeCalendar()
+        let occurrence = date(2027, 2, 10, calendar: calendar).addingTimeInterval(9 * 3600 + 30 * 60)
+        let url = CalendarKit.eventShowURL(eventIdentifier: "ABC-123", occurrenceDate: occurrence)
+        XCTAssertEqual(url?.absoluteString, "ical://ekevent/ABC-123?method=show&options=more")
+    }
+
+    func testEventShowURLIsTheSameWithOrWithoutAnOccurrenceDate() {
+        let calendar = makeCalendar()
+        let withDate = CalendarKit.eventShowURL(
+            eventIdentifier: "ABC-123",
+            occurrenceDate: date(2027, 2, 10, calendar: calendar)
+        )
+        let withoutDate = CalendarKit.eventShowURL(eventIdentifier: "ABC-123", occurrenceDate: nil)
+        XCTAssertEqual(withDate, withoutDate)
+    }
+
+    /// KNOWN LIMITATION, asserted so it is visible rather than forgotten.
+    ///
+    /// Every occurrence of a recurring event shares one `eventIdentifier`, so this URL cannot
+    /// distinguish them — all occurrences open the same event. An earlier version prefixed the
+    /// occurrence date to disambiguate, which produced distinct URLs that Calendar.app did not
+    /// accept at all: it opened on today's date instead of the event. A URL that works and is
+    /// imprecise beats one that is precise and does nothing.
+    ///
+    /// Whatever replaces this has to be confirmed against a live Calendar.app; no unit test can
+    /// tell us which shape that app actually resolves.
+    func testOccurrencesOfOneSeriesCurrentlyShareAURL() {
+        let calendar = makeCalendar()
+        let first = CalendarKit.eventShowURL(
+            eventIdentifier: "SERIES",
+            occurrenceDate: date(2027, 2, 10, calendar: calendar)
+        )
+        let second = CalendarKit.eventShowURL(
+            eventIdentifier: "SERIES",
+            occurrenceDate: date(2027, 2, 17, calendar: calendar)
+        )
+        XCTAssertNotNil(first)
+        XCTAssertEqual(first, second)
+    }
+
+    func testEventShowURLIsNilWithoutAnIdentifier() {
+        let calendar = makeCalendar()
+        let occurrence = date(2027, 2, 10, calendar: calendar)
+        XCTAssertNil(CalendarKit.eventShowURL(eventIdentifier: nil, occurrenceDate: occurrence))
+        XCTAssertNil(CalendarKit.eventShowURL(eventIdentifier: "", occurrenceDate: occurrence))
+    }
+
+    func testEventShowURLEscapesAwkwardIdentifiers() {
+        // EventKit identifiers are opaque; a space or a hash must not truncate or break the URL.
+        let url = CalendarKit.eventShowURL(eventIdentifier: "id with space#1", occurrenceDate: nil)
+        XCTAssertEqual(url?.absoluteString, "ical://ekevent/id%20with%20space%231?method=show&options=more")
+    }
+
+    func testEventShowURLKeepsTheIdentifierInOnePathComponent() {
+        // A slash is legal in a URL path, so an unescaped one would silently address a different
+        // event rather than fail: the identifier must stay a single component.
+        let calendar = makeCalendar()
+        let url = CalendarKit.eventShowURL(
+            eventIdentifier: "acct/one:evt",
+            occurrenceDate: date(2027, 2, 10, calendar: calendar)
+        )
+        XCTAssertEqual(
+            url?.absoluteString,
+            "ical://ekevent/acct%2Fone:evt?method=show&options=more"
+        )
+        XCTAssertEqual(url?.pathComponents.count, 2, "Expected / and the identifier — a slash inside the identifier must not split it.")
+        XCTAssertEqual(url?.pathComponents.last, "acct/one:evt")
+    }
+
+    func testEventShowURLEscapesAPercentInTheIdentifier() {
+        // `%` is the escape marker itself, so an identifier that already looks escaped — `%2F` reading
+        // as a slash — must survive as literal text rather than decoding into a different address.
+        let url = CalendarKit.eventShowURL(eventIdentifier: "id%2Fother", occurrenceDate: nil)
+        XCTAssertEqual(url?.absoluteString, "ical://ekevent/id%252Fother?method=show&options=more")
+        XCTAssertEqual(url?.pathComponents.count, 2, "Expected / and the identifier.")
+        XCTAssertEqual(url?.pathComponents.last, "id%2Fother")
+    }
+
+    func testEventShowURLRoundTripsAUnicodeIdentifier() {
+        let identifier = "café-日程-🎉"
+        let url = CalendarKit.eventShowURL(eventIdentifier: identifier, occurrenceDate: nil)
+        XCTAssertEqual(url?.pathComponents.last, identifier)
+    }
+
+    func testUTCStampIsIndependentOfTheHostTimezone() {
+        // The stamp is always UTC: the same instant must serialise identically wherever the test runs.
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(CalendarKit.utcStamp(for: instant), "20270115T080000Z")
+    }
 }
