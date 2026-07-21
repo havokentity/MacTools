@@ -277,7 +277,7 @@ private struct FocusTimerSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 340, height: 320)
+        .frame(width: FocusTimerSizing.settingsSize().width, height: FocusTimerSizing.settingsSize().height)
     }
 
     private func stepperRow(
