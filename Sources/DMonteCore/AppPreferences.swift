@@ -68,6 +68,7 @@ public enum DefaultsKey {
     public static let volumeMixerStoppedApps = "tool.volumeMixer.stoppedApps"
     public static let windowManagerShortcuts = "tool.windowManager.shortcuts"
     public static let audioRouterPresets = "tool.audioRouter.presets"
+    public static let qrTemplate = "tool.qr.template"
     public static let toolboxRecentToolIDs = "toolbox.recentToolIDs"
 
     static let obsoleteKeys = [
