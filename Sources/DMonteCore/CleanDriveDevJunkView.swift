@@ -18,6 +18,10 @@ struct CleanDriveDevJunkPanel: View {
     @State private var isTrashing = false
     @State private var didStopScan = false
     @State private var scanTask: Task<Void, Never>?
+    /// Bumped by every `startScan`. A cancelled scan's loop still has a tail to run, and trashing
+    /// starts a fresh scan, so the outgoing task has to be able to tell that the state it is about
+    /// to write belongs to somebody else now.
+    @State private var scanGeneration = 0
 
     private let home = NSHomeDirectory()
     private let layout = DevJunkLayout.current
@@ -247,6 +251,8 @@ struct CleanDriveDevJunkPanel: View {
 
     private func startScan() {
         scanTask?.cancel()
+        scanGeneration &+= 1
+        let generation = scanGeneration
         reports = []
         isScanning = true
         didStopScan = false
@@ -256,6 +262,13 @@ struct CleanDriveDevJunkPanel: View {
 
         scanTask = Task {
             for await event in DevJunkScanner.scanStream(home: home) {
+                // Trashing restarts the scan, which cancels this task; anything still buffered in
+                // its stream belongs to a scan the user has moved on from and must not be written
+                // into the successor's state.
+                guard generation == scanGeneration else {
+                    return
+                }
+
                 switch event {
                 case let .progress(fraction, label):
                     scanFraction = fraction
@@ -271,6 +284,13 @@ struct CleanDriveDevJunkPanel: View {
                     reports = finished
                     selection.reconcile(with: finished)
                 }
+            }
+
+            // The tail is the dangerous part: a cancelled scan reaches it too, and clearing
+            // `isScanning` there would take the progress bar and the Stop button away from the scan
+            // that replaced it while announcing that scan's half-filled results as final.
+            guard generation == scanGeneration else {
+                return
             }
 
             isScanning = false
@@ -329,25 +349,38 @@ struct CleanDriveDevJunkPanel: View {
             }
 
             isTrashing = false
-            startScan()
+            // The result is reported before the rescan, not after: `startScan` overwrites the
+            // status line with "Scanning...", so a report published afterwards would be the only
+            // trace of a bulk move and would vanish immediately.
             presentResult(result)
+            startScan()
         }
     }
 
     private func presentResult(_ result: DevJunkRemovalResult) {
-        guard !result.failures.isEmpty else {
+        // Nothing moved and nothing failed means every entry was already gone — usually a stale
+        // selection from a previous pass — and there is nothing to acknowledge.
+        guard result.trashedCount > 0 || !result.failures.isEmpty else {
             return
         }
-
-        let details = result.failures.prefix(6).map {
-            "• \(DevJunkPaths.abbreviate($0.path, home: home)) — \($0.reason)"
-        }.joined(separator: "\n")
-        let more = result.failures.count > 6 ? "\n…and \(result.failures.count - 6) more" : ""
 
         let alert = NSAlert()
         alert.messageText = "Moved \(result.trashedCount) item\(result.trashedCount == 1 ? "" : "s") "
             + "(\(result.trashedBytes.diskBytesString)) to the Trash"
-        alert.informativeText = "These were left in place:\n\n\(details)\(more)"
+
+        if result.failures.isEmpty {
+            // A wholly successful bulk move used to pass in silence, which is the wrong ending for
+            // an action that looks irreversible: the user needs to be told it happened and that the
+            // space is still sitting in the Trash.
+            alert.informativeText = "The space is reclaimed once you empty the Trash."
+        } else {
+            let details = result.failures.prefix(6).map {
+                "• \(DevJunkPaths.abbreviate($0.path, home: home)) — \($0.reason)"
+            }.joined(separator: "\n")
+            let more = result.failures.count > 6 ? "\n…and \(result.failures.count - 6) more" : ""
+            alert.informativeText = "These were left in place:\n\n\(details)\(more)"
+        }
+
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()

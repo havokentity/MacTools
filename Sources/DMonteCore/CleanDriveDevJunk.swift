@@ -169,6 +169,15 @@ public enum DevJunkCategoryID: String, CaseIterable, Identifiable, Sendable {
             return false
         }
 
+        // `normalize` deliberately does not resolve ".." — it is a pure function and must not touch
+        // the filesystem — so containment here is purely textual. That makes
+        // "~/Documents/../.ssh/node_modules" look like it lives under a search root when it resolves
+        // somewhere else entirely. Rather than teach the helpers to resolve traversal, refuse the
+        // syntax: the scanner never produces it, so the only paths it can rule out are forged ones.
+        guard !components.contains(where: { $0 == "." || $0 == ".." }) else {
+            return false
+        }
+
         // Nothing under a denied root is eligible unless this category's own target table spells
         // the path out. The Xcode and CoreSimulator caches genuinely live inside ~/Library, but a
         // directory merely *discovered* by walking never may. This is the backstop, not the
@@ -194,10 +203,16 @@ public enum DevJunkCategoryID: String, CaseIterable, Identifiable, Sendable {
 
             // A node_modules inside another node_modules (or inside a .build, or a stray copy in a
             // .git object store) is already covered by its ancestor and must not be listed twice.
-            // Only the components below the search root are examined: the components of the home
-            // directory itself are not the user's project structure and must not veto a match.
+            // A node_modules inside a bundle is worse than redundant: Electron applications ship
+            // their dependencies at Contents/Resources/app/node_modules with a package.json beside
+            // them, so the sibling test passes and trashing it breaks an installed application that
+            // no `npm install` can repair. Only the components below the search root are examined:
+            // the components of the home directory itself are not the user's project structure and
+            // must not veto a match.
             let ancestors = components.dropLast().dropFirst(DevJunkPaths.components(root).count)
-            return !ancestors.contains { DevJunkPaths.prunedDirectoryNames.contains($0) }
+            return !ancestors.contains {
+                DevJunkPaths.prunedDirectoryNames.contains($0) || DevJunkPaths.isBundleName($0)
+            }
         }
 
         return fixedTargets.contains { target in
@@ -259,6 +274,54 @@ public enum DevJunkPaths {
         "Library",
         ".Trash"
     ]
+
+    /// Extensions that make a directory a bundle — something macOS presents, and the user thinks
+    /// of, as a single opaque item rather than a folder to walk into. The list is deliberately wider
+    /// than "applications": an Electron app keeps its dependencies at
+    /// Contents/Resources/app/node_modules complete with a package.json, a plug-in or framework can
+    /// carry the same, and a photo or Final Cut library is user data that must never be walked at
+    /// all. Everything inside one of these is installed or authored content, never project state, so
+    /// deleting a piece of it breaks the item and no package manager can put it back.
+    static let bundleExtensions: Set<String> = [
+        "app",
+        "appex",
+        "framework",
+        "bundle",
+        "plugin",
+        "xpc",
+        "kext",
+        "dext",
+        "systemextension",
+        "prefpane",
+        "qlgenerator",
+        "mdimporter",
+        "component",
+        "vst",
+        "vst3",
+        "audiounit",
+        "docset",
+        "photoslibrary",
+        "photolibrary",
+        "musiclibrary",
+        "tvlibrary",
+        "imovielibrary",
+        "fcpbundle",
+        "logicx",
+        "band",
+        "sparsebundle",
+        "rtfd"
+    ]
+
+    /// True when a single path component names a bundle. Matching is case-insensitive because the
+    /// boot volume is, so "Foo.APP" is the same directory as "Foo.app". A leading dot does not
+    /// count: ".app" is an ordinary hidden folder, not an application.
+    static func isBundleName(_ component: String) -> Bool {
+        guard let dot = component.lastIndex(of: "."), dot != component.startIndex else {
+            return false
+        }
+
+        return bundleExtensions.contains(component[component.index(after: dot)...].lowercased())
+    }
 
     /// The only places a project-scanned category is allowed to look. Home itself is not on the
     /// list: walking all of ~ would be slow and would sweep in ~/Library, and a project sitting
@@ -775,7 +838,13 @@ public enum DevJunkScanner {
                         continue
                     }
 
-                    if DevJunkPaths.prunedDirectoryNames.contains(entry.name) || entry.name.hasPrefix(".") {
+                    // Bundles are stepped over rather than into. An application on the Desktop is
+                    // exactly five components from the search root, so without this the walk reaches
+                    // an Electron app's Contents/Resources/app/node_modules on its last permitted
+                    // iteration and offers to delete the application's own dependencies.
+                    if DevJunkPaths.prunedDirectoryNames.contains(entry.name)
+                        || DevJunkPaths.isBundleName(entry.name)
+                        || entry.name.hasPrefix(".") {
                         continue
                     }
 

@@ -129,6 +129,16 @@ final class CleanDriveDevJunkTests: XCTestCase {
             // The Docker disk image holds every image, container and volume the user owns.
             "~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw",
             "~/Library/Containers/com.docker.docker/Data",
+            // An installed application's own bundled dependencies. Electron apps ship
+            // Contents/Resources/app/node_modules with a package.json beside it, so the sibling test
+            // passes and only the bundle veto stands between the user and a broken application.
+            "~/Desktop/Cursor.app/Contents/Resources/app/node_modules",
+            "~/Documents/Visual Studio Code.app/Contents/Resources/app/node_modules",
+            "~/Developer/Widget.framework/Versions/A/Resources/.build",
+            // Traversal: textually inside a search root, resolving somewhere else entirely.
+            "~/Documents/../.ssh/node_modules",
+            "~/Documents/../../../etc/node_modules",
+            "~/Developer/./MyApp/node_modules",
             // Unrelated user data and system files.
             "~/Library/Mail",
             "~/Library/Application Support/MobileSync/Backup",
@@ -227,6 +237,111 @@ final class CleanDriveDevJunkTests: XCTestCase {
         XCTAssertFalse(
             DevJunkCategoryID.nodeModules.accepts(path: "/Volumes/Pods/tester/Developer/Pods/App/node_modules", home: awkwardHome)
         )
+    }
+
+    // MARK: - Bundles
+
+    func testBundleNamesAreRecognisedAndOrdinaryFoldersAreNot() {
+        for name in ["Cursor.app", "Visual Studio Code.APP", "Widget.framework", "Thing.bundle", "Trip.photoslibrary"] {
+            XCTAssertTrue(DevJunkPaths.isBundleName(name), "\(name) should read as a bundle")
+        }
+
+        for name in ["MyApp", "node_modules", "app", ".app", "notes.txt", "release.app.zip", "Package.swift"] {
+            XCTAssertFalse(DevJunkPaths.isBundleName(name), "\(name) should not read as a bundle")
+        }
+    }
+
+    func testProjectCategoriesRejectAnythingInsideABundle() {
+        // The application's own dependencies sit beside a real package.json, so the sibling test
+        // that keeps this feature conservative is no defence at all here — and unlike a project's
+        // node_modules, this one cannot be restored by running npm install.
+        XCTAssertFalse(
+            DevJunkCategoryID.nodeModules.accepts(
+                path: "~/Desktop/Cursor.app/Contents/Resources/app/node_modules",
+                home: home
+            )
+        )
+        XCTAssertFalse(
+            DevJunkCategoryID.nodeModules.accepts(
+                path: "~/Documents/Tools/Slack.APP/Contents/Resources/app/node_modules",
+                home: home
+            )
+        )
+        XCTAssertFalse(
+            DevJunkCategoryID.swiftPackageBuilds.accepts(path: "~/Developer/Thing.bundle/Contents/.build", home: home)
+        )
+        XCTAssertFalse(
+            DevJunkCategoryID.nodeModules.accepts(path: "~/Documents/Trip.photoslibrary/private/node_modules", home: home)
+        )
+
+        // A folder that merely has a dot in its name is still an ordinary project folder.
+        XCTAssertTrue(DevJunkCategoryID.nodeModules.accepts(path: "~/Developer/my.site/node_modules", home: home))
+    }
+
+    func testScanLeavesAnApplicationsOwnDependenciesAlone() async throws {
+        let sandbox = try makeSandbox()
+        defer { try? FileManager.default.removeItem(atPath: sandbox) }
+
+        // Exactly the Electron layout, on the Desktop, where the walk's depth cap still reaches it:
+        // Desktop/Cursor.app/Contents/Resources/app/node_modules is five levels below the root.
+        let bundledApp = DevJunkPaths.joined(sandbox, "Desktop/Cursor.app/Contents/Resources/app")
+        try writeFile(DevJunkPaths.joined(bundledApp, "package.json"))
+        try writeFile(DevJunkPaths.joined(bundledApp, "node_modules/electron-log/index.js"))
+
+        // A genuine project on the same Desktop still has to be found, or the veto is too wide.
+        try writeFile(DevJunkPaths.joined(sandbox, "Desktop/Site/package.json"))
+        try writeFile(DevJunkPaths.joined(sandbox, "Desktop/Site/node_modules/left-pad/index.js"))
+
+        let entries = DevJunkScanner.entries(for: .nodeModules, home: sandbox)
+        let paths = Set(entries.map(\.path))
+
+        XCTAssertFalse(paths.contains(DevJunkPaths.joined(bundledApp, "node_modules")))
+        XCTAssertTrue(paths.contains(DevJunkPaths.joined(sandbox, "Desktop/Site/node_modules")))
+
+        // The pre-delete gate is the last line of defence, so it must refuse the bundled copy too
+        // even if some future scanner change hands it over.
+        XCTAssertFalse(
+            DevJunkCategoryID.nodeModules.accepts(
+                path: DevJunkPaths.joined(bundledApp, "node_modules"),
+                home: sandbox
+            )
+        )
+    }
+
+    // MARK: - Path traversal
+
+    func testAcceptsRejectsPathsContainingTraversalComponents() {
+        // normalize() does not resolve "..", so containment is textual: without this rule
+        // "~/Documents/../.ssh/node_modules" reads as living under the Documents search root while
+        // resolving into ~/.ssh, and "../../../etc" escapes home entirely.
+        XCTAssertFalse(DevJunkCategoryID.nodeModules.accepts(path: "/Users/tester/Documents/../.ssh/node_modules", home: home))
+        XCTAssertFalse(
+            DevJunkCategoryID.nodeModules.accepts(path: "/Users/tester/Documents/../../../etc/node_modules", home: home)
+        )
+        XCTAssertFalse(DevJunkCategoryID.swiftPackageBuilds.accepts(path: "/Users/tester/Code/../Library/.build", home: home))
+        XCTAssertFalse(
+            DevJunkCategoryID.xcodeDerivedData.accepts(
+                path: "/Users/tester/Library/Developer/Xcode/DerivedData/../../../Mail",
+                home: home
+            )
+        )
+        // "." is harmless in itself but arrives from the same class of unnormalised input, and
+        // accepting it would mean two spellings of one path disagree about eligibility.
+        XCTAssertFalse(DevJunkCategoryID.nodeModules.accepts(path: "/Users/tester/Developer/./App/node_modules", home: home))
+    }
+
+    func testValidateRejectsATraversalPathBeforeItReachesTheRemover() {
+        let forged = DevJunkEntry(
+            category: .nodeModules,
+            path: "/Users/tester/Documents/../.ssh/node_modules",
+            size: 999
+        )
+        let genuine = DevJunkEntry(category: .nodeModules, path: "/Users/tester/Developer/App/node_modules", size: 10)
+
+        let (allowed, rejected) = DevJunkRemover.validate([forged, genuine], home: home)
+
+        XCTAssertEqual(allowed, [genuine])
+        XCTAssertEqual(rejected, [forged])
     }
 
     func testEveryCategoryStaysInsideTheUsersHomeDirectory() {
