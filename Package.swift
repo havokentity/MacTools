@@ -107,6 +107,10 @@ let package = Package(
         .executable(
             name: "DMonteDriveEjector",
             targets: ["DMonteDriveEjector"]
+        ),
+        .executable(
+            name: "DMonteScratchpad",
+            targets: ["DMonteScratchpad"]
         )
     ],
     dependencies: [
@@ -285,6 +289,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteDriveEjectorApp"
+        ),
+        .executableTarget(
+            name: "DMonteScratchpad",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteScratchpadApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

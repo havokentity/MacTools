@@ -128,7 +128,8 @@ public enum AppDefaults {
             DefaultsKey.focusTimerShortBreakMinutes: 5,
             DefaultsKey.focusTimerLongBreakMinutes: 15,
             DefaultsKey.focusTimerLongBreakInterval: 4,
-            DefaultsKey.driveEjectorConfirmsEjectAll: true
+            DefaultsKey.driveEjectorConfirmsEjectAll: true,
+            DefaultsKey.scratchpadFontSize: 13
         ])
     }
 }

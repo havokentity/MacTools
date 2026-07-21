@@ -40,6 +40,10 @@ adheres to [Semantic Versioning](https://semver.org) and the
   stale. Nothing is ever force-unmounted: when a file is open or Spotlight is
   still indexing, the disk stays mounted and macOS's own reason is shown inline.
   The list updates live as disks are plugged in and removed.
+- **Scratchpad** — a new menu bar tool: an always-there plain-text notepad with
+  multiple named notes, autosave (debounced while typing, flushed when the panel
+  closes and at quit, one atomically written file per note), a live
+  word/character/line count, copy-all, and an undoable clear.
 
 ## [0.13.0] — 2026-07-12
 

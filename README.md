@@ -46,6 +46,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Dev Tools** | JSON, Base64, JWT, URL, hashing, UUID, timestamp, and case utilities |
 | **Dev Tools** | JSON, Base64, URL, hashing, UUID, timestamp, and case utilities |
 | **Snippets** | A searchable library of reusable text — click one to paste it into the app you came from |
+| **Scratchpad** | Always‑there plain‑text notepad with named notes, autosave, and a live word count |
 
 ### Permissions
 
