@@ -85,6 +85,23 @@ public enum ClipboardPaste {
         return true
     }
 
+    /// Places text recognized out of an image entry on the pasteboard, as plain text only.
+    ///
+    /// Deliberately *not* stamped with the nspasteboard source marker the other writers here
+    /// use: that marker exists to keep paste-backs of an existing entry out of history, whereas
+    /// this text is new content the user just produced and will want to find later. Letting the
+    /// monitor record it cannot loop — the recorded entry is text, "Copy Text from Image" only
+    /// exists on image entries, and a run only ever starts from an explicit user gesture — so
+    /// the chain is one step deep and self-terminating.
+    ///
+    /// `pasteboard` is injectable so the marker-free contract above — the thing that decides
+    /// whether the monitor records the result — can be asserted against a private pasteboard
+    /// instead of the user's real clipboard.
+    public static func copyRecognizedText(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     /// Copies the entry then pastes it into `target` (the app that was frontmost before our
     /// panel appeared). The result answers "is Accessibility the problem?", not "did the paste
     /// happen": false only when the permission is missing (content is still copied and the

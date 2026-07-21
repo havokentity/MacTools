@@ -43,6 +43,8 @@ public enum AppInfo {
 
 public enum DefaultsKey {
     public static let videoDownloaderPreferredQuality = "tool.videoDownloader.preferredQuality"
+    public static let videoDownloaderDownloadMode = "tool.videoDownloader.downloadMode"
+    public static let videoDownloaderAudioFormat = "tool.videoDownloader.audioFormat"
     public static let videoDownloaderNonMP4Handling = "tool.videoDownloader.nonMP4Handling"
     public static let videoDownloaderDownloadsSubtitles = "tool.videoDownloader.downloadsSubtitles"
     public static let videoDownloaderSubtitleMode = "tool.videoDownloader.subtitleMode"
@@ -61,8 +63,13 @@ public enum DefaultsKey {
     public static let volumeMixerSmartFilter = "tool.volumeMixer.smartFilter"
     public static let volumeMixerIncludedDefaultIgnoredApps = "tool.volumeMixer.includedDefaultIgnoredApps"
     public static let volumeMixerOutputRoutes = "tool.volumeMixer.outputRoutes"
+    /// Stable keys of apps the user pressed "stop processing" on. Persisted so the stop survives a
+    /// relaunch instead of the automatic policy re-tapping an app whose gain is still below unity.
+    public static let volumeMixerStoppedApps = "tool.volumeMixer.stoppedApps"
     public static let windowManagerShortcuts = "tool.windowManager.shortcuts"
     public static let audioRouterPresets = "tool.audioRouter.presets"
+    public static let qrTemplate = "tool.qr.template"
+
     /// Calendars the user has hidden. Excluded rather than included, so a calendar added later shows
     /// up by default instead of silently vanishing.
     public static let calendarExcludedCalendarIDs = "tool.calendar.excludedCalendarIDs"
@@ -97,6 +104,8 @@ public enum AppDefaults {
 
         shared.register(defaults: [
             DefaultsKey.videoDownloaderPreferredQuality: VideoQuality.maximum.rawValue,
+            DefaultsKey.videoDownloaderDownloadMode: VideoDownloadMode.video.rawValue,
+            DefaultsKey.videoDownloaderAudioFormat: VideoAudioFormat.m4a.rawValue,
             DefaultsKey.videoDownloaderNonMP4Handling: VideoNonMP4Handling.downloadWithoutConversion.rawValue,
             DefaultsKey.videoDownloaderSubtitleMode: VideoSubtitleMode.englishAndSystem.rawValue,
             DefaultsKey.videoDownloaderSaveDirectory: FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path

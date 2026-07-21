@@ -340,7 +340,7 @@ private struct KeepAwakeSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 320, height: 230)
+        .frame(width: KeepAwakeSizing.settingsSize().width, height: KeepAwakeSizing.settingsSize().height)
     }
 
     private func settingRow<Trailing: View>(title: String, @ViewBuilder trailing: () -> Trailing) -> some View {

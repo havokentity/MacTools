@@ -29,6 +29,7 @@ public struct ClipboardPopoverView: View {
                 historyList
                 Divider().opacity(0.6)
                 preview
+                ocrStatusStrip
                 footer
             }
 
@@ -174,10 +175,13 @@ public struct ClipboardPopoverView: View {
                                 isSelected: entry.id == controller.selectedID,
                                 scale: scale,
                                 thumbnail: entry.kind == .image ? controller.store.thumbnail(for: entry) : nil,
+                                isExtractingText: controller.ocrEntryID == entry.id,
+                                isOCRBusy: controller.ocrEntryID != nil,
                                 onSelect: { controller.selectedID = entry.id },
                                 onPaste: { controller.paste(entry, asPlainText: false) },
                                 onTogglePin: { controller.togglePin(entry.id) },
-                                onDelete: { controller.delete(entry.id) }
+                                onDelete: { controller.delete(entry.id) },
+                                onExtractText: { controller.extractText(from: entry) }
                             )
                             .id(entry.id)
                         }
@@ -265,6 +269,43 @@ public struct ClipboardPopoverView: View {
         return parts.joined(separator: "\n")
     }
 
+    // MARK: - OCR status
+
+    /// The only channel this tool has for reporting an OCR run: it has no alerts, and a failure
+    /// that showed nothing would read as the action having silently done nothing.
+    @ViewBuilder
+    private var ocrStatusStrip: some View {
+        if let status = controller.ocrStatus {
+            HStack(spacing: s(6)) {
+                if controller.ocrEntryID != nil {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(scale)
+                }
+
+                Text(status)
+                    .font(.system(size: s(10.5)))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: s(4))
+
+                Button {
+                    controller.dismissOCRStatus()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: s(9), weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+            }
+            .padding(.horizontal, s(14))
+            .padding(.top, s(6))
+        }
+    }
+
     // MARK: - Footer
 
     private var footer: some View {
@@ -304,10 +345,16 @@ private struct ClipboardRow: View {
     var isSelected: Bool
     var scale: CGFloat
     var thumbnail: NSImage?
+    var isExtractingText: Bool
+    /// True while *any* row's run is in flight. The controller serves one at a time, so every
+    /// trigger has to go dead — not just the running row's — or clicking another image would be
+    /// a button that visibly does nothing.
+    var isOCRBusy: Bool
     var onSelect: () -> Void
     var onPaste: () -> Void
     var onTogglePin: () -> Void
     var onDelete: () -> Void
+    var onExtractText: () -> Void
 
     @State private var isHovered = false
 
@@ -351,6 +398,10 @@ private struct ClipboardRow: View {
         .contextMenu {
             Button("Paste") { onPaste() }
             Button(entry.pinned ? "Unpin" : "Pin") { onTogglePin() }
+            if entry.kind == .image {
+                Button("Copy Text from Image") { onExtractText() }
+                    .disabled(isOCRBusy)
+            }
             Divider()
             Button("Delete", role: .destructive) { onDelete() }
         }
@@ -378,8 +429,28 @@ private struct ClipboardRow: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if isHovered {
+        // The spinner outranks hover: recognition outlives the pointer leaving the row, and
+        // without this the only sign a slow run was still going would vanish with the cursor.
+        if isExtractingText {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(scale)
+        } else if isHovered {
             HStack(spacing: s(2)) {
+                if entry.kind == .image {
+                    Button(action: onExtractText) {
+                        Image(systemName: "text.viewfinder")
+                            .font(.system(size: s(11)))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    // Dim by hand: `.disabled` leaves a plain button with a custom label looking
+                    // exactly as clickable as before, and a control that swallows clicks without
+                    // changing reads as broken.
+                    .opacity(isOCRBusy ? 0.35 : 1)
+                    .disabled(isOCRBusy)
+                    .help(isOCRBusy ? "Already reading another image…" : "Copy text from this image")
+                }
                 Button(action: onTogglePin) {
                     Image(systemName: entry.pinned ? "pin.fill" : "pin")
                         .font(.system(size: s(11)))

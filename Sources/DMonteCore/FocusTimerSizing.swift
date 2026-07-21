@@ -6,6 +6,24 @@ public enum FocusTimerSizing {
         return NSSize(width: (320 * scale).rounded(), height: (440 * scale).rounded())
     }
 
+    /// The settings overlay, which is centred *over* the panel and therefore must never be wider
+    /// than it. A hard-coded size looks right only at `currentScale == 1`; on a Mac whose menu bar
+    /// is thinner than 26pt the panel shrinks and the sheet does not, so it overflows equally on
+    /// both sides and its first and last characters are clipped.
+    ///
+    /// Capped at the panel rather than scaled with it. The sheet's contents are laid out at this
+    /// size with unscaled padding, so shrinking it further than the panel demands would squeeze
+    /// them for no reason — and on the tools whose sheet is already narrower than their panel,
+    /// scaling would inset it noticeably while fixing nothing.
+    public static func settingsSize() -> NSSize {
+        let panel = preferredSize()
+        // Leave room for the 18pt padding PreferencesOverlay adds around the sheet on every
+        // side: a sheet sized to the full panel becomes panel+36 once padded and spills
+        // the panel, dragging the content behind it off both edges.
+        let overlayChrome: CGFloat = 36
+        return NSSize(width: min(340, panel.width - overlayChrome), height: min(320, panel.height - overlayChrome))
+    }
+
     static var currentScale: CGFloat {
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let screenScale = visibleFrame.height / 950
