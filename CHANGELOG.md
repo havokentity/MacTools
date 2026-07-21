@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org) and the
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-21
+
 ### Added
 - **Mic Control**, a new tool: mutes and unmutes the default input device
   system‑wide, so every app listening to it goes quiet at once. The menu bar
@@ -56,6 +58,49 @@ adheres to [Semantic Versioning](https://semver.org) and the
   means sustained multi‑megabyte transfers from someone else's server, which is
   its own decision about data usage and which server to trust, and does not
   belong in a read‑only local‑info tool.
+- **Download Video** audio-only mode: pull just the soundtrack as M4A or MP3
+  instead of the full video.
+- **Clipboard History** now extracts text from image entries with OCR, so a
+  screenshot of a code block or an address becomes selectable text.
+- **QR Studio** content templates (Wi‑Fi, contact, email, phone, SMS,
+  geolocation) that build correctly-formatted payloads instead of leaving you to
+  remember each scheme, plus decoding a QR code from an image file.
+- **Calendar** per-calendar filtering, so a noisy shared calendar can be hidden
+  without unsubscribing, and clicking a day opens that date in Calendar.app.
+  Event dots are coloured per calendar rather than all one colour.
+- Text-entry tools now install an Edit menu, so ⌘C/⌘V/⌘X/⌘A/⌘Z work in every
+  helper. Menu-bar helpers are accessory apps with no main menu, so the standard
+  editing shortcuts previously did nothing in their text fields.
+- Releases are now gated on the test suite, the runner is pinned to the image
+  that can actually build the package, and concurrent release runs are
+  serialised so two tags cannot race and publish mismatched artifacts.
+
+### Fixed
+- A deep review of the codebase fixed 62 confirmed bugs across the tools,
+  raising the test suite from 360 to 772 tests.
+- Settings sheets no longer overflow their panel. The sheet's size was a
+  literal while the panel's scaled with the menu bar, so on a Mac with a thinner
+  menu bar the sheet spilled past both edges and dragged the content behind it
+  off-screen. Affected Keep Awake, Focus Timer, Mic Control, Drive Ejector,
+  Network Info and Scratchpad.
+- **Volume Mixer**: ignoring an app now releases its audio tap instead of only
+  hiding its row; "stop processing" survives a relaunch; and quitting no longer
+  persists a stop for every app that merely happened to be playing, which
+  brought them all back permanently force-off with the slider reading one level
+  while the audio played at another.
+- **Audio Switcher**: the volume slider no longer stutters mid-drag, and
+  dismissing the popover mid-drag no longer freezes volume sync for the rest of
+  the session.
+- **Audio Router** and **Calendar** now carry their entitlements on the
+  container app. macOS attributes a nested helper's permission request to the
+  containing bundle, so without them the microphone and calendar prompts could
+  never be granted.
+- **Drive Ejector** lists external SSDs that report themselves as neither
+  removable nor ejectable, which is most of them.
+- **Download Video** treats a different output format as a new download rather
+  than a duplicate, so re-fetching a link as MP3 after M4A works.
+- **Snippets** reorder shortcut moved to ⌥⌘↑/⌥⌘↓, clearing a collision with
+  Mission Control.
 
 ## [0.13.0] — 2026-07-12
 

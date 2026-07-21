@@ -79,6 +79,23 @@ body = match.group("body").strip()
 if not body:
     sys.exit(1)
 
+# Sparkle sizes its update window to the notes it is handed, and a full changelog
+# section is tall enough to push the Update button off the bottom of the screen
+# where it cannot be clicked. Prefer a curated Packaging/ReleaseNotes/<version>.md
+# (RELEASE_NOTES_FILE, which wins over this); this cap is the safety net for a
+# release that ships without one. Cut at a bullet or heading so the notes never
+# end mid-sentence.
+MAX_LINES = 40
+lines = body.splitlines()
+if len(lines) > MAX_LINES:
+    cut = MAX_LINES
+    while cut > 0 and not lines[cut].startswith(("- ", "#")):
+        cut -= 1
+    if cut == 0:
+        cut = MAX_LINES
+    body = "\n".join(lines[:cut]).rstrip()
+    body += "\n\n[Full changelog](https://github.com/havokentity/MacTools/blob/main/CHANGELOG.md)"
+
 print(body)
 PY
 }

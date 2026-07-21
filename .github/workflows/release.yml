@@ -305,6 +305,17 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_KEY_ISSUER: ${{ secrets.NOTARY_KEY_ISSUER }}
           NOTARY_KEY_PATH: ${{ steps.secrets.outputs.has_notary == 'true' && format('{0}/notary_key.p8', runner.temp) || '' }}
+          # Short, human-facing notes for the Sparkle update window, kept apart from
+          # CHANGELOG.md. The changelog is the complete record and grows with every
+          # release; Sparkle sizes its window to the notes it is handed, and a full
+          # changelog section makes that window taller than the screen — pushing the
+          # Update button off the bottom where it cannot be clicked.
+          #
+          # Absolute path on purpose: make_release_artifacts.sh has already `cd`-ed into
+          # dist/ by the time it resolves the notes, so a repo-relative path would miss.
+          # Unset-safe — the script falls back to the changelog when the file is absent
+          # or empty, so a release without a curated file still publishes.
+          RELEASE_NOTES_FILE: ${{ github.workspace }}/Packaging/ReleaseNotes/${{ steps.version.outputs.version }}.md
         run: |
           # Re-unlock the signing keychain in THIS shell — keychain unlock state does
           # not carry across steps, so codesign would otherwise fail with
