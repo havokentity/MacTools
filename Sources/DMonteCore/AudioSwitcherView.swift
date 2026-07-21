@@ -7,14 +7,23 @@ import SwiftUI
 /// Refreshes live when audio hardware is added or removed.
 @MainActor
 public final class AudioSwitcherController: ObservableObject {
-    @Published public private(set) var outputDevices: [AudioDeviceKit.AudioDevice] = []
-    @Published public private(set) var inputDevices: [AudioDeviceKit.AudioDevice] = []
+    /// Every attached device, each carrying its stable UID. Profiles are resolved
+    /// against this list, so it is the one source of truth; the per-direction lists
+    /// below are filtered views of it rather than separately published state that
+    /// could drift.
+    @Published public private(set) var devices: [AudioDevice] = []
     @Published public private(set) var defaultOutputID: AudioDeviceID?
     @Published public private(set) var defaultInputID: AudioDeviceID?
     @Published public var volume: Float = 0
     @Published public private(set) var volumeSupported: Bool = false
     @Published public var isMuted: Bool = false
     @Published public private(set) var muteSupported: Bool = false
+    @Published public private(set) var profiles: [AudioDeviceProfile] = []
+
+    public var outputDevices: [AudioDevice] { devices.filter { $0.hasOutput } }
+    public var inputDevices: [AudioDevice] { devices.filter { $0.hasInput } }
+
+    private let defaults: UserDefaults
 
     /// True while the user is dragging the volume slider. Our own `setVolume`
     /// fires the HAL volume listener, whose refresh would otherwise stamp the
@@ -30,6 +39,7 @@ public final class AudioSwitcherController: ObservableObject {
     private let outputStateListener: DefaultDeviceStateListener
 
     public init() {
+        defaults = AppDefaults.shared
         // Install the listeners before `self` is fully initialized by capturing
         // only plain functions, then refresh on the main actor.
         listeners = [
@@ -52,6 +62,7 @@ public final class AudioSwitcherController: ObservableObject {
                 AudioSwitcherController.notifyOutputStateChanged()
             }
         }
+        profiles = AudioProfileStore.load(defaults: defaults)
         refresh()
         AudioSwitcherController.activeController = self
     }
@@ -78,9 +89,13 @@ public final class AudioSwitcherController: ObservableObject {
 
     /// Reloads the full device list, defaults, and volume/mute state.
     public func refresh() {
-        let all = AudioDeviceKit.allDevices()
-        outputDevices = all.filter { $0.hasOutput }
-        inputDevices = all.filter { $0.hasInput }
+        // Enumerated through `AudioSwitcherKit` rather than `AudioDeviceKit` because
+        // profiles need each device's UID, and only the former reads it. Guarded on an
+        // actual change for the same reason `refreshVolumeAndMute` is: the HAL fires the
+        // default-device notification liberally, and republishing an identical list just
+        // re-renders the popover.
+        let all = AudioSwitcherKit.devices()
+        if devices != all { devices = all }
         defaultOutputID = AudioDeviceKit.defaultOutputDeviceID()
         defaultInputID = AudioDeviceKit.defaultInputDeviceID()
         // Volume/mute are properties of the default output device, so the
@@ -125,14 +140,76 @@ public final class AudioSwitcherController: ObservableObject {
         }
     }
 
-    public func selectOutput(_ device: AudioDeviceKit.AudioDevice) {
+    public func selectOutput(_ device: AudioDevice) {
         AudioDeviceKit.setDefaultOutput(device.id)
         refresh()
     }
 
-    public func selectInput(_ device: AudioDeviceKit.AudioDevice) {
+    public func selectInput(_ device: AudioDevice) {
         AudioDeviceKit.setDefaultInput(device.id)
         refresh()
+    }
+
+    // MARK: - Profiles
+
+    /// Captures the live defaults as a named profile. Returns `nil` — and saves nothing
+    /// — when the name is blank or neither current default exposes a UID we could pin
+    /// to, so the caller can say why instead of showing a row that never works.
+    @discardableResult
+    public func saveProfile(named name: String) -> AudioDeviceProfile? {
+        guard let profile = AudioDeviceProfile.capture(
+            name: name,
+            devices: devices,
+            defaultOutputID: defaultOutputID,
+            defaultInputID: defaultInputID
+        ) else { return nil }
+        profiles = AudioProfileStore.upsert(profile, defaults: defaults)
+        return profile
+    }
+
+    /// How `profile` maps onto the hardware attached right now.
+    public func resolution(for profile: AudioDeviceProfile) -> AudioProfileResolution {
+        profile.resolve(against: devices)
+    }
+
+    /// Applies both halves of a profile, then re-reads state. Returns `false` without
+    /// touching anything if some pinned device is absent: switching only the half that
+    /// resolved would leave the user on a configuration they never asked for.
+    @discardableResult
+    public func applyProfile(_ profile: AudioDeviceProfile) -> Bool {
+        let resolution = resolution(for: profile)
+        guard resolution.isApplicable else { return false }
+        if let outputID = resolution.outputDeviceID {
+            AudioDeviceKit.setDefaultOutput(outputID)
+        }
+        if let inputID = resolution.inputDeviceID {
+            AudioDeviceKit.setDefaultInput(inputID)
+        }
+        refresh()
+        return true
+    }
+
+    public func renameProfile(id: UUID, to newName: String) {
+        profiles = AudioProfileStore.rename(id: id, to: newName, defaults: defaults)
+    }
+
+    public func deleteProfile(id: UUID) {
+        profiles = AudioProfileStore.remove(id: id, defaults: defaults)
+    }
+
+    /// The profile that already describes the live defaults, if any, so the popover can
+    /// mark it the way it marks the selected device rows.
+    public var activeProfileID: UUID? {
+        let outputUID = uid(of: defaultOutputID)
+        let inputUID = uid(of: defaultInputID)
+        return profiles.first { $0.matchesDefaults(outputUID: outputUID, inputUID: inputUID) }?.id
+    }
+
+    /// The stable UID of a live device id. An empty UID is reported as `nil`: it cannot
+    /// identify anything, so it must not compare equal to another UID-less device.
+    private func uid(of deviceID: AudioDeviceID?) -> String? {
+        guard let deviceID, let device = devices.first(where: { $0.id == deviceID }) else { return nil }
+        return device.uid.isEmpty ? nil : device.uid
     }
 
     /// Applies a slider value to the current default output device.
@@ -164,6 +241,23 @@ public struct AudioSwitcherPopoverView: View {
     @StateObject private var controller = AudioSwitcherController()
     private let onQuit: () -> Void
 
+    /// Non-`nil` while the "save current setup" field is open; holds the draft name.
+    @State private var draftProfileName: String?
+    /// The profile being renamed, plus its draft name.
+    @State private var renamingProfileID: UUID?
+    @State private var renameText: String = ""
+    /// Why the last save was refused, e.g. no addressable device to pin to.
+    @State private var saveRefusalReason: String?
+    /// Delete is armed on first click and performed on the second. A profile takes real
+    /// effort to reconstruct, and the trash sits next to the row's apply target.
+    @State private var pendingDeleteProfileID: UUID?
+    @FocusState private var focusedField: ProfileField?
+
+    private enum ProfileField: Hashable {
+        case newProfile
+        case rename(UUID)
+    }
+
     public init(onQuit: @escaping () -> Void) {
         self.onQuit = onQuit
     }
@@ -184,7 +278,17 @@ public struct AudioSwitcherPopoverView: View {
         // the controller is a `@StateObject` that outlives an open/close cycle, volume would stop
         // tracking the hardware for the rest of the process. Releasing it here also re-reads the
         // device, so the next open shows the true level rather than the value the drag left behind.
-        .onDisappear { controller.setVolumeEditing(false) }
+        .onDisappear {
+            controller.setVolumeEditing(false)
+            // The popover is a long-lived view that is merely hidden, so an abandoned
+            // name field or a half-armed delete would still be sitting there on the next
+            // open — including a red trash the user could hit by accident.
+            draftProfileName = nil
+            renamingProfileID = nil
+            saveRefusalReason = nil
+            pendingDeleteProfileID = nil
+            focusedField = nil
+        }
     }
 
     // MARK: - Header
@@ -214,6 +318,7 @@ public struct AudioSwitcherPopoverView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: AudioSwitcherSizing.sectionSpacing) {
                 volumeSection
+                profilesSection
                 outputSection
                 inputSection
             }
@@ -268,6 +373,225 @@ public struct AudioSwitcherPopoverView: View {
         }
     }
 
+    // MARK: - Profiles
+
+    private var profilesSection: some View {
+        VStack(alignment: .leading, spacing: AudioSwitcherSizing.rowSpacing) {
+            HStack(spacing: 6) {
+                sectionHeader("PROFILES")
+                Spacer()
+                Button(action: beginSavingProfile) {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: AudioSwitcherSizing.bodySize, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .help("Save the current input and output as a profile")
+            }
+
+            if draftProfileName != nil {
+                profileNameField(
+                    text: Binding(
+                        get: { draftProfileName ?? "" },
+                        set: { draftProfileName = $0 }
+                    ),
+                    field: .newProfile,
+                    placeholder: "Profile name",
+                    onCommit: commitNewProfile,
+                    onCancel: { draftProfileName = nil; saveRefusalReason = nil }
+                )
+            }
+
+            if let saveRefusalReason {
+                Text(saveRefusalReason)
+                    .font(.system(size: AudioSwitcherSizing.captionSize))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if controller.profiles.isEmpty {
+                if draftProfileName == nil {
+                    emptyRow("No saved profiles")
+                }
+            } else {
+                ForEach(controller.profiles) { profile in
+                    profileRow(profile)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func profileRow(_ profile: AudioDeviceProfile) -> some View {
+        if renamingProfileID == profile.id {
+            profileNameField(
+                text: $renameText,
+                field: .rename(profile.id),
+                placeholder: profile.name,
+                onCommit: { commitRename(of: profile) },
+                onCancel: { renamingProfileID = nil }
+            )
+        } else {
+            let resolution = controller.resolution(for: profile)
+            HStack(spacing: 6) {
+                Button(action: {
+                    pendingDeleteProfileID = nil
+                    controller.applyProfile(profile)
+                }) {
+                    profileRowLabel(profile, resolution: resolution)
+                }
+                .buttonStyle(.plain)
+                .disabled(!resolution.isApplicable)
+                .help(resolution.unavailableReason ?? "Switch to “\(profile.name)”")
+
+                profileActionButton(symbol: "pencil", tint: .secondary, help: "Rename") {
+                    pendingDeleteProfileID = nil
+                    renameText = profile.name
+                    renamingProfileID = profile.id
+                    focusedField = .rename(profile.id)
+                }
+                profileActionButton(
+                    symbol: pendingDeleteProfileID == profile.id ? "trash.fill" : "trash",
+                    tint: pendingDeleteProfileID == profile.id ? .red : .secondary,
+                    help: pendingDeleteProfileID == profile.id ? "Click again to delete" : "Delete profile"
+                ) {
+                    if pendingDeleteProfileID == profile.id {
+                        controller.deleteProfile(id: profile.id)
+                        pendingDeleteProfileID = nil
+                    } else {
+                        pendingDeleteProfileID = profile.id
+                    }
+                }
+            }
+        }
+    }
+
+    private func profileRowLabel(
+        _ profile: AudioDeviceProfile,
+        resolution: AudioProfileResolution
+    ) -> some View {
+        let isActive = controller.activeProfileID == profile.id
+        return HStack(spacing: 8) {
+            Image(systemName: isActive ? "checkmark.circle.fill" : profileIconName(for: resolution))
+                .font(.system(size: AudioSwitcherSizing.checkmarkSize, weight: .medium))
+                .foregroundStyle(profileIconColor(isActive: isActive, resolution: resolution))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(profile.name)
+                    .font(.system(size: AudioSwitcherSizing.bodySize, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(resolution.isApplicable ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(resolution.unavailableReason ?? resolution.deviceSummary)
+                    .font(.system(size: AudioSwitcherSizing.captionSize))
+                    .foregroundStyle(resolution.isApplicable ? Color.secondary : Color.orange)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, AudioSwitcherSizing.rowVerticalPadding)
+        .padding(.horizontal, AudioSwitcherSizing.rowHorizontalPadding)
+        .frame(minHeight: AudioSwitcherSizing.rowMinHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowBackground(isSelected: isActive))
+    }
+
+    private func profileIconName(for resolution: AudioProfileResolution) -> String {
+        resolution.isApplicable ? "square.stack.3d.up" : "exclamationmark.triangle"
+    }
+
+    private func profileIconColor(isActive: Bool, resolution: AudioProfileResolution) -> Color {
+        if isActive { return .accentColor }
+        return resolution.isApplicable ? .secondary : .orange
+    }
+
+    private func profileActionButton(
+        symbol: String,
+        tint: Color,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: AudioSwitcherSizing.profileActionSize, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: AudioSwitcherSizing.iconButtonSize * 0.7, height: AudioSwitcherSizing.rowMinHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private func profileNameField(
+        text: Binding<String>,
+        field: ProfileField,
+        placeholder: String,
+        onCommit: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: AudioSwitcherSizing.bodySize))
+                .focused($focusedField, equals: field)
+                .onSubmit(onCommit)
+            Button(action: onCommit) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: AudioSwitcherSizing.profileActionSize, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("Save")
+            Button(action: onCancel) {
+                Image(systemName: "xmark")
+                    .font(.system(size: AudioSwitcherSizing.profileActionSize, weight: .semibold))
+                    .foregroundStyle(Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel")
+        }
+    }
+
+    private func beginSavingProfile() {
+        pendingDeleteProfileID = nil
+        renamingProfileID = nil
+        saveRefusalReason = nil
+        draftProfileName = suggestedProfileName()
+        focusedField = .newProfile
+    }
+
+    /// Seeds the field with the current output's name — the thing the user is most
+    /// likely to be naming the profile after — falling back to a numbered default.
+    private func suggestedProfileName() -> String {
+        if let output = controller.devices.first(where: { $0.id == controller.defaultOutputID }),
+           !output.name.isEmpty,
+           !controller.profiles.contains(where: { $0.name == output.name }) {
+            return output.name
+        }
+        return "Profile \(controller.profiles.count + 1)"
+    }
+
+    private func commitNewProfile() {
+        guard let name = draftProfileName else { return }
+        if controller.saveProfile(named: name) != nil {
+            draftProfileName = nil
+            saveRefusalReason = nil
+            focusedField = nil
+        } else {
+            saveRefusalReason = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Give the profile a name."
+                : "Nothing to save: the current devices report no stable identifier."
+        }
+    }
+
+    private func commitRename(of profile: AudioDeviceProfile) {
+        controller.renameProfile(id: profile.id, to: renameText)
+        renamingProfileID = nil
+        focusedField = nil
+    }
+
+    // MARK: - Devices
+
     private var outputSection: some View {
         VStack(alignment: .leading, spacing: AudioSwitcherSizing.rowSpacing) {
             sectionHeader("OUTPUT")
@@ -319,7 +643,7 @@ public struct AudioSwitcherPopoverView: View {
     }
 
     private func deviceRow(
-        device: AudioDeviceKit.AudioDevice,
+        device: AudioDevice,
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
