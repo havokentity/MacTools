@@ -267,24 +267,170 @@ final class DiskTreeMutationTests: XCTestCase {
         XCTAssertTrue(patched.contains(tree.logs.id), "an untouched folder is left alone")
     }
 
+    /// Prunes `node` out of `tree` exactly the way the view does — through the index —
+    /// and hands back everything `patchedSelection` needs. Going through a real
+    /// `DiskTreeCache` matters: the whole point of these assertions is that the pruned
+    /// index is the only thing that knows a descendant left the tree.
+    private func prune(
+        _ node: DiskNode,
+        in tree: Fixture,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> (removal: DiskTreeRemoval, replacements: [ObjectIdentifier: DiskNode], survives: (DiskNode) -> Bool)? {
+        let cache = DiskTreeCache(root: tree.root)
+        guard let path = cache.path(to: node), let removal = DiskTreeMutator.removing(nodeAt: path) else {
+            XCTFail("\(node.name) is in the tree, so the removal must succeed", file: file, line: line)
+            return nil
+        }
+        let pruned = cache.applying(removal)
+        return (removal, DiskTreeNavigationPatch.replacementMap(for: removal.replacedAncestors), pruned.contains)
+    }
+
     func testHighlightFollowsAResizedAncestorAndClearsForTheTrashedRow() {
         let tree = Fixture()
 
-        guard let removal = DiskTreeMutator.removing(tree.notes, from: tree.root) else {
-            return XCTFail("notes.txt is in the tree, so the removal must succeed")
-        }
-        let replacements = DiskTreeNavigationPatch.replacementMap(for: removal.replacedAncestors)
+        guard let (removal, replacements, survives) = prune(tree.notes, in: tree) else { return }
 
         XCTAssertNil(
-            DiskTreeNavigationPatch.patchedSelection(tree.notes, removing: removal.removed, using: replacements),
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.notes,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: survives
+            ),
             "the row that was trashed cannot stay selected"
         )
         XCTAssertTrue(
-            DiskTreeNavigationPatch.patchedSelection(tree.docs, removing: removal.removed, using: replacements) === removal.replacedAncestors[1].new
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.docs,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: survives
+            ) === removal.replacedAncestors[1].new
         )
         XCTAssertTrue(
-            DiskTreeNavigationPatch.patchedSelection(tree.logs, removing: removal.removed, using: replacements) === tree.logs
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.logs,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: survives
+            ) === tree.logs
         )
-        XCTAssertNil(DiskTreeNavigationPatch.patchedSelection(nil, removing: removal.removed, using: replacements))
+        XCTAssertNil(
+            DiskTreeNavigationPatch.patchedSelection(
+                nil,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: survives
+            )
+        )
+    }
+
+    func testTrashingAFolderClearsAHighlightOnSomethingInsideIt() {
+        // The regression: click archive.zip in the tree pane, then trash its parent
+        // folder docs. archive.zip is not === the removed node and is not one of the
+        // rebuilt ancestors, so a selection patch that only checks those two leaves it
+        // armed — the action bar stays enabled and ⌘⌫ raises a real "Move to the
+        // Trash?" confirmation for a file that is already in the Trash, or for whatever
+        // has since been written to that path.
+        let tree = Fixture()
+
+        guard let (removal, replacements, survives) = prune(tree.docs, in: tree) else { return }
+
+        XCTAssertNil(
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.archive,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: survives
+            ),
+            "a row that went to the Trash inside the folder cannot stay armed for ⌘⌫"
+        )
+        XCTAssertNil(
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.notes,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: survives
+            ),
+            "every child of the trashed folder is equally unreachable"
+        )
+        XCTAssertTrue(
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.todayLog,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: survives
+            ) === tree.todayLog,
+            "a row in an untouched subtree keeps both its identity and its selection"
+        )
+    }
+
+    func testTrashingAFolderClearsAHighlightOnAGrandchildOfIt() {
+        // Depth is what makes this worth its own case: the removed node's immediate
+        // children are at least reachable by looking one level down, but a selection
+        // several levels inside is only detectable through the index.
+        let shot = DiskNode(path: "/vol/Renders/scene/shot.mov", name: "shot.mov", isDirectory: false, size: 40, children: [])
+        let scene = DiskNode(path: "/vol/Renders/scene", name: "scene", isDirectory: true, size: 40, children: [shot])
+        let renders = DiskNode(path: "/vol/Renders", name: "Renders", isDirectory: true, size: 40, children: [scene])
+        let keep = DiskNode(path: "/vol/keep.txt", name: "keep.txt", isDirectory: false, size: 10, children: [])
+        let root = DiskNode(path: "/vol", name: "vol", isDirectory: true, size: 50, children: [renders, keep])
+
+        let cache = DiskTreeCache(root: root)
+        guard let path = cache.path(to: renders), let removal = DiskTreeMutator.removing(nodeAt: path) else {
+            return XCTFail("Renders is in the tree, so the removal must succeed")
+        }
+        let pruned = cache.applying(removal)
+        let replacements = DiskTreeNavigationPatch.replacementMap(for: removal.replacedAncestors)
+
+        for orphan in [scene, shot] {
+            XCTAssertNil(
+                DiskTreeNavigationPatch.patchedSelection(
+                    orphan,
+                    removing: removal.removed,
+                    using: replacements,
+                    survivesRemoval: pruned.contains
+                ),
+                "\(orphan.name) left the tree with Renders, so the selection has to go with it"
+            )
+        }
+
+        XCTAssertTrue(
+            DiskTreeNavigationPatch.patchedSelection(
+                keep,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: pruned.contains
+            ) === keep
+        )
+    }
+
+    func testAHighlightSurvivesOnlyWhileTheIndexStillHoldsIt() {
+        // patchedSelection asks the caller's index rather than walking the removed
+        // subtree, so pin the contract directly: whatever the index disowns is dropped,
+        // and a rebuilt ancestor is checked in its rebuilt form, not its stale one.
+        let tree = Fixture()
+
+        guard let (removal, replacements, _) = prune(tree.notes, in: tree) else { return }
+        let rebuiltDocs = removal.replacedAncestors[1].new
+
+        XCTAssertNil(
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.docs,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: { _ in false }
+            ),
+            "an index that holds nothing leaves nothing selected"
+        )
+        XCTAssertTrue(
+            DiskTreeNavigationPatch.patchedSelection(
+                tree.docs,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: { $0 === rebuiltDocs }
+            ) === rebuiltDocs,
+            "the remap happens before the membership test, so the rebuilt node is what gets checked"
+        )
     }
 }

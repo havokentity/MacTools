@@ -37,7 +37,8 @@ public enum DiskItemActionPolicy {
         of action: DiskItemAction,
         for node: DiskNode,
         isScanRoot: Bool,
-        isScanInProgress: Bool
+        isScanInProgress: Bool,
+        isTrashInFlight: Bool = false
     ) -> DiskItemActionAvailability {
         // The "Unaccounted / Inaccessible" node carries the volume root's path so
         // the treemap can place it, but it stands for bytes macOS reports that we
@@ -68,6 +69,14 @@ public enum DiskItemActionPolicy {
                 // than trying to patch a half-built tree.
                 return .unavailable(
                     reason: "A scan is still running on this volume. Let it finish before moving anything to the Trash."
+                )
+            }
+            if isTrashInFlight {
+                // Distinct from the scan case on purpose. Trashing a large folder onto
+                // a slow volume takes seconds, and telling the user a scan is running
+                // when none is leaves them waiting on something the window never shows.
+                return .unavailable(
+                    reason: "A Move to Trash is still finishing. Wait for it to complete before starting another one."
                 )
             }
             return .allowed

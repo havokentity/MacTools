@@ -176,15 +176,26 @@ enum DiskTreeNavigationPatch {
         return patched
     }
 
-    /// The hovered/focused row after the rebuild: gone if it was the node we removed,
-    /// otherwise remapped so the highlight follows a rebuilt ancestor.
+    /// The hovered/focused row after the rebuild: gone if the removal put it out of
+    /// the tree, otherwise remapped so the highlight follows a rebuilt ancestor.
+    ///
+    /// Testing identity against `removed` alone is not enough, because everything
+    /// *underneath* the removed node left the tree with it. A descendant left in
+    /// place would keep the action bar enabled and the hover chip drawn for a row the
+    /// tree has already forgotten, and ⌘⌫ would then raise a real "Move to the Trash?"
+    /// confirmation for a file that is already in the Trash — or, worse, for whatever
+    /// has since been written to that path. `survivesRemoval` is how the caller's
+    /// index answers "is this still in the tree?" in constant time; walking the
+    /// removed subtree to find out would cost as much as the trashed folder is big.
     static func patchedSelection(
         _ selection: DiskNode?,
         removing removed: DiskNode,
-        using replacements: [ObjectIdentifier: DiskNode]
+        using replacements: [ObjectIdentifier: DiskNode],
+        survivesRemoval: (DiskNode) -> Bool
     ) -> DiskNode? {
         guard let selection else { return nil }
         if selection === removed { return nil }
-        return replacements[selection.id] ?? selection
+        let patched = replacements[selection.id] ?? selection
+        return survivesRemoval(patched) ? patched : nil
     }
 }

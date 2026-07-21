@@ -585,6 +585,14 @@ struct DiskTreeCache {
         self.indexedNodeIDs = indexedNodeIDs
     }
 
+    /// Whether this node is still part of the indexed tree. Cheap enough to ask after
+    /// every prune, which is what lets the navigation patch drop a highlight that the
+    /// removal made unreachable instead of leaving it pointing into a forgotten
+    /// subtree.
+    func contains(_ node: DiskNode) -> Bool {
+        indexedNodeIDs.contains(node.id)
+    }
+
     func path(to node: DiskNode) -> [DiskNode]? {
         guard indexedNodeIDs.contains(node.id) else { return nil }
 
@@ -1297,6 +1305,7 @@ public struct DiskAnalyzerWindowView: View {
                             TreemapTile(
                                 entry: entry,
                                 isHovered: hoveredNode?.id == entry.node.id,
+                                isFocused: focusedNode?.id == entry.node.id,
                                 layout: layout
                             )
                             .frame(width: max(0, entry.rect.width), height: max(0, entry.rect.height))
@@ -1386,6 +1395,7 @@ public struct DiskAnalyzerWindowView: View {
                                     expandedNodeIDs: expandedTreeNodeIDs,
                                     currentNodeID: currentNode?.id,
                                     highlightedNodeID: hoveredNode?.id,
+                                    focusedNodeID: focusedNode?.id,
                                     layout: layout,
                                     onToggleExpand: toggleTreeExpansion,
                                     onSelect: navigateFromTree,
@@ -1823,13 +1833,23 @@ public struct DiskAnalyzerWindowView: View {
     private func goUp() {
         guard pathStack.count > 1 else { return }
         pathStack.removeLast()
-        hoveredNode = nil
+        clearSelection()
     }
 
     private func navigate(toIndex index: Int) {
         guard index < pathStack.count else { return }
         pathStack = Array(pathStack.prefix(index + 1))
+        clearSelection()
+    }
+
+    /// Drops both highlights when the view moves somewhere the user did not pick a
+    /// row. `focusedNode` goes with `hoveredNode` because it is what ⌘⌫ acts on: a
+    /// selection left behind by a breadcrumb jump is off screen and usually two
+    /// levels away, and a destructive shortcut must never aim at something the
+    /// window is not showing as picked.
+    private func clearSelection() {
         hoveredNode = nil
+        focusedNode = nil
     }
 
     /// True while nothing on the selected volume can safely be trashed: either the
@@ -1845,7 +1865,8 @@ public struct DiskAnalyzerWindowView: View {
             of: action,
             for: node,
             isScanRoot: selectedTreeCache?.root.id == node.id || pathStack.first?.id == node.id,
-            isScanInProgress: isTreeUnsettled || isTrashInFlight
+            isScanInProgress: isTreeUnsettled,
+            isTrashInFlight: isTrashInFlight
         )
     }
 
@@ -1969,7 +1990,8 @@ public struct DiskAnalyzerWindowView: View {
         // Patching the index instead of rebuilding it keeps the tree pane populated;
         // a rebuild walks every node on the volume and would show the trashed row
         // for the whole of that walk.
-        treeCaches[volumeId] = cache.applying(removal)
+        let prunedCache = cache.applying(removal)
+        treeCaches[volumeId] = prunedCache
 
         let replacements = DiskTreeNavigationPatch.replacementMap(for: removal.replacedAncestors)
         expandedTreeNodeIDs = DiskTreeNavigationPatch.patchedExpansion(
@@ -1987,8 +2009,20 @@ public struct DiskAnalyzerWindowView: View {
                 using: replacements,
                 fallbackRoot: removal.root
             )
-            hoveredNode = DiskTreeNavigationPatch.patchedSelection(hoveredNode, removing: removal.removed, using: replacements)
-            focusedNode = DiskTreeNavigationPatch.patchedSelection(focusedNode, removing: removal.removed, using: replacements)
+            // The pruned index, not the old one: a row that lived inside the trashed
+            // folder went with it, and only the post-prune index knows that.
+            hoveredNode = DiskTreeNavigationPatch.patchedSelection(
+                hoveredNode,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: prunedCache.contains
+            )
+            focusedNode = DiskTreeNavigationPatch.patchedSelection(
+                focusedNode,
+                removing: removal.removed,
+                using: replacements,
+                survivesRemoval: prunedCache.contains
+            )
         }
 
         // Treemap layouts are keyed by node identity, so the rebuilt spine simply
@@ -2091,6 +2125,10 @@ private struct DiskTreeRow: View {
     var expandedNodeIDs: Set<ObjectIdentifier>
     var currentNodeID: ObjectIdentifier?
     var highlightedNodeID: ObjectIdentifier?
+    /// The row the action bar and its shortcuts would act on. Outlined rather than
+    /// tinted, so it still reads as the selection on the row that is also the folder
+    /// the treemap is showing — and so ⌘⌫ always has a visible target.
+    var focusedNodeID: ObjectIdentifier?
     var layout: DiskAnalyzerLayout
     var onToggleExpand: (DiskNode) -> Void
     var onSelect: (DiskNode) -> Void
@@ -2154,6 +2192,12 @@ private struct DiskTreeRow: View {
             .padding(.trailing, 8)
             .frame(height: layout.treeRowHeight)
             .background(rowBackground)
+            .overlay {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                }
+            }
 
             if isExpanded {
                 ForEach(node.children) { child in
@@ -2163,6 +2207,7 @@ private struct DiskTreeRow: View {
                         expandedNodeIDs: expandedNodeIDs,
                         currentNodeID: currentNodeID,
                         highlightedNodeID: highlightedNodeID,
+                        focusedNodeID: focusedNodeID,
                         layout: layout,
                         onToggleExpand: onToggleExpand,
                         onSelect: onSelect,
@@ -2195,6 +2240,10 @@ private struct DiskTreeRow: View {
         highlightedNodeID == node.id
     }
 
+    private var isFocused: Bool {
+        focusedNodeID == node.id
+    }
+
     private var rowBackground: some ShapeStyle {
         if isCurrent {
             return Color.accentColor.opacity(0.20)
@@ -2209,6 +2258,10 @@ private struct DiskTreeRow: View {
 private struct TreemapTile: View {
     var entry: TreemapRect
     var isHovered: Bool
+    /// The tile the row actions and their shortcuts would act on. Drawn separately
+    /// from the hover ring because the pointer moves on but the selection does not,
+    /// and ⌘⌫ has to have a visible target before the confirmation appears.
+    var isFocused: Bool
     var layout: DiskAnalyzerLayout
 
     var body: some View {
@@ -2251,6 +2304,9 @@ private struct TreemapTile: View {
             if isHovered {
                 Rectangle()
                     .strokeBorder(Color.white, lineWidth: 1.5)
+            } else if isFocused {
+                Rectangle()
+                    .strokeBorder(Color.white.opacity(0.75), style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
             }
         }
         .contentShape(Rectangle())

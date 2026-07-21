@@ -104,6 +104,59 @@ final class DiskItemActionsTests: XCTestCase {
         )
     }
 
+    func testASecondTrashWhileOneIsStillFinishingSaysSoInsteadOfBlamingAScan() {
+        // Trashing a large folder onto a slow external volume takes seconds, and the
+        // latch that refuses a second one during that window used to borrow the scan
+        // sentence — telling the user to wait for a scan that is not running and that
+        // the progress UI never shows.
+        let node = folder()
+
+        let trash = DiskItemActionPolicy.availability(
+            of: .moveToTrash,
+            for: node,
+            isScanRoot: false,
+            isScanInProgress: false,
+            isTrashInFlight: true
+        )
+        XCTAssertFalse(trash.isAllowed)
+        XCTAssertEqual(
+            trash.reason,
+            "A Move to Trash is still finishing. Wait for it to complete before starting another one."
+        )
+        XCTAssertNotEqual(
+            trash.reason,
+            "A scan is still running on this volume. Let it finish before moving anything to the Trash.",
+            "the two waits are different things to wait for and must not share a sentence"
+        )
+
+        // The latch is only about writing, so the read-only pair stay available.
+        for action in [DiskItemAction.revealInFinder, .copyPath] {
+            XCTAssertEqual(
+                DiskItemActionPolicy.availability(
+                    of: action,
+                    for: node,
+                    isScanRoot: false,
+                    isScanInProgress: false,
+                    isTrashInFlight: true
+                ),
+                .allowed
+            )
+        }
+    }
+
+    func testAnIdleTrashLatchDoesNotHoldBackTrashing() {
+        XCTAssertEqual(
+            DiskItemActionPolicy.availability(
+                of: .moveToTrash,
+                for: folder(),
+                isScanRoot: false,
+                isScanInProgress: false,
+                isTrashInFlight: false
+            ),
+            .allowed
+        )
+    }
+
     func testAvailabilityExposesItsReasonOnlyWhenItRefuses() {
         XCTAssertNil(DiskItemActionAvailability.allowed.reason)
         XCTAssertTrue(DiskItemActionAvailability.allowed.isAllowed)
