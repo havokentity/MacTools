@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/havokentity/MacTools/actions/workflows/ci.yml/badge.svg)](https://github.com/havokentity/MacTools/actions/workflows/ci.yml)
 
-A native macOS menu bar tool box — 20 fast, focused utilities in one lightweight Swift app, inspired by the convenience of Parallels Toolbox.
+A native macOS menu bar tool box — 21 fast, focused utilities in one lightweight Swift app, inspired by the convenience of Parallels Toolbox.
 
 Open the tool box from the menu bar, search for what you need, and launch it. Each tool is a self-contained helper with its own polished SwiftUI interface; tools that run continuously (like System Monitor and Clipboard History) add their own menu bar item.
 
@@ -35,6 +35,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Color Picker** | System eyedropper with hex / RGB / HSL and a recent‑colors palette |
 | **Window Manager** | Snap windows to halves, thirds, and corners with global shortcuts (⌃⌥ + arrows) |
 | **Audio Switcher** | One‑click switching of the default input/output device |
+| **Mic Control** | Mute your microphone system‑wide from the menu bar, with the tray icon showing at a glance whether you're live |
 | **Volume Mixer** | Per‑app volume sliders and per‑app output routing via CoreAudio process taps (macOS 14.2+) |
 | **Audio Router** | Virtual audio routing — install independent loopback cables for app‑to‑app audio, build mirror/aggregate devices with presets, and "listen" to any input through an output |
 | **Focus Timer** | Pomodoro timer with a live menu bar countdown |
