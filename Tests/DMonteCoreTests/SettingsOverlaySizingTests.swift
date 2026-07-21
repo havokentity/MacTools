@@ -23,10 +23,29 @@ final class SettingsOverlaySizingTests: XCTestCase {
         assertSheetFits(panel: FocusTimerSizing.preferredSize(), sheet: FocusTimerSizing.settingsSize(), tool: "Focus Timer")
     }
 
+    /// Clean Drive's developer-junk sheet is sized to fill the panel rather than to a comfortable
+    /// literal, so it is the one sheet that would spill the instant the 18pt-per-side padding
+    /// `PreferencesOverlay` adds were forgotten. Asserted against the padded size for that reason.
+    func testCleanDriveDevJunkSheetFitsItsPanelOncePadded() {
+        let panel = CleanDriveSizing.preferredSize()
+        let sheet = CleanDriveSizing.devJunkSize()
+        let overlayChrome: CGFloat = 36
+
+        assertSheetFits(panel: panel, sheet: sheet, tool: "Clean Drive developer junk")
+        XCTAssertLessThanOrEqual(
+            sheet.width + overlayChrome, panel.width,
+            "Clean Drive: PreferencesOverlay pads the sheet by 18pt a side, so it must be 36pt narrower than the panel"
+        )
+        XCTAssertLessThanOrEqual(
+            sheet.height + overlayChrome, panel.height,
+            "Clean Drive: PreferencesOverlay pads the sheet by 18pt a side, so it must be 36pt shorter than the panel"
+        )
+    }
+
     /// Both tools derive from the same clamped scale, so the guarantee has to hold across its
     /// whole range rather than at whatever this machine reports.
     func testScaleStaysWithinItsDocumentedBounds() {
-        for scale in [KeepAwakeSizing.currentScale, FocusTimerSizing.currentScale] {
+        for scale in [KeepAwakeSizing.currentScale, FocusTimerSizing.currentScale, CleanDriveSizing.currentScale] {
             XCTAssertGreaterThanOrEqual(scale, 0.82)
             XCTAssertLessThanOrEqual(scale, 1.0)
         }
