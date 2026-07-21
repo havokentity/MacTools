@@ -227,6 +227,97 @@ public struct AudioProfileResolution: Sendable, Equatable {
     }
 }
 
+/// What came of applying a profile.
+///
+/// Richer than a bool because a resolved profile can still fail to apply: CoreAudio
+/// refuses `kAudioHardwarePropertyDefaultInputDevice` for some aggregates and virtual
+/// drivers that nonetheless report streams, and a device can be unplugged in the window
+/// between resolution and the write. Reporting either as success would leave playback
+/// moved, capture where it was, and nothing on screen to explain it.
+public enum AudioProfileApplyOutcome: Sendable, Equatable {
+    /// Every pinned direction was written.
+    case applied
+    /// Nothing was attempted: a pinned device is absent or no longer serves its
+    /// direction. `reason` is the same text the disabled row carries.
+    case notApplicable(reason: String)
+    /// The HAL refused at least one write. `restored` is `true` when the defaults are
+    /// back where they started — either nothing landed, or the half that did was put
+    /// back — and `false` when that rollback was refused too, so the defaults really are
+    /// mixed and the user has to be told.
+    case refused(message: String, restored: Bool)
+}
+
+/// Writes a resolved profile to the system defaults.
+///
+/// The two CoreAudio writes are injected rather than called directly so the paths that
+/// matter — a write the HAL refuses, and the rollback that follows it — are testable
+/// headlessly. No CI machine has hardware that rejects a default-device write on cue.
+public enum AudioProfileApplier {
+
+    /// Applies both pinned directions, undoing whichever one landed if the other was
+    /// refused. The setters return `false` when CoreAudio rejects the write.
+    ///
+    /// The rollback is the whole point: a half-applied "Meeting" that moved playback to
+    /// the headset but left capture on the laptop mic is a configuration the user never
+    /// asked for and never saw happen, which is exactly what the all-or-nothing promise
+    /// in `AudioProfileResolution.isApplicable` exists to prevent.
+    public static func apply(
+        _ resolution: AudioProfileResolution,
+        currentOutputID: AudioDeviceID?,
+        currentInputID: AudioDeviceID?,
+        setDefaultOutput: (AudioDeviceID) -> Bool,
+        setDefaultInput: (AudioDeviceID) -> Bool
+    ) -> AudioProfileApplyOutcome {
+        guard resolution.isApplicable else {
+            return .notApplicable(
+                reason: resolution.unavailableReason ?? "This profile has nothing left to switch to."
+            )
+        }
+
+        var refusals: [String] = []
+        var outputWritten = false
+        var inputWritten = false
+
+        if case .resolved(let deviceID, let name) = resolution.output {
+            if setDefaultOutput(deviceID) {
+                outputWritten = true
+            } else {
+                refusals.append(refusal(name: name, direction: "output"))
+            }
+        }
+        if case .resolved(let deviceID, let name) = resolution.input {
+            if setDefaultInput(deviceID) {
+                inputWritten = true
+            } else {
+                refusals.append(refusal(name: name, direction: "input"))
+            }
+        }
+        guard !refusals.isEmpty else { return .applied }
+
+        // A direction that had no previous default cannot be put back at all, so it
+        // counts as an unrestored change just like a rollback the HAL refuses.
+        var restored = true
+        if outputWritten {
+            let undone = currentOutputID.map { setDefaultOutput($0) } ?? false
+            if !undone { restored = false }
+        }
+        if inputWritten {
+            let undone = currentInputID.map { setDefaultInput($0) } ?? false
+            if !undone { restored = false }
+        }
+
+        let detail = refusals.joined(separator: " · ")
+        let epilogue = restored
+            ? "Nothing was changed."
+            : "Part of the switch could not be undone — check Sound in System Settings."
+        return .refused(message: "\(detail). \(epilogue)", restored: restored)
+    }
+
+    private static func refusal(name: String, direction: String) -> String {
+        "macOS wouldn’t make “\(name)” the default \(direction)"
+    }
+}
+
 /// Persists the user's saved device profiles as JSON in `UserDefaults`.
 ///
 /// Every operation is pure with respect to CoreAudio and fully unit-testable. Mutators

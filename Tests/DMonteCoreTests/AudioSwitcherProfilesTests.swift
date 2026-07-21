@@ -245,6 +245,177 @@ final class AudioSwitcherProfilesTests: XCTestCase {
         XCTAssertFalse(resolution.isApplicable)
     }
 
+    // MARK: - Applying
+
+    /// Records every default-device write and answers each one from a scripted list of
+    /// results, so a HAL that accepts the output write and refuses the input one — the
+    /// case no CI machine can produce on demand — is exercised headlessly.
+    private final class FakeHAL {
+        private(set) var outputWrites: [AudioDeviceID] = []
+        private(set) var inputWrites: [AudioDeviceID] = []
+        var outputResults: [Bool]
+        var inputResults: [Bool]
+
+        init(outputResults: [Bool] = [], inputResults: [Bool] = []) {
+            self.outputResults = outputResults
+            self.inputResults = inputResults
+        }
+
+        /// Later writes (the rollback) reuse the last scripted result, so a test only has
+        /// to say what the interesting first write does.
+        func setOutput(_ id: AudioDeviceID) -> Bool {
+            outputWrites.append(id)
+            return next(&outputResults)
+        }
+
+        func setInput(_ id: AudioDeviceID) -> Bool {
+            inputWrites.append(id)
+            return next(&inputResults)
+        }
+
+        private func next(_ results: inout [Bool]) -> Bool {
+            guard let first = results.first else { return true }
+            if results.count > 1 { results.removeFirst() }
+            return first
+        }
+    }
+
+    private func applyResolved(
+        output: AudioDeviceID?,
+        input: AudioDeviceID?,
+        currentOutputID: AudioDeviceID?,
+        currentInputID: AudioDeviceID?,
+        hal: FakeHAL
+    ) -> AudioProfileApplyOutcome {
+        let resolution = AudioProfileResolution(
+            output: output.map { .resolved(deviceID: $0, name: "Bose QC 35") } ?? .unpinned,
+            input: input.map { .resolved(deviceID: $0, name: "Shure MV7") } ?? .unpinned
+        )
+        return AudioProfileApplier.apply(
+            resolution,
+            currentOutputID: currentOutputID,
+            currentInputID: currentInputID,
+            setDefaultOutput: hal.setOutput,
+            setDefaultInput: hal.setInput
+        )
+    }
+
+    func testApplyWritesBothDirectionsWhenTheHALAcceptsThem() {
+        let hal = FakeHAL(outputResults: [true], inputResults: [true])
+
+        let outcome = applyResolved(
+            output: 8, input: 9, currentOutputID: 1, currentInputID: 2, hal: hal
+        )
+
+        XCTAssertEqual(outcome, .applied)
+        XCTAssertEqual(hal.outputWrites, [8])
+        XCTAssertEqual(hal.inputWrites, [9])
+    }
+
+    func testApplyRollsTheOutputBackWhenTheInputWriteIsRefused() {
+        // Both legs resolved, so the row was enabled — but CoreAudio rejects the mic as a
+        // default (some aggregates report streams and still refuse the write). Reporting
+        // success here would leave playback on the headset and capture on the laptop.
+        let hal = FakeHAL(outputResults: [true], inputResults: [false])
+
+        let outcome = applyResolved(
+            output: 8, input: 9, currentOutputID: 1, currentInputID: 2, hal: hal
+        )
+
+        guard case .refused(let message, let restored) = outcome else {
+            return XCTFail("A refused write must not be reported as success: \(outcome)")
+        }
+        XCTAssertTrue(restored)
+        XCTAssertTrue(message.contains("Shure MV7"), "The refusal should name the device: \(message)")
+        XCTAssertTrue(message.contains("input"), "The refusal should say which direction: \(message)")
+        XCTAssertEqual(hal.outputWrites, [8, 1], "The output that landed must be put back")
+        XCTAssertEqual(hal.inputWrites, [9], "A write that never landed must not be undone")
+    }
+
+    func testApplyRollsTheInputBackWhenTheOutputWriteIsRefused() {
+        let hal = FakeHAL(outputResults: [false], inputResults: [true])
+
+        let outcome = applyResolved(
+            output: 8, input: 9, currentOutputID: 1, currentInputID: 2, hal: hal
+        )
+
+        guard case .refused(let message, let restored) = outcome else {
+            return XCTFail("A refused write must not be reported as success: \(outcome)")
+        }
+        XCTAssertTrue(restored)
+        XCTAssertTrue(message.contains("Bose QC 35"), "The refusal should name the device: \(message)")
+        XCTAssertEqual(hal.outputWrites, [8])
+        XCTAssertEqual(hal.inputWrites, [9, 2], "The input that landed must be put back")
+    }
+
+    func testApplyReportsThatARefusedRollbackLeftTheDefaultsMixed() {
+        // The output write lands, the input write is refused, and so is the attempt to
+        // put the output back. The defaults really are half-applied now, and saying
+        // "nothing was changed" would send the user looking in the wrong place.
+        let hal = FakeHAL(outputResults: [true, false], inputResults: [false])
+
+        let outcome = applyResolved(
+            output: 8, input: 9, currentOutputID: 1, currentInputID: 2, hal: hal
+        )
+
+        guard case .refused(_, let restored) = outcome else {
+            return XCTFail("Expected a refusal, got \(outcome)")
+        }
+        XCTAssertFalse(restored)
+        XCTAssertEqual(hal.outputWrites, [8, 1])
+    }
+
+    func testApplyCannotRestoreADirectionThatHadNoPreviousDefault() {
+        let hal = FakeHAL(outputResults: [true], inputResults: [false])
+
+        let outcome = applyResolved(
+            output: 8, input: 9, currentOutputID: nil, currentInputID: nil, hal: hal
+        )
+
+        guard case .refused(_, let restored) = outcome else {
+            return XCTFail("Expected a refusal, got \(outcome)")
+        }
+        XCTAssertFalse(restored, "With no previous default there is nothing to roll back to")
+        XCTAssertEqual(hal.outputWrites, [8], "Nothing to write back, so no second write")
+    }
+
+    func testApplyLeavesAnUnpinnedDirectionUntouched() {
+        let hal = FakeHAL(outputResults: [true], inputResults: [true])
+
+        let outcome = applyResolved(
+            output: 8, input: nil, currentOutputID: 1, currentInputID: 2, hal: hal
+        )
+
+        XCTAssertEqual(outcome, .applied)
+        XCTAssertEqual(hal.outputWrites, [8])
+        XCTAssertTrue(hal.inputWrites.isEmpty, "An unpinned direction must never be written")
+    }
+
+    func testApplyWritesNothingWhenAPinnedDeviceIsGone() {
+        // The row was drawn while the headset was attached and clicked after it was
+        // unplugged: the stale resolution must not switch the half that still resolves.
+        let hal = FakeHAL()
+        let resolution = AudioProfileResolution(
+            output: .missing(name: "Bose QC 35"),
+            input: .resolved(deviceID: 9, name: "Shure MV7")
+        )
+
+        let outcome = AudioProfileApplier.apply(
+            resolution,
+            currentOutputID: 1,
+            currentInputID: 2,
+            setDefaultOutput: hal.setOutput,
+            setDefaultInput: hal.setInput
+        )
+
+        guard case .notApplicable(let reason) = outcome else {
+            return XCTFail("An unresolved leg must block the whole apply, got \(outcome)")
+        }
+        XCTAssertTrue(reason.contains("Bose QC 35"), "The user needs to be told what is missing: \(reason)")
+        XCTAssertTrue(hal.outputWrites.isEmpty)
+        XCTAssertTrue(hal.inputWrites.isEmpty, "Half-applying is exactly what this refusal prevents")
+    }
+
     // MARK: - Active-profile matching
 
     func testMatchesDefaultsComparesUIDsOnly() {

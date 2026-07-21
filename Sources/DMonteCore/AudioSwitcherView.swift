@@ -172,21 +172,25 @@ public final class AudioSwitcherController: ObservableObject {
         profile.resolve(against: devices)
     }
 
-    /// Applies both halves of a profile, then re-reads state. Returns `false` without
-    /// touching anything if some pinned device is absent: switching only the half that
-    /// resolved would leave the user on a configuration they never asked for.
+    /// Applies both halves of a profile, then re-reads state.
+    ///
+    /// Nothing is written when a pinned device is absent, and whichever half landed is
+    /// put back when the HAL refuses the other: switching only the half that worked
+    /// would leave the user on a configuration they never asked for. The outcome is
+    /// returned rather than swallowed because a refused write looks identical to a
+    /// successful one from the popover — the row stays enabled and the click reads as a
+    /// no-op — unless the controller says so.
     @discardableResult
-    public func applyProfile(_ profile: AudioDeviceProfile) -> Bool {
-        let resolution = resolution(for: profile)
-        guard resolution.isApplicable else { return false }
-        if let outputID = resolution.outputDeviceID {
-            AudioDeviceKit.setDefaultOutput(outputID)
-        }
-        if let inputID = resolution.inputDeviceID {
-            AudioDeviceKit.setDefaultInput(inputID)
-        }
+    public func applyProfile(_ profile: AudioDeviceProfile) -> AudioProfileApplyOutcome {
+        let outcome = AudioProfileApplier.apply(
+            resolution(for: profile),
+            currentOutputID: defaultOutputID,
+            currentInputID: defaultInputID,
+            setDefaultOutput: AudioDeviceKit.setDefaultOutput,
+            setDefaultInput: AudioDeviceKit.setDefaultInput
+        )
         refresh()
-        return true
+        return outcome
     }
 
     public func renameProfile(id: UUID, to newName: String) {
@@ -248,6 +252,10 @@ public struct AudioSwitcherPopoverView: View {
     @State private var renameText: String = ""
     /// Why the last save was refused, e.g. no addressable device to pin to.
     @State private var saveRefusalReason: String?
+    /// Why the last apply did not take: a device that vanished between the row being
+    /// drawn and the click, or a write CoreAudio simply refused. Without this the row
+    /// looks applicable, the click changes nothing, and the popover says nothing.
+    @State private var applyFailureReason: String?
     /// Delete is armed on first click and performed on the second. A profile takes real
     /// effort to reconstruct, and the trash sits next to the row's apply target.
     @State private var pendingDeleteProfileID: UUID?
@@ -286,6 +294,7 @@ public struct AudioSwitcherPopoverView: View {
             draftProfileName = nil
             renamingProfileID = nil
             saveRefusalReason = nil
+            applyFailureReason = nil
             pendingDeleteProfileID = nil
             focusedField = nil
         }
@@ -418,6 +427,13 @@ public struct AudioSwitcherPopoverView: View {
                     profileRow(profile)
                 }
             }
+
+            if let applyFailureReason {
+                Text(applyFailureReason)
+                    .font(.system(size: AudioSwitcherSizing.captionSize))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -434,10 +450,7 @@ public struct AudioSwitcherPopoverView: View {
         } else {
             let resolution = controller.resolution(for: profile)
             HStack(spacing: 6) {
-                Button(action: {
-                    pendingDeleteProfileID = nil
-                    controller.applyProfile(profile)
-                }) {
+                Button(action: { apply(profile) }) {
                     profileRowLabel(profile, resolution: resolution)
                 }
                 .buttonStyle(.plain)
@@ -446,9 +459,12 @@ public struct AudioSwitcherPopoverView: View {
 
                 profileActionButton(symbol: "pencil", tint: .secondary, help: "Rename") {
                     pendingDeleteProfileID = nil
+                    applyFailureReason = nil
                     renameText = profile.name
+                    // Focus is not requested here: the field does not exist yet in this
+                    // update, so the request would be dropped. `profileNameField` asks
+                    // for it once the field has actually appeared.
                     renamingProfileID = profile.id
-                    focusedField = .rename(profile.id)
                 }
                 profileActionButton(
                     symbol: pendingDeleteProfileID == profile.id ? "trash.fill" : "trash",
@@ -535,6 +551,15 @@ public struct AudioSwitcherPopoverView: View {
                 .font(.system(size: AudioSwitcherSizing.bodySize))
                 .focused($focusedField, equals: field)
                 .onSubmit(onCommit)
+                // SwiftUI evaluates `.focused(_:equals:)` as it inserts the field, so a
+                // focus request made in the *same* state update that creates the field
+                // targets a view that does not exist yet and is quietly dropped: the
+                // user hits +, sees a pre-filled box, and types into nothing until they
+                // click it — and Return does not commit either. Asking after the field
+                // has appeared, one runloop turn later, is a request SwiftUI honours.
+                .onAppear {
+                    Task { @MainActor in focusedField = field }
+                }
             Button(action: onCommit) {
                 Image(systemName: "checkmark")
                     .font(.system(size: AudioSwitcherSizing.profileActionSize, weight: .semibold))
@@ -556,8 +581,23 @@ public struct AudioSwitcherPopoverView: View {
         pendingDeleteProfileID = nil
         renamingProfileID = nil
         saveRefusalReason = nil
+        applyFailureReason = nil
+        // Focus is deliberately not set here — see `profileNameField`, which asks for it
+        // once the field it belongs to actually exists.
         draftProfileName = suggestedProfileName()
-        focusedField = .newProfile
+    }
+
+    /// Switches to `profile` and surfaces anything that stopped the switch from taking.
+    private func apply(_ profile: AudioDeviceProfile) {
+        pendingDeleteProfileID = nil
+        switch controller.applyProfile(profile) {
+        case .applied:
+            applyFailureReason = nil
+        case .notApplicable(let reason):
+            applyFailureReason = reason
+        case .refused(let message, _):
+            applyFailureReason = message
+        }
     }
 
     /// Seeds the field with the current output's name — the thing the user is most
