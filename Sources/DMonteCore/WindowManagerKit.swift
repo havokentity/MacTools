@@ -228,13 +228,24 @@ public struct WindowShortcutStore {
         return result
     }
 
-    /// The shortcuts that should actually be registered: defaults overlaid with stored overrides.
+    /// The shortcuts that should actually be registered: defaults overlaid with stored overrides,
+    /// with any default that collides with an override dropped.
+    ///
+    /// The collision check is what keeps "one combination, one action" true across upgrades. A
+    /// user who bound ⌃⌥⌫ to Center before Restore shipped with that combination as its default
+    /// would otherwise get both actions holding it: the registrar claims a Carbon hotkey per
+    /// action, so one keypress would center *and* restore the window, in no fixed order. An
+    /// explicit user binding outranks a built-in default, so the default yields and its action is
+    /// left unbound (the UI shows "Set", and the user can pick something else).
     public func effectiveShortcuts() -> [WindowAction: WindowShortcut] {
+        let overrides = storedShortcuts()
+        let claimed = Set(overrides.values)
         var result: [WindowAction: WindowShortcut] = [:]
         for action in WindowAction.allCases {
-            if let shortcut = action.defaultShortcut { result[action] = shortcut }
+            guard let shortcut = action.defaultShortcut, !claimed.contains(shortcut) else { continue }
+            result[action] = shortcut
         }
-        for (action, shortcut) in storedShortcuts() { result[action] = shortcut }
+        for (action, shortcut) in overrides { result[action] = shortcut }
         return result
     }
 
@@ -327,6 +338,24 @@ public enum WindowManagerKit {
         let x = min(max(frame.minX, area.minX), area.maxX - width)
         let y = min(max(frame.minY, area.minY), area.maxY - height)
         return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// The frame a restore should actually write for a `remembered` one, given the displays that
+    /// exist *now*. `fallback` is the area to rescue it into (the controller passes the window's
+    /// current screen).
+    ///
+    /// A remembered frame that still meets a screen is written back untouched — including one that
+    /// straddles two displays, which is a placement the user chose and restore exists to return to.
+    /// Clamping unconditionally into whichever single screen holds most of the window would move a
+    /// straddling window by hundreds of points, i.e. defeat the feature on exactly the multi-display
+    /// desk it is for.
+    ///
+    /// The clamp is kept for the case it was written for: the display the frame came from has since
+    /// been unplugged or rearranged, so the frame lies in coordinates no screen covers any more and
+    /// writing it back verbatim would strand the window where the user cannot grab it. Pure.
+    public static func restoreFrame(_ remembered: CGRect, onScreens areas: [CGRect], fallback: CGRect) -> CGRect {
+        guard areaIndex(forWindow: remembered, in: areas) == nil else { return remembered }
+        return clamped(remembered, into: fallback)
     }
 
     /// Maps `windowFrame` from the `source` usable area onto the `destination` usable area, keeping
@@ -482,16 +511,25 @@ public enum WindowManagerKit {
     public struct ChordState: Equatable, Sendable {
         public let action: WindowAction
         public let at: Date
-        public init(action: WindowAction, at: Date) {
+        /// Whether that half-snap stored a restore point. A chord is two applies but one gesture,
+        /// so the corner that completes it must leave the pre-gesture frame the half stored alone;
+        /// when the half stored nothing (it changed nothing, or the app refused it) there is
+        /// nothing to preserve and the corner records its own.
+        public let storedRestorePoint: Bool
+
+        public init(action: WindowAction, at: Date, storedRestorePoint: Bool = false) {
             self.action = action
             self.at = at
+            self.storedRestorePoint = storedRestorePoint
         }
     }
 
     /// What a hotkey-fired half-snap should do given the previous one.
     public enum ChordOutcome: Equatable, Sendable {
-        /// Apply this corner and clear the chord state.
-        case corner(WindowAction)
+        /// Apply this corner and clear the chord state. `preservesRestorePoint` carries the opening
+        /// half's `storedRestorePoint`: true means the undo for this gesture is already recorded and
+        /// this apply must not overwrite it with the intermediate half-snapped frame.
+        case corner(WindowAction, preservesRestorePoint: Bool)
         /// Apply this half and remember it (with `now`) as the new chord state.
         case half(WindowAction)
     }
@@ -507,9 +545,51 @@ public enum WindowManagerKit {
         if let previous,
            now.timeIntervalSince(previous.at) <= window,
            let corner = cornerCombining(previous.action, current) {
-            return .corner(corner)
+            return .corner(corner, preservesRestorePoint: previous.storedRestorePoint)
         }
         return .half(current)
+    }
+
+    // MARK: - Restore points (pure)
+
+    /// What one apply does to the window's restore point.
+    public enum RestorePointUpdate: Equatable, Sendable {
+        /// Store the window's pre-action frame: this apply moved it, so there is now an undo.
+        case remember
+        /// Leave the existing entry (if any) exactly as it is.
+        case keep
+        /// Drop the entry: a restore landed, so its undo has been spent.
+        case forget
+    }
+
+    /// Decides the restore-point bookkeeping for one apply, from what actually happened to the
+    /// window. `previous` is the frame it had before, `target` what we asked for, `achieved` what
+    /// it has now (nil when it could not be read back at all).
+    ///
+    /// Three rules, each of which the naive "remember on success" version got wrong:
+    /// - a restore is undo, not a new arrangement: it consumes its entry when it lands, and keeps
+    ///   it when it does not, so a refused restore can be retried;
+    /// - `preservesRestorePoint` marks the second apply of a corner chord, which is one user
+    ///   gesture: overwriting there would leave Restore undoing only back to the intermediate
+    ///   half-snap;
+    /// - otherwise what counts is whether the window *moved*, not whether it landed exactly where
+    ///   we asked. Re-pressing a snap the window already sits in must not overwrite the undo with
+    ///   the window's own current frame, and an app that moves the window but drops the size (the
+    ///   live-diagnosed `AXEnhancedUserInterface` case) has genuinely rearranged it, so the user
+    ///   must be able to undo that too. Pure.
+    public static func restorePointUpdate(
+        for action: WindowAction,
+        previous: CGRect,
+        target: CGRect,
+        achieved: CGRect?,
+        preservesRestorePoint: Bool = false
+    ) -> RestorePointUpdate {
+        guard let achieved else { return .keep } // nothing was written, or the window is unreadable
+        if action == .restorePrevious {
+            return frameMatches(achieved, target: target) ? .forget : .keep
+        }
+        if preservesRestorePoint { return .keep }
+        return frameMatches(achieved, target: previous) ? .keep : .remember
     }
 }
 

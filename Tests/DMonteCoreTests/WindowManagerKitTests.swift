@@ -38,7 +38,7 @@ final class WindowManagerKitTests: XCTestCase {
         let previous = WindowManagerKit.ChordState(action: .rightHalf, at: t0)
         XCTAssertEqual(
             WindowManagerKit.resolveChord(previous: previous, current: .topHalf, now: t0.addingTimeInterval(0.2)),
-            .corner(.topRight)
+            .corner(.topRight, preservesRestorePoint: false)
         )
     }
 
@@ -47,7 +47,27 @@ final class WindowManagerKitTests: XCTestCase {
         let previous = WindowManagerKit.ChordState(action: .rightHalf, at: t0)
         XCTAssertEqual(
             WindowManagerKit.resolveChord(previous: previous, current: .bottomHalf, now: t0.addingTimeInterval(WindowManagerKit.cornerChordWindow - 0.02)),
-            .corner(.bottomRight)
+            .corner(.bottomRight, preservesRestorePoint: false)
+        )
+    }
+
+    /// The corner that completes a chord must be told the opening half already stored the undo, or
+    /// it overwrites it with the intermediate half-snapped frame and Restore stops undoing the
+    /// gesture the user actually made.
+    func testResolveChordCarriesTheOpeningHalfsRestorePoint() {
+        let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+        let stored = WindowManagerKit.ChordState(action: .rightHalf, at: t0, storedRestorePoint: true)
+        XCTAssertEqual(
+            WindowManagerKit.resolveChord(previous: stored, current: .topHalf, now: t0.addingTimeInterval(0.1)),
+            .corner(.topRight, preservesRestorePoint: true)
+        )
+
+        // A half that stored nothing (it moved nothing, or its app refused it) leaves the corner to
+        // record the undo itself — there is no pre-gesture frame to protect.
+        let notStored = WindowManagerKit.ChordState(action: .rightHalf, at: t0, storedRestorePoint: false)
+        XCTAssertEqual(
+            WindowManagerKit.resolveChord(previous: notStored, current: .topHalf, now: t0.addingTimeInterval(0.1)),
+            .corner(.topRight, preservesRestorePoint: false)
         )
     }
 

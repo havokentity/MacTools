@@ -346,9 +346,167 @@ final class WindowManagerDisplayActionTests: XCTestCase {
     func testRestoringAFrameFromAnUnpluggedDisplayLandsOnScreen() {
         let stale = CGRect(x: 5000, y: 5000, width: 900, height: 700)
         XCTAssertNil(WindowManagerKit.areaIndex(forWindow: stale, in: [primary]), "the old display is gone")
-        let rescued = WindowManagerKit.clamped(stale, into: primary)
+        let rescued = WindowManagerKit.restoreFrame(stale, onScreens: [primary], fallback: primary)
         assertInside(rescued, primary, "restored frame from an unplugged display")
         XCTAssertEqual(rescued.size, stale.size, "the remembered size still fits, so it is kept")
+    }
+
+    /// The clamp exists for frames whose display is gone, and must not touch anything else: a
+    /// window deliberately spanning two displays is a placement restore promises to return to.
+    func testRestoringAFrameThatStraddlesTwoDisplaysPutsItBackUntouched() {
+        let areas = [primary, rightScreen]
+        // 760 pt of this window is on the primary, 1240 pt on the right screen.
+        let straddling = CGRect(x: 1800, y: 200, width: 2000, height: 900)
+        XCTAssertEqual(
+            WindowManagerKit.restoreFrame(straddling, onScreens: areas, fallback: primary),
+            straddling,
+            "restore relocated a window that legitimately spanned two displays"
+        )
+        // The bug this pins: clamping into the single best-overlapping screen slides it 760 pt.
+        XCTAssertNotEqual(WindowManagerKit.clamped(straddling, into: rightScreen), straddling)
+    }
+
+    func testRestoringAFrameThatStillFitsIsExact() {
+        let inside = CGRect(x: 137, y: 411, width: 913, height: 622)
+        XCTAssertEqual(WindowManagerKit.restoreFrame(inside, onScreens: [primary, rightScreen], fallback: primary), inside)
+        // Even one hanging off the edge of its own screen: the user put it there.
+        let hangingOff = CGRect(x: -300, y: 100, width: 900, height: 700)
+        XCTAssertEqual(WindowManagerKit.restoreFrame(hangingOff, onScreens: [primary], fallback: primary), hangingOff)
+    }
+
+    // MARK: - Restore-point policy
+
+    /// One apply, run through the same two steps the controller performs: decide the restore-point
+    /// update from what actually happened to the window, then apply it to the memory. Returns
+    /// whether this apply stored a restore point (what the controller feeds into the chord state).
+    @discardableResult
+    private func simulateApply(
+        _ action: WindowAction,
+        previous: CGRect,
+        target: CGRect,
+        achieved: CGRect?,
+        preservesRestorePoint: Bool = false,
+        into memory: inout WindowFrameMemory,
+        for key: WindowIdentity
+    ) -> Bool {
+        switch WindowManagerKit.restorePointUpdate(
+            for: action,
+            previous: previous,
+            target: target,
+            achieved: achieved,
+            preservesRestorePoint: preservesRestorePoint
+        ) {
+        case .remember:
+            memory.remember(previous, for: key)
+            return true
+        case .keep:
+            return false
+        case .forget:
+            memory.forget(key)
+            return false
+        }
+    }
+
+    private func areaFrame(_ action: WindowAction) -> CGRect {
+        WindowManagerKit.frame(for: action, in: primary) ?? .infinite
+    }
+
+    /// ⌃⌥→ then ⌃⌥↑ is one gesture that costs two applies. The second must not overwrite the undo
+    /// the first stored, or Restore puts the window back to the intermediate half-snap instead of
+    /// where the user had it.
+    func testCornerChordLeavesTheUndoPointingAtThePreGestureFrame() {
+        var memory = WindowFrameMemory()
+        let key = identity(501, 7)
+        let original = CGRect(x: 300, y: 200, width: 1200, height: 800)
+        let rightHalf = areaFrame(.rightHalf)
+        let topRight = areaFrame(.topRight)
+
+        let halfStored = simulateApply(.rightHalf, previous: original, target: rightHalf, achieved: rightHalf, into: &memory, for: key)
+        XCTAssertTrue(halfStored, "the opening half is the apply that has an undo to record")
+        XCTAssertEqual(memory.frame(for: key), original)
+
+        simulateApply(
+            .topRight,
+            previous: rightHalf,
+            target: topRight,
+            achieved: topRight,
+            preservesRestorePoint: true,
+            into: &memory,
+            for: key
+        )
+        XCTAssertEqual(memory.frame(for: key), original, "the chord's corner overwrote the undo with the half-snap frame")
+    }
+
+    /// The flip side, so "preserve" cannot quietly become "never overwrite": two half-snaps far
+    /// enough apart to be separate gestures each move the undo forward.
+    func testTwoIndependentHalfSnapsEachMoveTheUndoForward() {
+        var memory = WindowFrameMemory()
+        let key = identity(501, 7)
+        let original = CGRect(x: 300, y: 200, width: 1200, height: 800)
+        let rightHalf = areaFrame(.rightHalf)
+        let topHalf = areaFrame(.topHalf)
+
+        simulateApply(.rightHalf, previous: original, target: rightHalf, achieved: rightHalf, into: &memory, for: key)
+        simulateApply(.topHalf, previous: rightHalf, target: topHalf, achieved: topHalf, into: &memory, for: key)
+        XCTAssertEqual(memory.frame(for: key), rightHalf, "a separate snap undoes back to the previous snap")
+    }
+
+    /// Pressing a snap the window is already sitting in changes nothing, so it must not replace the
+    /// undo with the window's own current frame — that silently destroys the only way back.
+    func testRepeatingTheSameSnapKeepsTheOriginalUndo() {
+        var memory = WindowFrameMemory()
+        let key = identity(501, 7)
+        let original = CGRect(x: 300, y: 200, width: 1200, height: 800)
+        let leftHalf = areaFrame(.leftHalf)
+
+        simulateApply(.leftHalf, previous: original, target: leftHalf, achieved: leftHalf, into: &memory, for: key)
+        let storedAgain = simulateApply(.leftHalf, previous: leftHalf, target: leftHalf, achieved: leftHalf, into: &memory, for: key)
+        XCTAssertFalse(storedAgain, "a no-op apply has nothing to remember")
+        XCTAssertEqual(memory.frame(for: key), original)
+    }
+
+    /// The live-diagnosed Electron case: the app takes the position and drops the size, so the
+    /// frame fails verification while the window has plainly moved. There must still be an undo.
+    func testAMoveThatFailsVerificationStillLeavesAnUndo() {
+        var memory = WindowFrameMemory()
+        let key = identity(501, 7)
+        let original = CGRect(x: 300, y: 200, width: 900, height: 700)
+        let rightHalf = areaFrame(.rightHalf)
+        let achieved = CGRect(x: rightHalf.minX, y: rightHalf.minY, width: 900, height: 700) // size dropped
+
+        XCTAssertFalse(WindowManagerKit.frameMatches(achieved, target: rightHalf), "this is a verification failure")
+        let stored = simulateApply(.rightHalf, previous: original, target: rightHalf, achieved: achieved, into: &memory, for: key)
+        XCTAssertTrue(stored, "the window moved hundreds of points; the user must be able to undo it")
+        XCTAssertEqual(memory.frame(for: key), original)
+    }
+
+    func testARestoreConsumesItsUndoOnlyWhenItLands() {
+        var memory = WindowFrameMemory()
+        let key = identity(501, 7)
+        let original = CGRect(x: 300, y: 200, width: 1200, height: 800)
+        let leftHalf = areaFrame(.leftHalf)
+        memory.remember(original, for: key)
+
+        // A restore the app refused keeps the entry, so pressing it again can still work.
+        simulateApply(.restorePrevious, previous: leftHalf, target: original, achieved: leftHalf, into: &memory, for: key)
+        XCTAssertEqual(memory.frame(for: key), original)
+
+        simulateApply(.restorePrevious, previous: leftHalf, target: original, achieved: original, into: &memory, for: key)
+        XCTAssertNil(memory.frame(for: key), "a landed restore spends its undo")
+    }
+
+    /// Nothing readable came back (the window vanished, or the grant was pulled mid-write), so the
+    /// apply knows nothing about what happened and must not touch the undo either way.
+    func testAnUnreadableWindowLeavesTheUndoAlone() {
+        var memory = WindowFrameMemory()
+        let key = identity(501, 7)
+        let original = CGRect(x: 300, y: 200, width: 1200, height: 800)
+        memory.remember(original, for: key)
+
+        simulateApply(.leftHalf, previous: original, target: areaFrame(.leftHalf), achieved: nil, into: &memory, for: key)
+        XCTAssertEqual(memory.frame(for: key), original)
+        simulateApply(.restorePrevious, previous: original, target: original, achieved: nil, into: &memory, for: key)
+        XCTAssertEqual(memory.frame(for: key), original, "a restore that wrote nothing keeps its undo")
     }
 
     // MARK: - Action wiring
