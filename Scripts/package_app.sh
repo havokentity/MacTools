@@ -38,6 +38,7 @@ HELPERS=(
   "DMonteWindowManager|DMonte Window Manager.app|WindowManagerInfo.plist"
   "DMonteMicControl|DMonte Mic Control.app|MicControlInfo.plist"
   "DMonteSnippets|DMonte Snippets.app|SnippetsInfo.plist"
+  "DMonteDriveEjector|DMonte Drive Ejector.app|DriveEjectorInfo.plist"
 )
 
 stamp_version() {

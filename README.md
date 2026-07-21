@@ -40,6 +40,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Audio Router** | Virtual audio routing — install independent loopback cables for app‑to‑app audio, build mirror/aggregate devices with presets, and "listen" to any input through an output |
 | **Focus Timer** | Pomodoro timer with a live menu bar countdown |
 | **Calendar** | Menu bar month view with your upcoming events |
+| **Drive Ejector** | Eject external volumes one at a time or all at once — internal and startup disks are never listed |
 | **Keep Awake** | Prevent sleep, optionally for a set duration |
 | **Maintenance** | Handy Finder/system toggles and cache/index refreshes |
 | **Dev Tools** | JSON, Base64, JWT, URL, hashing, UUID, timestamp, and case utilities |

@@ -66,7 +66,8 @@ public enum ToolboxCatalog {
         ToolboxTool(id: "focusTimer", title: "Focus Timer", iconName: "timer", tint: .red, bundleID: prefix + "focustimer", appName: "DMonte Focus Timer.app", executableName: "DMonteFocusTimer", arguments: ["--open"]),
         ToolboxTool(id: "windowManager", title: "Window Manager", iconName: "macwindow.on.rectangle", tint: .blue, bundleID: prefix + "windowmanager", appName: "DMonte Window Manager.app", executableName: "DMonteWindowManager", arguments: ["--open"]),
         ToolboxTool(id: "micControl", title: "Mic Control", iconName: "mic.slash.fill", tint: .orange, bundleID: prefix + "miccontrol", appName: "DMonte Mic Control.app", executableName: "DMonteMicControl", arguments: ["--open"]),
-        ToolboxTool(id: "snippets", title: "Snippets", iconName: "note.text", tint: .indigo, bundleID: prefix + "snippets", appName: "DMonte Snippets.app", executableName: "DMonteSnippets", arguments: ["--open"])
+        ToolboxTool(id: "snippets", title: "Snippets", iconName: "note.text", tint: .indigo, bundleID: prefix + "snippets", appName: "DMonte Snippets.app", executableName: "DMonteSnippets", arguments: ["--open"]),
+        ToolboxTool(id: "driveEjector", title: "Drive Ejector", iconName: "eject.fill", tint: .teal, bundleID: prefix + "driveejector", appName: "DMonte Drive Ejector.app", executableName: "DMonteDriveEjector", arguments: ["--open"])
     ]
 }
 

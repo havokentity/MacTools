@@ -32,6 +32,14 @@ adheres to [Semantic Versioning](https://semver.org) and the
   pretty-printed JSON, with `iat`/`nbf`/`exp` rendered as UTC dates plus a
   relative hint and a live/expired badge. The signature is shown verbatim and
   explicitly marked as unverified.
+- **Drive Ejector**: a new menu bar tool that lists mounted external volumes
+  with their capacity and free space and ejects them individually or all at
+  once. Only removable, non-internal volumes are ever listed, and every volume
+  is re-checked against the mount table the moment before it is ejected, so the
+  startup disk and internal drives cannot be unmounted even if a listed row goes
+  stale. Nothing is ever force-unmounted: when a file is open or Spotlight is
+  still indexing, the disk stays mounted and macOS's own reason is shown inline.
+  The list updates live as disks are plugged in and removed.
 
 ## [0.13.0] — 2026-07-12
 
