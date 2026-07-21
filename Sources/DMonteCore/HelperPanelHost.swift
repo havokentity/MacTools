@@ -457,7 +457,12 @@ public final class HelperPanelHost: NSObject {
         switch configuration.positioning {
         case .anchoredFrameOrCentered(let gap):
             let frame: NSRect
-            if let anchor, let window = anchor.window, let screen = window.screen ?? NSScreen.main {
+            // `isAnchorReady` and not merely `anchor != nil`: a status button that exists but has
+            // not been laid out reports a zero-sized frame at the screen origin, and anchoring to
+            // that puts the panel in a corner of the wrong display. Centred is the honest answer
+            // until the real frame is available.
+            if let anchor, StatusItemAnchor.isPlaced(anchor), let window = anchor.window,
+               let screen = window.screen ?? NSScreen.main {
                 frame = HelperPanelPlacement.anchoredFrame(
                     for: size,
                     anchorFrame: Self.anchorFrameOnScreen(for: anchor, in: window),
@@ -530,4 +535,21 @@ public final class HelperPanelHost: NSObject {
         let viewFrameInWindow = view.convert(view.bounds, to: nil)
         return window.convertToScreen(viewFrameInWindow)
     }
+
+    static func isAnchorReady(_ view: NSView?) -> Bool {
+        StatusItemAnchor.isPlaced(view)
+    }
+
+    /// `show()`, but only once the status item has stopped moving. See `StatusItemAnchor` for why
+    /// neither "it exists" nor "it is in the menu bar" is a sufficient signal on its own.
+    public func showWhenAnchored(timeout: TimeInterval = 2, pollInterval: TimeInterval = 0.05) {
+        StatusItemAnchor.whenSettled(
+            { [weak self] in self?.anchorView() },
+            timeout: timeout,
+            pollInterval: pollInterval
+        ) { [weak self] in
+            self?.show()
+        }
+    }
+
 }

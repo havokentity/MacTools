@@ -44,6 +44,18 @@ adheres to [Semantic Versioning](https://semver.org) and the
   multiple named notes, autosave (debounced while typing, flushed when the panel
   closes and at quit, one atomically written file per note), a live
   word/character/line count, copy-all, and an undoable clear.
+- **Network Info**: a new menu bar tool showing the active interface and its
+  type, local IPv4, subnet mask, router, IPv6, and the configured DNS servers,
+  with every value click‑to‑copy. Local details are read from `getifaddrs` and
+  SystemConfiguration and never leave the Mac; the view refreshes itself when
+  the network changes rather than only at launch. The public‑IP lookup is a
+  separate, explicitly user‑initiated button that names the service it queries
+  (`api.ipify.org`) and can optionally be set to run automatically — it is
+  never fetched silently at launch, because that would disclose your address to
+  a third party every time the tool opens. No speed test: a throughput test
+  means sustained multi‑megabyte transfers from someone else's server, which is
+  its own decision about data usage and which server to trust, and does not
+  belong in a read‑only local‑info tool.
 
 ## [0.13.0] — 2026-07-12
 

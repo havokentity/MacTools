@@ -63,9 +63,9 @@ final class MaintenanceAppDelegate: NSObject, NSApplicationDelegate {
 
         // If launched with --open, reveal the popover immediately.
         if CommandLine.arguments.contains("--open") {
-            DispatchQueue.main.async { [weak self] in
-                self?.panelHost?.show()
-            }
+            // Not a bare `async`: the status item takes several frames to settle, and showing
+            // against an unsettled one opens the panel in a corner. See `StatusItemAnchor`.
+            panelHost?.showWhenAnchored()
         }
     }
 

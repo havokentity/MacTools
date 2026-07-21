@@ -40,7 +40,9 @@ final class WindowManagerAppDelegate: NSObject, NSApplicationDelegate {
         configureShowNotification()
 
         if CommandLine.arguments.contains("--open") {
-            DispatchQueue.main.async { [weak self] in
+            // This tool positions its own panel, so it waits on the shared settle check
+            // directly rather than through HelperPanelHost. See `StatusItemAnchor`.
+            StatusItemAnchor.whenSettled({ [weak self] in self?.statusItem?.button }) { [weak self] in
                 self?.showPanel()
             }
         }

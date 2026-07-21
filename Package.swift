@@ -111,6 +111,10 @@ let package = Package(
         .executable(
             name: "DMonteScratchpad",
             targets: ["DMonteScratchpad"]
+        ),
+        .executable(
+            name: "DMonteNetworkInfo",
+            targets: ["DMonteNetworkInfo"]
         )
     ],
     dependencies: [
@@ -296,6 +300,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteScratchpadApp"
+        ),
+        .executableTarget(
+            name: "DMonteNetworkInfo",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteNetworkInfoApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",
