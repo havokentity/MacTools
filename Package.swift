@@ -115,6 +115,10 @@ let package = Package(
         .executable(
             name: "DMonteNetworkInfo",
             targets: ["DMonteNetworkInfo"]
+        ),
+        .executable(
+            name: "DMonteFileShelf",
+            targets: ["DMonteFileShelf"]
         )
     ],
     dependencies: [
@@ -307,6 +311,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteNetworkInfoApp"
+        ),
+        .executableTarget(
+            name: "DMonteFileShelf",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteFileShelfApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",

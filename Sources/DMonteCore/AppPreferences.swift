@@ -130,7 +130,8 @@ public enum AppDefaults {
             DefaultsKey.focusTimerLongBreakInterval: 4,
             DefaultsKey.driveEjectorConfirmsEjectAll: true,
             DefaultsKey.scratchpadFontSize: 13,
-            DefaultsKey.networkInfoFetchesPublicIPAutomatically: false
+            DefaultsKey.networkInfoFetchesPublicIPAutomatically: false,
+            DefaultsKey.fileShelfConfirmsClearAll: true
         ])
     }
 }

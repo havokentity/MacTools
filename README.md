@@ -48,6 +48,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Snippets** | A searchable library of reusable text — click one to paste it into the app you came from |
 | **Scratchpad** | Always‑there plain‑text notepad with named notes, autosave, and a live word count |
 | **Network Info** | Interface, local IPv4/IPv6, subnet, router, and DNS at a glance — click any value to copy; public IP only on request |
+| **File Shelf** | Drag files onto the menu bar icon to park them, then drag them back out into any app — nothing is copied, and entries follow files that get renamed or moved |
 
 ### Permissions
 

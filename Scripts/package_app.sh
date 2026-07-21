@@ -41,6 +41,7 @@ HELPERS=(
   "DMonteDriveEjector|DMonte Drive Ejector.app|DriveEjectorInfo.plist"
   "DMonteScratchpad|DMonte Scratchpad.app|ScratchpadInfo.plist"
   "DMonteNetworkInfo|DMonte Network Info.app|NetworkInfoInfo.plist"
+  "DMonteFileShelf|DMonte File Shelf.app|FileShelfInfo.plist"
 )
 
 stamp_version() {

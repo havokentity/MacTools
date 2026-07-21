@@ -69,7 +69,8 @@ public enum ToolboxCatalog {
         ToolboxTool(id: "snippets", title: "Snippets", iconName: "note.text", tint: .indigo, bundleID: prefix + "snippets", appName: "DMonte Snippets.app", executableName: "DMonteSnippets", arguments: ["--open"]),
         ToolboxTool(id: "driveEjector", title: "Drive Ejector", iconName: "eject.fill", tint: .teal, bundleID: prefix + "driveejector", appName: "DMonte Drive Ejector.app", executableName: "DMonteDriveEjector", arguments: ["--open"]),
         ToolboxTool(id: "scratchpad", title: "Scratchpad", iconName: "square.and.pencil", tint: .yellow, bundleID: prefix + "scratchpad", appName: "DMonte Scratchpad.app", executableName: "DMonteScratchpad", arguments: ["--open"]),
-        ToolboxTool(id: "networkInfo", title: "Network Info", iconName: "network", tint: .teal, bundleID: prefix + "networkinfo", appName: "DMonte Network Info.app", executableName: "DMonteNetworkInfo", arguments: ["--open"])
+        ToolboxTool(id: "networkInfo", title: "Network Info", iconName: "network", tint: .teal, bundleID: prefix + "networkinfo", appName: "DMonte Network Info.app", executableName: "DMonteNetworkInfo", arguments: ["--open"]),
+        ToolboxTool(id: "fileShelf", title: "File Shelf", iconName: "tray.full.fill", tint: .orange, bundleID: prefix + "fileshelf", appName: "DMonte File Shelf.app", executableName: "DMonteFileShelf", arguments: ["--open"])
     ]
 }
 

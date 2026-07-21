@@ -87,6 +87,31 @@ public enum StatusBarButtonContent {
         }
     }
 
+    /// Draws an icon with a short count badge beside it (File Shelf's "how many files are parked
+    /// here?"). Unlike `updateTitle`, the icon stays: the badge annotates the tool, it does not
+    /// replace it, and a bare number in the menu bar says nothing about which tool it belongs to.
+    ///
+    /// Pass `nil`/empty to drop back to the icon alone, so an empty shelf does not hold menu-bar
+    /// width open for a permanent "0".
+    @MainActor
+    public static func updateBadge(_ badge: String?, image: NSImage, in item: NSStatusItem) {
+        guard let button = item.button else { return }
+        image.isTemplate = true
+        button.image = image
+
+        if let badge, !badge.isEmpty {
+            button.title = badge
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+            button.imagePosition = .imageLeading
+            // Without this the glyph and the number sit flush against each other and read as one
+            // smudge at menu-bar size.
+            button.imageHugsTitle = true
+        } else {
+            button.title = ""
+            button.imagePosition = .imageOnly
+        }
+    }
+
     /// Shows a lightweight context menu for a status item on right-click or control+left-click
     /// (the canonical macOS right-click equivalent, and the only option on some trackpad
     /// configurations) while preserving the plain left-click action used by popovers/windows.
