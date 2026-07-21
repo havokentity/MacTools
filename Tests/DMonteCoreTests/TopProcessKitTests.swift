@@ -215,4 +215,52 @@ final class TopProcessKitTests: XCTestCase {
         XCTAssertGreaterThan(TopProcessKit.pollDivider, 1)
         XCTAssertGreaterThan(TopProcessKit.listLimit, 0)
     }
+
+    // MARK: - Visibility gate
+
+    /// The tool is a login item, so a panel that is never opened is the common case rather than an
+    /// edge one. A week of that used to be a week of `ps -A` every five seconds for a snapshot
+    /// nothing could read.
+    func testAnInvisibleListNeverRefreshesHoweverManyPollsPass() {
+        var remaining = 0
+
+        for _ in 0..<10_000 {
+            let decision = TopProcessKit.processRefreshDecision(
+                pollsRemaining: remaining,
+                isListVisible: false,
+                divider: 5
+            )
+
+            XCTAssertFalse(decision.shouldRefresh)
+            remaining = decision.pollsRemaining
+        }
+    }
+
+    /// The countdown is parked at zero rather than left to drain while the panel is closed, so the
+    /// first poll after it reopens refreshes on the spot instead of waiting out a leftover count.
+    func testAnInvisibleListParksTheCountdownAtZero() {
+        for pollsRemaining in 0...4 {
+            let decision = TopProcessKit.processRefreshDecision(
+                pollsRemaining: pollsRemaining,
+                isListVisible: false,
+                divider: 5
+            )
+
+            XCTAssertEqual(decision.pollsRemaining, 0)
+        }
+
+        XCTAssertTrue(
+            TopProcessKit.processRefreshDecision(pollsRemaining: 0, isListVisible: true, divider: 5).shouldRefresh
+        )
+    }
+
+    /// The gate is an added parameter with a default, so every existing caller has to keep behaving
+    /// exactly as it did before it was introduced.
+    func testTheGateDefaultsToVisible() {
+        let explicit = TopProcessKit.processRefreshDecision(pollsRemaining: 0, isListVisible: true, divider: 5)
+        let defaulted = TopProcessKit.processRefreshDecision(pollsRemaining: 0, divider: 5)
+
+        XCTAssertEqual(defaulted.shouldRefresh, explicit.shouldRefresh)
+        XCTAssertEqual(defaulted.pollsRemaining, explicit.pollsRemaining)
+    }
 }

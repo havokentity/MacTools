@@ -91,13 +91,27 @@ public enum TopProcessKit {
     /// launching a single subprocess. The result is deliberately a countdown rather than a tick
     /// total: on a monitor that has been up for months a total would be the one number in the app
     /// still growing, and this tool has already shipped one overflow bug of exactly that shape.
+    ///
+    /// `isListVisible` is the gate that keeps a closed panel free: this tool is a login item that
+    /// spends nearly all of its life with nothing on screen, and `ps -A` is by orders of magnitude
+    /// the most expensive thing the app does — a spawn plus an enumeration of every process on the
+    /// machine, tens of milliseconds of mostly system time, every fifth second, forever. None of
+    /// that produces anything anyone can see while the panel is closed.
     public nonisolated static func processRefreshDecision(
         pollsRemaining: Int,
+        isListVisible: Bool = true,
         divider: Int = pollDivider
     ) -> (shouldRefresh: Bool, pollsRemaining: Int) {
         // A divider below one would mean "every poll", which is what the countdown of zero already
         // expresses; clamping keeps a bad constant from producing a negative reload interval.
         let divider = max(1, divider)
+
+        // Parked at zero rather than left to drain, so that the poll following a panel opening
+        // refreshes on the spot instead of waiting out however much of a countdown was left over
+        // from the last time the panel was up.
+        guard isListVisible else {
+            return (shouldRefresh: false, pollsRemaining: 0)
+        }
 
         guard pollsRemaining <= 0 else {
             return (shouldRefresh: false, pollsRemaining: pollsRemaining - 1)
