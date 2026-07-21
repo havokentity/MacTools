@@ -11,6 +11,13 @@ public enum WindowApplyResult: Equatable, Sendable {
     case success(appName: String?)
     case needsPermission
     case noFocusedWindow
+    /// "Move to next display" on a Mac with only one display. A distinct outcome rather than
+    /// `.failed`: nothing went wrong, there is simply nowhere to move to, and the window is
+    /// deliberately left untouched.
+    case noOtherDisplay
+    /// "Restore" with nothing remembered for this window — it hasn't been arranged yet in this
+    /// session, or its restore point was already consumed.
+    case nothingToRestore
     case failed
 }
 
@@ -58,6 +65,11 @@ public final class WindowManagerController: NSObject, ObservableObject {
     /// The half-snap most recently fired by a hotkey, for corner-chord detection (⌃⌥→ then ⌃⌥↑ =
     /// top-right). Popover tile clicks never touch this — a click is always a single action.
     private var chordState: WindowManagerKit.ChordState?
+
+    /// Pre-action frames for the `restorePrevious` undo. Bounded LRU (see `WindowFrameMemory`), and
+    /// process-local: window numbers don't survive a relaunch, so persisting it would restore the
+    /// wrong window.
+    private var frameMemory = WindowFrameMemory()
 
     private var permissionTimer: Timer?
     private var windowSelectionMonitor: Any?
@@ -462,22 +474,55 @@ public final class WindowManagerController: NSObject, ObservableObject {
         guard let currentFrame = Self.frame(of: window) else {
             return .failed
         }
+        let identity = WindowIdentity(pid: targetApp.processIdentifier, windowNumber: Self.windowNumber(of: window))
 
         // Pick the screen the window mostly lives on, then compute the target in AX (top-left)
         // space. The pure matcher gets the real screens as plain rects; if the window overlaps no
         // screen at all, fall back to the primary screen (never NSScreen.main — when a snap tile
         // is clicked, the key window is our own popover, so NSScreen.main is the popover's screen,
         // not anything to do with the target window).
-        let screens = NSScreen.screens
-        let areas = screens.map { Self.axRect(fromCocoa: $0.visibleFrame) }
-        let matched = WindowManagerKit.areaIndex(forWindow: currentFrame, in: areas).map { screens[$0] }
-        guard let screen = matched ?? screens.first else {
-            return .failed
-        }
-        let axArea = Self.axRect(fromCocoa: screen.visibleFrame)
-        let targetFrame = WindowManagerKit.frame(for: action, in: axArea)
+        let areas = NSScreen.screens.map { Self.axRect(fromCocoa: $0.visibleFrame) }
+        guard !areas.isEmpty else { return .failed }
+        let areaIndex = WindowManagerKit.areaIndex(forWindow: currentFrame, in: areas) ?? 0
+        let axArea = areas[areaIndex]
 
-        return setFrameVerified(targetFrame, on: window, appElement: appElement, appName: targetApp.localizedName)
+        let targetFrame: CGRect
+        switch action {
+        case .nextDisplay:
+            guard let destination = WindowManagerKit.nextAreaIndex(after: areaIndex, in: areas) else {
+                return .noOtherDisplay
+            }
+            targetFrame = WindowManagerKit.frame(movingWindow: currentFrame, from: axArea, to: areas[destination])
+        case .restorePrevious:
+            guard let remembered = frameMemory.frame(for: identity) else {
+                return .nothingToRestore
+            }
+            // The display the frame was captured on may since have been unplugged or rearranged,
+            // which would strand the window in coordinates no screen covers. Clamp into whichever
+            // screen the remembered frame still belongs to, falling back to the window's current
+            // screen when it belongs to none.
+            let host = WindowManagerKit.areaIndex(forWindow: remembered, in: areas).map { areas[$0] } ?? axArea
+            targetFrame = WindowManagerKit.clamped(remembered, into: host)
+        default:
+            guard let frame = WindowManagerKit.frame(for: action, in: axArea) else {
+                return .failed
+            }
+            targetFrame = frame
+        }
+
+        let result = setFrameVerified(targetFrame, on: window, appElement: appElement, appName: targetApp.localizedName)
+
+        // Only a landed move changes what "before the last action" means, so the restore point is
+        // updated after verification, never before: a snap the app refused must not consume or
+        // overwrite the undo the user still has.
+        if case .success = result {
+            if action == .restorePrevious {
+                frameMemory.forget(identity)
+            } else {
+                frameMemory.remember(currentFrame, for: identity)
+            }
+        }
+        return result
     }
 
     /// Writes `target` to the window and verifies it landed, retrying with alternating set

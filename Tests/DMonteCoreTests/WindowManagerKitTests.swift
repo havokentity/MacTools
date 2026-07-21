@@ -9,8 +9,10 @@ final class WindowManagerKitTests: XCTestCase {
     /// bugs surface.
     private let area = CGRect(x: 100, y: 50, width: 1200, height: 800)
 
+    /// Every action asserted on below is area-relative, so a nil here is a kit bug. `.infinite`
+    /// makes that bug fail the containment assertions loudly instead of being swallowed.
     private func frame(_ action: WindowAction) -> CGRect {
-        WindowManagerKit.frame(for: action, in: area)
+        WindowManagerKit.frame(for: action, in: area) ?? .infinite
     }
 
     // MARK: - Corner chords
@@ -143,21 +145,35 @@ final class WindowManagerKitTests: XCTestCase {
     }
 
     func testAllActionsProduceFinitePositiveSizes() {
-        for action in WindowAction.allCases {
-            let f = WindowManagerKit.frame(for: action, in: area)
+        for action in WindowAction.areaRelativeCases {
+            let f = frame(action)
             XCTAssertTrue(f.width > 0 && f.height > 0, "\(action.rawValue) produced non-positive size \(f)")
             XCTAssertTrue(f.width.isFinite && f.height.isFinite, "\(action.rawValue) produced non-finite size")
         }
     }
 
     func testAllActionsStayWithinArea() {
-        for action in WindowAction.allCases {
-            let f = WindowManagerKit.frame(for: action, in: area)
+        for action in WindowAction.areaRelativeCases {
+            let f = frame(action)
             XCTAssertGreaterThanOrEqual(f.minX, area.minX - 0.001, "\(action.rawValue) escaped left")
             XCTAssertGreaterThanOrEqual(f.minY, area.minY - 0.001, "\(action.rawValue) escaped top")
             XCTAssertLessThanOrEqual(f.maxX, area.maxX + 0.001, "\(action.rawValue) escaped right")
             XCTAssertLessThanOrEqual(f.maxY, area.maxY + 0.001, "\(action.rawValue) escaped bottom")
         }
+    }
+
+    /// The area-relative set must stay exactly "everything except the two display actions", so
+    /// switching the loops above off `allCases` cannot become a way for coverage to quietly shrink.
+    func testAreaRelativeCasesCoverEverythingButTheDisplayActions() {
+        XCTAssertEqual(
+            Set(WindowAction.areaRelativeCases),
+            Set(WindowAction.allCases).subtracting([.nextDisplay, .restorePrevious])
+        )
+        for action in WindowAction.areaRelativeCases {
+            XCTAssertNotNil(WindowManagerKit.frame(for: action, in: area), "\(action.rawValue) has no area frame")
+        }
+        XCTAssertNil(WindowManagerKit.frame(for: .nextDisplay, in: area))
+        XCTAssertNil(WindowManagerKit.frame(for: .restorePrevious, in: area))
     }
 
     func testActionMetadataIsComplete() {
