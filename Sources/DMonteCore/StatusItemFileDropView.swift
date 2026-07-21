@@ -44,6 +44,19 @@ public final class StatusItemFileDropView: NSView {
     // Every one of these hands the event back to the button underneath. Without them the overlay
     // is a dead zone over the icon and the tool cannot be opened at all.
 
+    /// This helper is `LSUIElement` and never becomes the active app, so *every* click on its
+    /// menu-bar icon is a first-mouse click.
+    ///
+    /// The overlay wins hit-testing over the button it covers, and `NSView` answers `false` here by
+    /// default where `NSStatusBarButton` answers `true`. When AppKit asks the hit view and gets
+    /// `false`, it spends the mouse-down on activating the application instead of delivering it —
+    /// so `mouseDown(with:)` below is never called, the pass-through never runs, and the popover
+    /// does not open. The other two status-button subviews in this package override this for the
+    /// same reason.
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     public override func mouseDown(with event: NSEvent) {
         superview?.mouseDown(with: event)
     }

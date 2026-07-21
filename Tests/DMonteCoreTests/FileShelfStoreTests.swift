@@ -52,6 +52,17 @@ final class FileShelfStoreTests: XCTestCase {
         return url
     }
 
+    /// Rewrites `url` the way a Mac app saves it: the new contents are written alongside and then
+    /// swapped into place. This is what TextEdit, Preview, Xcode and anything built on NSDocument
+    /// do, and the reason it matters here is that the swap gives the file a brand-new inode while
+    /// leaving its path and its bookmark alone.
+    private func safeSave(_ url: URL, contents: String) throws {
+        let staging = url.deletingLastPathComponent()
+            .appendingPathComponent("safe-save-\(UUID().uuidString)")
+        try Data(contents.utf8).write(to: staging)
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: staging)
+    }
+
     // MARK: - Shelving
 
     func testShelvingAFileAddsOneRow() throws {
@@ -98,6 +109,50 @@ final class FileShelfStoreTests: XCTestCase {
 
         XCTAssertEqual(store.items.count, 1)
         XCTAssertNotNil(store.statusMessage, "A drop that changed nothing has to say so, or it reads as ignored")
+    }
+
+    /// The same re-drop, but with the file saved in between — which is the case that actually
+    /// happens, since the reason to shelve something is usually that you are still working on it.
+    ///
+    /// A safe save replaces the file with a fresh inode, so the identity cached on the shelf row
+    /// stops matching the file the row's bookmark still points at. Dropping straight onto the
+    /// menu-bar icon never opens the popover, so nothing has re-resolved the shelf since it was
+    /// last looked at; if `shelve` trusted those cached identities it would find no match and add
+    /// a second permanent row for a file that is already there.
+    func testRedroppingAFileThatWasSavedInTheMeantimeStillLeavesOneRow() throws {
+        let store = makeStore()
+        let url = try makeFile(named: "report.txt")
+        XCTAssertEqual(store.shelve(urls: [url]), 1)
+        let identityWhenShelved = try XCTUnwrap(store.items[0].identity)
+
+        try safeSave(url, contents: "edited in some app")
+        XCTAssertNotEqual(
+            FileShelfKit.identity(for: url), identityWhenShelved,
+            "This test is only meaningful if the safe save really did move the file to a new inode"
+        )
+
+        // Deliberately no refresh(): a drop onto the menu-bar icon never opens the popover.
+        XCTAssertEqual(store.shelve(urls: [url]), 0, "The file was already shelved, so no row was gained")
+
+        XCTAssertEqual(store.items.count, 1, "An edited file must collapse onto its existing row, not fork off a new one")
+        XCTAssertEqual(store.items[0].displayName, "report.txt")
+        XCTAssertNotNil(store.statusMessage, "The user has to be told the drop landed on something already shelved")
+    }
+
+    /// The other half of the same problem: a file that moved while the popover was closed is still
+    /// the same file, and re-dropping it must not leave two rows behind either.
+    func testRedroppingAFileThatWasRenamedInTheMeantimeStillLeavesOneRow() throws {
+        let store = makeStore()
+        let original = try makeFile(named: "before.txt")
+        XCTAssertEqual(store.shelve(urls: [original]), 1)
+
+        let renamed = filesDirectory.appendingPathComponent("after.txt")
+        try FileManager.default.moveItem(at: original, to: renamed)
+
+        XCTAssertEqual(store.shelve(urls: [renamed]), 0)
+
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertEqual(store.items[0].displayName, "after.txt")
     }
 
     func testShelvingSeveralFilesKeepsTheDroppedOrder() throws {

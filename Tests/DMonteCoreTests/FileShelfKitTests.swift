@@ -209,6 +209,46 @@ final class FileShelfKitTests: XCTestCase {
         XCTAssertEqual(resolved.displayName, "doomed.txt")
     }
 
+    /// The two unavailable states mean different things to the user — `.missing` is "come back
+    /// when the disk is plugged in", `.unresolvable` is "shelve it again, this one is not coming
+    /// back" — and they have to stay told apart.
+    ///
+    /// It is tempting to read "the bookmark did not resolve" as `.unresolvable`, but resolution
+    /// fails identically for a real bookmark whose file is gone or whose volume is unmounted
+    /// (`.withoutMounting` makes sure of the second). Calling that junk would tell someone who
+    /// merely unplugged an external disk that the row is dead, and they would remove an entry that
+    /// was about to start working again by itself.
+    func testABookmarkThatCannotBeFollowedIsMissingRatherThanJunk() throws {
+        let url = try makeFile(named: "on-a-disk-that-left.txt")
+        let item = FileShelfKit.makeItem(for: url)
+        try FileManager.default.removeItem(at: url)
+
+        let resolved = FileShelfKit.resolveItem(item.file)
+
+        XCTAssertEqual(
+            resolved.availability, .missing,
+            "A bookmark that still names a file is recoverable, so it must not be reported as unrecoverable"
+        )
+    }
+
+    /// …and the converse, so the distinction is not simply always `.missing`: bytes that are not
+    /// bookmark data at all name nothing, and only re-shelving fixes that.
+    func testDataThatIsNotABookmarkAtAllIsUnresolvableRatherThanMissing() {
+        let junk = ShelvedFile(
+            bookmark: Data([0x01, 0x02, 0x03, 0x04, 0x05]),
+            displayName: "corrupt.txt",
+            lastKnownPath: "/Users/somebody/Documents/corrupt.txt"
+        )
+        let never = ShelvedFile(
+            bookmark: Data(),
+            displayName: "never-bookmarked.txt",
+            lastKnownPath: "/Users/somebody/Documents/never-bookmarked.txt"
+        )
+
+        XCTAssertEqual(FileShelfKit.resolveItem(junk).availability, .unresolvable)
+        XCTAssertEqual(FileShelfKit.resolveItem(never).availability, .unresolvable)
+    }
+
     // MARK: - Adding and ordering
 
     /// Newest first: the shelf is read from the top, and the thing just dropped is the thing most

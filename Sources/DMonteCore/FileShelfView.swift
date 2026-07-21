@@ -208,9 +208,12 @@ public struct FileShelfPopoverView: View {
             // line above, and repeating it wastes the width that would show where it lives.
             return item.url?.deletingLastPathComponent().path ?? item.displayPath
         case .missing:
-            return "Not where it was — the disk may be unplugged"
+            // Covers both ways a real bookmark stops being followable, because the row cannot tell
+            // them apart and guessing "unplugged" at a file the user deleted reads as a bug.
+            return "Not there right now — deleted, or the disk is unplugged"
         case .unresolvable:
-            return "Can’t be found any more"
+            // The only state the user has to act on: this one does not come back on its own.
+            return "Can’t be found any more — shelve it again"
         }
     }
 

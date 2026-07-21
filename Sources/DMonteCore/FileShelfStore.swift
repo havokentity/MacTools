@@ -75,10 +75,21 @@ public final class FileShelfStore: ObservableObject {
         let candidates = urls.map { FileShelfKit.makeItem(for: $0) }
         guard !candidates.isEmpty else { return 0 }
 
+        // Re-resolve the whole shelf before comparing anything against it, because the identities
+        // already on `items` were computed the last time the shelf was resolved — startup, or the
+        // last popover open — and a device/inode pair does not survive a safe-save. Every app that
+        // writes atomically (TextEdit, Preview, Xcode, anything built on NSDocument or
+        // `FileManager.replaceItemAt`) swaps in a fresh inode, so the cached identity stops
+        // describing the file the bookmark still points at. A drop straight onto the menu-bar icon
+        // never opens the popover, so this is the only chance to notice; without it, re-dropping a
+        // file that has been edited since fails to match and mints a second, permanent row that
+        // nothing ever collapses.
+        let current = resolvedItems()
+
         // Counted from identities rather than from the length of the list before and after.
         // A shelf already at `maximumCount` stays exactly that long when something is added, so
         // the length would report every drop onto a full shelf as a duplicate.
-        var seenIdentities = Set(items.compactMap(\.identity))
+        var seenIdentities = Set(current.compactMap(\.identity))
         let added = candidates.reduce(into: 0) { total, candidate in
             guard let identity = candidate.identity else {
                 // Nothing to collide with, so it is guaranteed to get a row of its own.
@@ -90,7 +101,7 @@ public final class FileShelfStore: ObservableObject {
             }
         }
 
-        adopt(FileShelfKit.adding(candidates, to: items), persist: true)
+        adopt(FileShelfKit.adding(candidates, to: current), persist: true)
 
         // A drop that only re-shelved things is still worth acknowledging, because otherwise the
         // list looks untouched and the user cannot tell the drop landed at all.
@@ -145,7 +156,7 @@ public final class FileShelfStore: ObservableObject {
     /// Re-resolves every entry against the file system. Cheap enough to run on every popover open,
     /// which is what keeps a row honest after the user deleted the file behind the shelf's back.
     public func refresh() {
-        adopt(items.map { FileShelfKit.resolveItem($0.file) }, persist: true)
+        adopt(resolvedItems(), persist: true)
     }
 
     /// Shows the file in Finder. An entry that no longer resolves says so instead of opening a
@@ -195,6 +206,15 @@ public final class FileShelfStore: ObservableObject {
     }
 
     // MARK: - Private
+
+    /// Every entry re-resolved against the file system as it is right now.
+    ///
+    /// Shared by `refresh()` and `shelve(urls:)` on purpose: a drop has to be judged against the
+    /// same truth the popover would show, because anything `items` is still carrying was computed
+    /// at some earlier resolve and a file can have been moved, deleted or re-saved since.
+    private func resolvedItems() -> [ShelfItem] {
+        items.map { FileShelfKit.resolveItem($0.file) }
+    }
 
     /// The single place `items` is assigned. It reconciles security-scoped access with the new
     /// list and, when asked, writes the shelf out.

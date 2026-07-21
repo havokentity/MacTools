@@ -9,13 +9,14 @@ public enum ShelfAvailability: String, Codable, Sendable, Equatable {
     /// The bookmark resolved and something is at the other end.
     case available
 
-    /// The bookmark resolved, but nothing is there any more: deleted, or on a volume that is not
-    /// mounted right now. Plugging the disk back in makes this entry work again, which is exactly
-    /// why it is kept rather than pruned.
+    /// The bookmark is real, but the file it names cannot be reached right now: deleted, or on a
+    /// volume that is not mounted. Plugging the disk back in makes this entry work again, which is
+    /// exactly why it is kept rather than pruned.
     case missing
 
-    /// The bookmark itself no longer decodes to a location at all. Recoverable only by shelving
-    /// the file again, but still worth showing so the user can see what they have lost.
+    /// The stored bytes are not usable bookmark data at all — the file could never be bookmarked,
+    /// or the record was corrupted. Recoverable only by shelving the file again, but still worth
+    /// showing so the user can see what they have lost.
     case unresolvable
 }
 
@@ -248,15 +249,33 @@ public enum FileShelfKit {
         )
     }
 
+    /// Whether `bookmark` still describes a file, answered from the bookmark's own cached resource
+    /// values rather than by resolving it.
+    ///
+    /// This is the only way to tell "a real bookmark I cannot follow right now" apart from "these
+    /// bytes are not bookmark data", because resolution fails identically for both. Bookmark data
+    /// carries a cached copy of its target's name and path that can be read while the file is
+    /// deleted or its volume is unmounted; junk and empty data carry nothing.
+    private static func describesAFile(_ bookmark: Data) -> Bool {
+        guard !bookmark.isEmpty else { return false }
+        return URL.resourceValues(forKeys: [.pathKey], fromBookmarkData: bookmark) != nil
+    }
+
     /// Re-resolves a stored record into a live item.
     ///
     /// A stale-but-resolvable bookmark is rewritten in the returned record, so the caller only has
-    /// to persist what it gets back. A bookmark that resolves to nothing yields `.missing` rather
-    /// than `.unresolvable`: the difference is "the disk is not here" versus "this data is junk",
-    /// and only the first one comes back on its own.
+    /// to persist what it gets back. The distinction the two unavailable states draw is "the file
+    /// is not reachable right now" versus "this data is junk", and only the first one comes back on
+    /// its own.
     public static func resolveItem(_ file: ShelvedFile) -> ShelfItem {
         guard let resolved = resolve(file.bookmark) else {
-            return ShelfItem(file: file, url: nil, availability: .unresolvable, identity: nil)
+            // Failing to resolve does not by itself mean the bookmark is junk. A deleted file, or a
+            // file on a volume that is not mounted, makes resolution fail outright — `.withoutMounting`
+            // sees to the second case — so classifying every failure as `.unresolvable` would tell
+            // someone whose external disk is merely unplugged that the entry has to be shelved
+            // again, and they would remove a row that was about to start working by itself.
+            let availability: ShelfAvailability = describesAFile(file.bookmark) ? .missing : .unresolvable
+            return ShelfItem(file: file, url: nil, availability: availability, identity: nil)
         }
 
         var updated = file
