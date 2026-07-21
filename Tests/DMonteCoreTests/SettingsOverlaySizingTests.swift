@@ -23,6 +23,16 @@ final class SettingsOverlaySizingTests: XCTestCase {
         assertSheetFits(panel: FocusTimerSizing.preferredSize(), sheet: FocusTimerSizing.settingsSize(), tool: "Focus Timer")
     }
 
+    /// System Monitor's sheet was a literal 338x350 against a 370pt panel, so at scale 1 it
+    /// overhung by 4pt once the overlay's padding was added. It is capped at the panel now.
+    func testSystemMonitorSettingsSheetFitsItsPanel() {
+        assertSheetFits(
+            panel: SystemMonitorPanelSizing.preferredSize(),
+            sheet: SystemMonitorPanelSizing.settingsSize(),
+            tool: "System Monitor"
+        )
+    }
+
     /// Both tools derive from the same clamped scale, so the guarantee has to hold across its
     /// whole range rather than at whatever this machine reports.
     func testScaleStaysWithinItsDocumentedBounds() {
