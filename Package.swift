@@ -97,6 +97,18 @@ let package = Package(
             targets: ["DMonteWindowManager"]
         ),
         .executable(
+            name: "DMonteMicControl",
+            targets: ["DMonteMicControl"]
+        ),
+        .executable(
+            name: "DMonteSnippets",
+            targets: ["DMonteSnippets"]
+        ),
+        .executable(
+            name: "DMonteDriveEjector",
+            targets: ["DMonteDriveEjector"]
+        ),
+        .executable(
             name: "DMonteScratchpad",
             targets: ["DMonteScratchpad"]
         )
@@ -256,6 +268,27 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteWindowManagerApp"
+        ),
+        .executableTarget(
+            name: "DMonteMicControl",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteMicControlApp"
+        ),
+        .executableTarget(
+            name: "DMonteSnippets",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteSnippetsApp"
+        ),
+        .executableTarget(
+            name: "DMonteDriveEjector",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteDriveEjectorApp"
         ),
         .executableTarget(
             name: "DMonteScratchpad",

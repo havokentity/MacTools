@@ -50,4 +50,640 @@ final class QRKitTests: XCTestCase {
             .appendingPathComponent("does-not-exist-\(UUID().uuidString).png")
         XCTAssertEqual(QRKit.decode(imageAt: missing), [])
     }
+
+    // MARK: - Wi-Fi escaping
+
+    func testWiFiValueEscapesEveryReservedCharacter() {
+        XCTAssertEqual(QRKit.escapedWiFiValue("a;b"), #"a\;b"#)
+        XCTAssertEqual(QRKit.escapedWiFiValue("a,b"), #"a\,b"#)
+        XCTAssertEqual(QRKit.escapedWiFiValue("a:b"), #"a\:b"#)
+        XCTAssertEqual(QRKit.escapedWiFiValue(#"a\b"#), #"a\\b"#)
+        XCTAssertEqual(QRKit.escapedWiFiValue("a\"b"), #"a\"b"#)
+    }
+
+    func testWiFiValueQuotesAllHexValues() {
+        // "CAFE" would otherwise be read as raw hex bytes rather than the literal name.
+        XCTAssertEqual(QRKit.escapedWiFiValue("CAFE"), "\"CAFE\"")
+        XCTAssertEqual(QRKit.escapedWiFiValue("1234"), "\"1234\"")
+        XCTAssertEqual(QRKit.escapedWiFiValue("CAFE!"), "CAFE!")
+        XCTAssertEqual(QRKit.escapedWiFiValue(""), "")
+    }
+
+    func testWiFiValueEscapingRoundTrips() {
+        let values = [
+            "plain",
+            "semi;colon",
+            "two;;semis",
+            "comma,separated",
+            "colon:value",
+            #"back\slash"#,
+            #"back\\slash"#,
+            "quote\"inside",
+            "\"already quoted\"",
+            "CAFE",
+            "deadbeef",
+            "everything \\ ; , : \" at once",
+            "  leading and trailing  ",
+            "café ☕️ 网络",
+            ";",
+            "\\",
+            ""
+        ]
+
+        for value in values {
+            XCTAssertEqual(
+                QRKit.unescapedWiFiValue(QRKit.escapedWiFiValue(value)),
+                value,
+                "Escaping then unescaping should be lossless for \(value.debugDescription)"
+            )
+        }
+    }
+
+    // MARK: - Wi-Fi payloads
+
+    func testWiFiPayloadShape() {
+        XCTAssertEqual(
+            QRKit.wifiPayload(ssid: "Home", password: "secret", security: .wpa, isHidden: false),
+            "WIFI:T:WPA;S:Home;P:secret;;"
+        )
+    }
+
+    func testWiFiPayloadHiddenNetworkCarriesFlag() {
+        XCTAssertEqual(
+            QRKit.wifiPayload(ssid: "Home", password: "secret", security: .wpa, isHidden: true),
+            "WIFI:T:WPA;S:Home;P:secret;H:true;;"
+        )
+    }
+
+    func testWiFiPayloadOpenNetworkOmitsPassword() {
+        XCTAssertEqual(
+            QRKit.wifiPayload(ssid: "Cafe Guest", password: "ignored", security: .none, isHidden: false),
+            "WIFI:T:nopass;S:Cafe Guest;;"
+        )
+    }
+
+    func testWiFiPayloadEscapesSSIDAndPassword() {
+        XCTAssertEqual(
+            QRKit.wifiPayload(ssid: "Guest;Net", password: "p:a,s\"s", security: .wpa, isHidden: false),
+            #"WIFI:T:WPA;S:Guest\;Net;P:p\:a\,s\"s;;"#
+        )
+    }
+
+    func testWiFiPayloadKeepsSurroundingSpaces() {
+        // An SSID may legitimately end in a space; trimming would produce a code that never joins.
+        XCTAssertEqual(
+            QRKit.wifiPayload(ssid: " Lobby ", password: " pw ", security: .wpa, isHidden: false),
+            "WIFI:T:WPA;S: Lobby ;P: pw ;;"
+        )
+    }
+
+    func testWiFiPayloadIsEmptyWithoutSSID() {
+        XCTAssertEqual(QRKit.wifiPayload(ssid: "", password: "secret", security: .wpa, isHidden: false), "")
+    }
+
+    func testWiFiPayloadParsesBackToItsFields() {
+        let awkward = [
+            QRWiFiNetwork(ssid: "Guest;Net", password: "p;w", security: .wpa, isHidden: false),
+            QRWiFiNetwork(ssid: "a:b,c", password: #"back\slash"#, security: .wep, isHidden: true),
+            QRWiFiNetwork(ssid: "CAFE", password: "beef", security: .wpa, isHidden: false),
+            QRWiFiNetwork(ssid: "quote\"ssid", password: "quote\"pw", security: .wpa, isHidden: true),
+            QRWiFiNetwork(ssid: "café ☕️", password: "påsswörd", security: .wpa, isHidden: false),
+            QRWiFiNetwork(ssid: "Open Network", password: "", security: .none, isHidden: false),
+            QRWiFiNetwork(ssid: ";;;", password: ";;;", security: .wpa, isHidden: true)
+        ]
+
+        for network in awkward {
+            let payload = QRKit.wifiPayload(
+                ssid: network.ssid,
+                password: network.password,
+                security: network.security,
+                isHidden: network.isHidden
+            )
+            XCTAssertEqual(
+                QRKit.parseWiFiPayload(payload),
+                network,
+                "Payload \(payload.debugDescription) should parse back to its fields"
+            )
+        }
+    }
+
+    func testWiFiPayloadRoundTripsEveryCombinationOfReservedCharacters() {
+        // Hand-picked awkward values only prove the cases someone thought of. This walks every
+        // three-character string over the reserved alphabet (plus a space, a newline, unicode
+        // and a hex digit, which triggers the quoting rule) through build → parse.
+        let alphabet = ["a", "\\", ";", ",", ":", "\"", " ", "☕️", "网", "\n", "0", "F"]
+
+        for first in alphabet {
+            for second in alphabet {
+                for third in alphabet {
+                    let ssid = first + second + third
+                    let password = third + second + first
+                    let payload = QRKit.wifiPayload(
+                        ssid: ssid,
+                        password: password,
+                        security: .wpa,
+                        isHidden: true
+                    )
+                    XCTAssertEqual(
+                        QRKit.parseWiFiPayload(payload),
+                        QRWiFiNetwork(ssid: ssid, password: password, security: .wpa, isHidden: true),
+                        "Lost data for ssid \(ssid.debugDescription) / password "
+                            + "\(password.debugDescription) via \(payload.debugDescription)"
+                    )
+                }
+            }
+        }
+    }
+
+    func testVCardEscapingRoundTripsEveryCombinationOfReservedCharacters() {
+        let alphabet = ["a", "\\", ";", ",", ":", "\"", " ", "☕️", "\n", "\r\n", "n", "N"]
+
+        for first in alphabet {
+            for second in alphabet {
+                for third in alphabet {
+                    let value = first + second + third
+                    // CRLF legitimately normalises to LF: the vCard escape is a single "\n".
+                    let expected = value.replacingOccurrences(of: "\r\n", with: "\n")
+                    XCTAssertEqual(
+                        QRKit.unescapedVCardValue(QRKit.escapedVCardValue(value)),
+                        expected,
+                        "Lost data for \(value.debugDescription) via "
+                            + "\(QRKit.escapedVCardValue(value).debugDescription)"
+                    )
+                }
+            }
+        }
+    }
+
+    func testParseWiFiPayloadRejectsNonWiFiPayloads() {
+        XCTAssertNil(QRKit.parseWiFiPayload("https://example.com"))
+        XCTAssertNil(QRKit.parseWiFiPayload("WIFI:"))
+        XCTAssertNil(QRKit.parseWiFiPayload("WIFI:T:WPA;P:secret;;"), "A payload with no SSID is not usable")
+    }
+
+    func testParseWiFiPayloadAcceptsWPA2AndWPA3Tokens() {
+        XCTAssertEqual(QRKit.parseWiFiPayload("WIFI:T:WPA2;S:Home;P:pw;;")?.security, .wpa)
+        XCTAssertEqual(QRKit.parseWiFiPayload("WIFI:T:WPA3;S:Home;P:pw;;")?.security, .wpa)
+        XCTAssertEqual(QRKit.parseWiFiPayload("WIFI:S:Home;;")?.security, QRWiFiSecurity.none)
+    }
+
+    // MARK: - vCard escaping
+
+    func testVCardValueEscapesStructuralCharactersOnly() {
+        XCTAssertEqual(QRKit.escapedVCardValue("Doe, John"), #"Doe\, John"#)
+        XCTAssertEqual(QRKit.escapedVCardValue("a;b"), #"a\;b"#)
+        XCTAssertEqual(QRKit.escapedVCardValue(#"a\b"#), #"a\\b"#)
+        XCTAssertEqual(QRKit.escapedVCardValue("line1\nline2"), #"line1\nline2"#)
+        // A colon is unambiguous inside a vCard value, and "\:" is not a defined escape —
+        // escaping it would put a stray backslash into every URL.
+        XCTAssertEqual(QRKit.escapedVCardValue("https://example.com"), "https://example.com")
+        XCTAssertEqual(QRKit.escapedVCardValue("say \"hi\""), "say \"hi\"")
+    }
+
+    func testVCardValueEscapingRoundTrips() {
+        let values = [
+            "plain",
+            "Doe, John",
+            "a;b;c",
+            #"back\slash"#,
+            "multi\nline\ntext",
+            "https://example.com/a,b;c",
+            "quote\"inside",
+            "café ☕️ 网络",
+            ",",
+            ";",
+            "\\",
+            ""
+        ]
+
+        for value in values {
+            XCTAssertEqual(
+                QRKit.unescapedVCardValue(QRKit.escapedVCardValue(value)),
+                value,
+                "Escaping then unescaping should be lossless for \(value.debugDescription)"
+            )
+        }
+    }
+
+    func testVCardValueDropsCarriageReturns() {
+        // A raw CR would terminate the property line early and truncate the card.
+        XCTAssertEqual(QRKit.escapedVCardValue("line1\r\nline2"), #"line1\nline2"#)
+    }
+
+    // MARK: - Contact payloads
+
+    func testContactPayloadOmitsEmptyProperties() {
+        let contact = QRContact(firstName: "Ada", lastName: "Lovelace")
+        let payload = QRKit.contactPayload(contact)
+
+        XCTAssertEqual(
+            payload,
+            [
+                "BEGIN:VCARD",
+                "VERSION:3.0",
+                "N:Lovelace;Ada;;;",
+                "FN:Ada Lovelace",
+                "END:VCARD"
+            ].joined(separator: "\r\n")
+        )
+        XCTAssertFalse(payload.contains("TEL"), "An unset phone should not produce an empty property")
+    }
+
+    func testContactPayloadIncludesEveryFilledProperty() {
+        let contact = QRContact(
+            firstName: "Ada",
+            lastName: "Lovelace",
+            organization: "Analytical Engines, Ltd",
+            jobTitle: "Mathematician",
+            phone: "+1 555 0100",
+            email: "ada@example.com",
+            url: "https://example.com",
+            note: "Note; with, punctuation"
+        )
+        let payload = QRKit.contactPayload(contact)
+
+        XCTAssertTrue(payload.contains(#"ORG:Analytical Engines\, Ltd"#))
+        XCTAssertTrue(payload.contains("TITLE:Mathematician"))
+        XCTAssertTrue(payload.contains("TEL;TYPE=CELL:+1 555 0100"))
+        XCTAssertTrue(payload.contains("EMAIL;TYPE=INTERNET:ada@example.com"))
+        XCTAssertTrue(payload.contains("URL:https://example.com"))
+        XCTAssertTrue(payload.contains(#"NOTE:Note\; with\, punctuation"#))
+        XCTAssertTrue(payload.hasSuffix("END:VCARD"))
+    }
+
+    func testContactPayloadEscapesNameSeparators() {
+        // The semicolons in N: are structure; the ones the user typed must not be.
+        let contact = QRContact(firstName: "A;B", lastName: "C;D")
+        XCTAssertTrue(QRKit.contactPayload(contact).contains(#"N:C\;D;A\;B;;;"#))
+    }
+
+    func testContactPayloadFallsBackToOrganizationForFullName() {
+        let contact = QRContact(organization: "Acme")
+        let payload = QRKit.contactPayload(contact)
+        XCTAssertTrue(payload.contains("FN:Acme"), "FN is mandatory in vCard 3.0. Payload: \(payload)")
+    }
+
+    func testContactPayloadNeverEmitsAnEmptyFullName() {
+        // A nameless card imports as a blank contact, so FN falls through to whatever identifies
+        // the card. Every partially filled contact must still name itself somehow.
+        let cases: [(QRContact, String)] = [
+            (QRContact(phone: "5550100"), "FN:5550100"),
+            (QRContact(email: "ada@example.com"), "FN:ada@example.com"),
+            (QRContact(email: "ada@example.com", note: "met at the conference"), "FN:ada@example.com"),
+            (QRContact(organization: "Acme", email: "ada@example.com"), "FN:Acme"),
+            (QRContact(firstName: "Ada", organization: "Acme"), "FN:Ada")
+        ]
+
+        for (contact, expected) in cases {
+            let payload = QRKit.contactPayload(contact)
+            XCTAssertTrue(
+                payload.contains(expected),
+                "Expected \(expected) in payload:\n\(payload)"
+            )
+            XCTAssertFalse(
+                payload.contains("FN:\r\n"),
+                "FN must never be empty. Payload:\n\(payload)"
+            )
+        }
+    }
+
+    func testContactPayloadWithOnlyANoteStillNamesItself() {
+        // A note is the one field that cannot stand in for a name; the card is still valid,
+        // but this pins the behaviour rather than leaving it accidental.
+        let payload = QRKit.contactPayload(QRContact(note: "hello"))
+        XCTAssertTrue(payload.contains("NOTE:hello"))
+        XCTAssertTrue(payload.hasPrefix("BEGIN:VCARD"))
+    }
+
+    func testContactPayloadIsEmptyForEmptyContact() {
+        XCTAssertEqual(QRKit.contactPayload(QRContact()), "")
+        XCTAssertEqual(QRKit.contactPayload(QRContact(firstName: "   ", note: "\n")), "")
+    }
+
+    // MARK: - URL, email, SMS and phone payloads
+
+    func testURLPayloadAddsSchemeOnlyWhenMissing() {
+        XCTAssertEqual(QRKit.urlPayload("example.com"), "https://example.com")
+        XCTAssertEqual(QRKit.urlPayload("  example.com/a?b=c  "), "https://example.com/a?b=c")
+        XCTAssertEqual(QRKit.urlPayload("https://example.com"), "https://example.com")
+        XCTAssertEqual(QRKit.urlPayload("HTTP://example.com"), "HTTP://example.com")
+        XCTAssertEqual(QRKit.urlPayload("mailto:a@example.com"), "mailto:a@example.com")
+        XCTAssertEqual(QRKit.urlPayload("ftp://example.com"), "ftp://example.com")
+        XCTAssertEqual(QRKit.urlPayload(""), "")
+        XCTAssertEqual(QRKit.urlPayload("   "), "")
+    }
+
+    func testURLPayloadTreatsHostAndPortAsAHostNotAScheme() {
+        // "." is legal in a scheme, so "example.com:8080" parsed as one and shipped a code no
+        // scanner would open. A dotted prefix is a host.
+        XCTAssertEqual(QRKit.urlPayload("example.com:8080"), "https://example.com:8080")
+        XCTAssertEqual(QRKit.urlPayload("nas.local:5000/photos"), "https://nas.local:5000/photos")
+        XCTAssertEqual(QRKit.urlPayload("192.168.1.5:8080"), "https://192.168.1.5:8080")
+        // Real schemes must keep working, including the ones whose body is all digits.
+        XCTAssertEqual(QRKit.urlPayload("tel:5550100"), "tel:5550100")
+        XCTAssertEqual(QRKit.urlPayload("https://example.com:8080"), "https://example.com:8080")
+    }
+
+    func testURLPayloadTreatsDotlessHostAndPortAsAHostNotAScheme() {
+        // "localhost" is a legal scheme by the grammar, so the dotted-host rule alone missed it.
+        XCTAssertEqual(QRKit.urlPayload("localhost:8080"), "https://localhost:8080")
+        XCTAssertEqual(QRKit.urlPayload("localhost:3000/admin"), "https://localhost:3000/admin")
+        XCTAssertEqual(QRKit.urlPayload("127.0.0.1:8080"), "https://127.0.0.1:8080")
+        XCTAssertEqual(QRKit.urlPayload("example.com:8080"), "https://example.com:8080")
+        // Schemes whose value starts with a digit must survive the port heuristic.
+        XCTAssertEqual(QRKit.urlPayload("tel:5550100"), "tel:5550100")
+        XCTAssertEqual(QRKit.urlPayload("sms:5550100"), "sms:5550100")
+        XCTAssertEqual(QRKit.urlPayload("SMSTO:5550100"), "SMSTO:5550100")
+        XCTAssertEqual(QRKit.urlPayload("http://x"), "http://x")
+        XCTAssertEqual(QRKit.urlPayload("mailto:"), "mailto:")
+    }
+
+    // MARK: - Opening decoded payloads
+
+    func testOpenableURLRewritesSMSTOAsAnSMSURL() {
+        // The tool emits SMSTO:, but nothing registers a handler for it, so it is mapped.
+        XCTAssertEqual(QRKit.openableURL(from: "SMSTO:5550100")?.absoluteString, "sms:5550100")
+        XCTAssertEqual(QRKit.openableURL(from: "smsto:+15550100")?.absoluteString, "sms:+15550100")
+        XCTAssertEqual(
+            QRKit.openableURL(from: "SMSTO:5550100:On my way")?.absoluteString,
+            "sms:5550100?body=On%20my%20way"
+        )
+        // Colons inside the message are part of the message, not another field.
+        XCTAssertEqual(
+            QRKit.openableURL(from: "SMSTO:5550100:ETA: 10:30")?.absoluteString,
+            "sms:5550100?body=ETA%3A%2010%3A30"
+        )
+        // Anything this tool would round-trip must survive the round trip.
+        let payload = QRKit.smsPayload(number: "+1 (555) 010-0", message: "Hi")
+        XCTAssertEqual(QRKit.openableURL(from: payload)?.scheme, "sms")
+
+        XCTAssertNil(QRKit.openableURL(from: "SMSTO:"))
+        XCTAssertNil(QRKit.openableURL(from: "SMSTO::hello"))
+    }
+
+    func testOpenableURLAllowsOnlySafeSchemes() {
+        XCTAssertEqual(QRKit.openableURL(from: "https://example.com")?.absoluteString, "https://example.com")
+        XCTAssertEqual(QRKit.openableURL(from: "  tel:5550100  ")?.absoluteString, "tel:5550100")
+        XCTAssertEqual(QRKit.openableURL(from: "sms:5550100")?.absoluteString, "sms:5550100")
+        XCTAssertEqual(QRKit.openableURL(from: "mailto:ada@example.com")?.absoluteString, "mailto:ada@example.com")
+        XCTAssertNil(QRKit.openableURL(from: "http:///"))
+        XCTAssertNil(QRKit.openableURL(from: "smb://server/share"))
+        XCTAssertNil(QRKit.openableURL(from: "just some text"))
+    }
+
+    func testEmailPayloadPercentEncodesQueryItems() {
+        XCTAssertEqual(QRKit.emailPayload(address: "ada@example.com", subject: "", body: ""), "mailto:ada@example.com")
+        XCTAssertEqual(
+            QRKit.emailPayload(address: "ada@example.com", subject: "Hi there", body: "a&b=c"),
+            "mailto:ada@example.com?subject=Hi%20there&body=a%26b%3Dc"
+        )
+        // "+" must be encoded: some clients would otherwise read it back as a space.
+        XCTAssertEqual(
+            QRKit.emailPayload(address: "ada+qr@example.com", subject: "", body: ""),
+            "mailto:ada%2Bqr@example.com"
+        )
+        XCTAssertEqual(QRKit.emailPayload(address: "  ", subject: "Hi", body: ""), "")
+    }
+
+    func testSMSPayloadStripsFormattingFromTheNumber() {
+        XCTAssertEqual(QRKit.smsPayload(number: "+1 (555) 010-0", message: ""), "SMSTO:+15550100")
+        XCTAssertEqual(QRKit.smsPayload(number: "+1 555 0100", message: "On my way"), "SMSTO:+15550100:On my way")
+        // The message runs to the end of the payload, so its colons need no escaping.
+        XCTAssertEqual(QRKit.smsPayload(number: "5550100", message: "ETA: 10:30"), "SMSTO:5550100:ETA: 10:30")
+        XCTAssertEqual(QRKit.smsPayload(number: "", message: "Hello"), "")
+        XCTAssertEqual(QRKit.smsPayload(number: "+", message: "Hello"), "")
+    }
+
+    func testPhonePayloadKeepsOnlyDialableCharacters() {
+        XCTAssertEqual(QRKit.phonePayload("+1 (555) 010-0"), "tel:+15550100")
+        XCTAssertEqual(QRKit.phonePayload("555.0100"), "tel:5550100")
+        XCTAssertEqual(QRKit.phonePayload("call me"), "")
+        XCTAssertEqual(QRKit.phonePayload(""), "")
+        // A "+" that isn't leading is punctuation, not a country-code marker.
+        XCTAssertEqual(QRKit.phonePayload("555+0100"), "tel:5550100")
+    }
+
+    func testPhonePayloadKeepsStarAndHashKeys() {
+        // RFC 3966 counts "*" and "#" as digits. Dropping them silently rewrote "*611" to the
+        // entirely different number "611".
+        XCTAssertEqual(QRKit.phonePayload("*611"), "tel:*611")
+        XCTAssertEqual(QRKit.phonePayload("*#06#"), "tel:*#06#")
+        XCTAssertEqual(QRKit.smsPayload(number: "*611", message: "hi"), "SMSTO:*611:hi")
+        // Punctuation with no digit at all is not a number.
+        XCTAssertEqual(QRKit.phonePayload("*"), "")
+        XCTAssertEqual(QRKit.phonePayload("#"), "")
+        XCTAssertEqual(QRKit.phonePayload("*#"), "")
+    }
+
+    func testTextPayloadIsVerbatim() {
+        XCTAssertEqual(QRKit.textPayload("  keeps  spacing  "), "  keeps  spacing  ")
+        XCTAssertEqual(QRKit.textPayload("   \n "), "")
+    }
+
+    // MARK: - Draft to payload
+
+    func testPayloadForTemplateUsesOnlyThatTemplatesFields() {
+        var draft = QRTemplateDraft()
+        draft.text = "free text"
+        draft.url = "example.com"
+        draft.wifiSSID = "Home"
+        draft.wifiPassword = "secret"
+        draft.emailAddress = "ada@example.com"
+        draft.smsNumber = "5550100"
+        draft.phoneNumber = "5550100"
+        draft.contact = QRContact(firstName: "Ada")
+
+        XCTAssertEqual(QRKit.payload(for: .text, draft: draft), "free text")
+        XCTAssertEqual(QRKit.payload(for: .url, draft: draft), "https://example.com")
+        XCTAssertEqual(QRKit.payload(for: .wifi, draft: draft), "WIFI:T:WPA;S:Home;P:secret;;")
+        XCTAssertEqual(QRKit.payload(for: .email, draft: draft), "mailto:ada@example.com")
+        XCTAssertEqual(QRKit.payload(for: .sms, draft: draft), "SMSTO:5550100")
+        XCTAssertEqual(QRKit.payload(for: .phone, draft: draft), "tel:5550100")
+        XCTAssertTrue(QRKit.payload(for: .contact, draft: draft).hasPrefix("BEGIN:VCARD"))
+    }
+
+    func testEmptyDraftProducesNoPayloadForAnyTemplate() {
+        let draft = QRTemplateDraft()
+        for template in QRTemplate.allCases {
+            XCTAssertEqual(
+                QRKit.payload(for: template, draft: draft),
+                "",
+                "\(template.title) should produce nothing from an empty draft"
+            )
+            XCTAssertNil(
+                QRKit.generate(QRKit.payload(for: template, draft: draft), scale: 4),
+                "\(template.title) should leave the preview empty rather than encode a blank record"
+            )
+        }
+    }
+
+    // MARK: - Payload summaries
+
+    func testPayloadSummaryNamesKnownFormats() {
+        XCTAssertEqual(QRKit.payloadSummary("WIFI:T:WPA;S:Home;P:pw;;"), "Wi-Fi network “Home”")
+        XCTAssertEqual(QRKit.payloadSummary("BEGIN:VCARD\r\nVERSION:3.0\r\nEND:VCARD"), "Contact card")
+        XCTAssertEqual(QRKit.payloadSummary("mailto:ada@example.com"), "Email address")
+        XCTAssertEqual(QRKit.payloadSummary("SMSTO:5550100:hi"), "Text message")
+        XCTAssertEqual(QRKit.payloadSummary("tel:5550100"), "Phone number")
+        XCTAssertEqual(QRKit.payloadSummary("https://example.com"), "Link")
+        XCTAssertNil(QRKit.payloadSummary("just some text"))
+    }
+
+    // MARK: - Template round trips
+
+    func testEveryTemplateRoundTripsThroughRenderAndDecode() throws {
+        var draft = QRTemplateDraft()
+        // Deliberately loaded with the characters each format reserves.
+        draft.text = "plain text; with, punctuation"
+        draft.url = "example.com/path?q=a&b=c"
+        draft.wifiSSID = "Guest;Net"
+        draft.wifiPassword = #"p:a,s"s\word"#
+        draft.wifiIsHidden = true
+        draft.emailAddress = "ada@example.com"
+        draft.emailSubject = "Hi there"
+        draft.emailBody = "Line one & line two"
+        draft.smsNumber = "+1 (555) 010-0"
+        draft.smsMessage = "ETA: 10:30"
+        draft.phoneNumber = "+1 555 0100"
+        draft.contact = QRContact(
+            firstName: "Ada",
+            lastName: "Lovelace",
+            organization: "Analytical Engines, Ltd",
+            jobTitle: "Mathematician",
+            phone: "+15550100",
+            email: "ada@example.com",
+            url: "https://example.com",
+            note: "Note; with, punctuation"
+        )
+
+        for template in QRTemplate.allCases {
+            let payload = QRKit.payload(for: template, draft: draft)
+            XCTAssertFalse(payload.isEmpty, "\(template.title) should build a payload from a filled draft")
+
+            let image = try XCTUnwrap(QRKit.generate(payload, scale: 10), "\(template.title) should render")
+
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("qrkit-\(template.rawValue)-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            XCTAssertTrue(QRKit.writePNG(image, to: tempURL), "\(template.title) should write a PNG")
+
+            let decoded = QRKit.decode(imageAt: tempURL)
+            XCTAssertTrue(
+                decoded.contains(payload),
+                "\(template.title) should decode back to its payload. Wanted \(payload.debugDescription), got \(decoded)"
+            )
+        }
+    }
+
+    func testWiFiPayloadSurvivesRenderDecodeAndParse() throws {
+        let network = QRWiFiNetwork(
+            ssid: #"Guest;Net,2 "A":B\C"#,
+            password: #"p;a,s:s"w\d"#,
+            security: .wpa,
+            isHidden: true
+        )
+        let payload = QRKit.wifiPayload(
+            ssid: network.ssid,
+            password: network.password,
+            security: network.security,
+            isHidden: network.isHidden
+        )
+
+        let image = try XCTUnwrap(QRKit.generate(payload, scale: 10))
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qrkit-wifi-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        XCTAssertTrue(QRKit.writePNG(image, to: tempURL))
+
+        let decoded = QRKit.decode(imageAt: tempURL)
+        let network2 = decoded.compactMap(QRKit.parseWiFiPayload).first
+        XCTAssertEqual(network2, network, "The whole pipeline should preserve every reserved character")
+    }
+
+    // MARK: - Decoding from a file
+
+    func testDecodeResultReportsUnreadableFile() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("does-not-exist-\(UUID().uuidString).png")
+        XCTAssertEqual(QRKit.decodeResult(imageAt: missing), .unreadable)
+    }
+
+    func testDecodeResultReportsNonImageFile() throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qrkit-not-an-image-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        // A .png extension over text: the extension must not be what decides this.
+        try "this is not an image".write(to: tempURL, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(QRKit.decodeResult(imageAt: tempURL), .notAnImage)
+    }
+
+    func testDecodeResultReportsAnImageWithNoCode() throws {
+        let blank = try XCTUnwrap(Self.solidImage(width: 300, height: 300))
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qrkit-blank-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        XCTAssertTrue(QRKit.writePNG(blank, to: tempURL))
+
+        XCTAssertEqual(QRKit.decodeResult(imageAt: tempURL), .payloads([]))
+    }
+
+    func testDecodeResultFindsEveryCodeInOneImage() throws {
+        let first = "https://example.com/first"
+        let second = "https://example.com/second"
+
+        let composed = try XCTUnwrap(
+            Self.sideBySide(
+                XCTUnwrap(QRKit.generate(first, scale: 8)),
+                XCTUnwrap(QRKit.generate(second, scale: 8))
+            )
+        )
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qrkit-multi-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        XCTAssertTrue(QRKit.writePNG(composed, to: tempURL))
+
+        guard case let .payloads(payloads) = QRKit.decodeResult(imageAt: tempURL) else {
+            return XCTFail("A composed image of two QR codes should decode")
+        }
+        XCTAssertTrue(payloads.contains(first), "Decoded: \(payloads)")
+        XCTAssertTrue(payloads.contains(second), "Decoded: \(payloads)")
+    }
+
+    // MARK: - Helpers
+
+    /// A plain white image — stands in for a photo that happens to contain no code at all.
+    private static func solidImage(width: Int, height: Int) -> NSImage? {
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        image.unlockFocus()
+        return image
+    }
+
+    /// Draws two codes onto one white canvas with wide margins, so each keeps the quiet zone
+    /// a decoder needs. Mirrors the real case of photographing a page with several codes.
+    private static func sideBySide(_ left: NSImage, _ right: NSImage) -> NSImage? {
+        let margin: CGFloat = 40
+        let width = left.size.width + right.size.width + margin * 3
+        let height = max(left.size.height, right.size.height) + margin * 2
+
+        let canvas = NSImage(size: NSSize(width: width, height: height))
+        canvas.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        NSGraphicsContext.current?.imageInterpolation = .none
+        left.draw(at: NSPoint(x: margin, y: margin), from: .zero, operation: .sourceOver, fraction: 1)
+        right.draw(
+            at: NSPoint(x: margin * 2 + left.size.width, y: margin),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+        canvas.unlockFocus()
+        return canvas
+    }
 }

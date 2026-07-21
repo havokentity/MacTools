@@ -3,7 +3,10 @@ import AppKit
 public enum QRSizing {
     public static func preferredSize() -> NSSize {
         let scale = currentScale
-        return NSSize(width: (420 * scale).rounded(), height: (560 * scale).rounded())
+        // 640 rather than the original 560: the Generate tab now stacks a template picker,
+        // the preview and a multi-row form, and clipping the Copy/Save row would strand the
+        // only way to get the code out of the app.
+        return NSSize(width: (420 * scale).rounded(), height: (640 * scale).rounded())
     }
 
     static var currentScale: CGFloat {
