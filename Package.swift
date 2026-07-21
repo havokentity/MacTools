@@ -97,6 +97,10 @@ let package = Package(
             targets: ["DMonteWindowManager"]
         ),
         .executable(
+            name: "DMonteMicControl",
+            targets: ["DMonteMicControl"]
+        ),
+        .executable(
             name: "DMonteSnippets",
             targets: ["DMonteSnippets"]
         )
@@ -256,6 +260,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteWindowManagerApp"
+        ),
+        .executableTarget(
+            name: "DMonteMicControl",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteMicControlApp"
         ),
         .executableTarget(
             name: "DMonteSnippets",

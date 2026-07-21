@@ -14,7 +14,7 @@ public enum CalendarAccessState: Sendable, Equatable {
 }
 
 /// A single event row shown in the day list / upcoming list. Decoupled from `EKEvent` so the view
-/// stays simple and the model is `Sendable`-friendly. `colorComponents` carries the owning
+/// stays simple and the model is `Sendable`-friendly. `calendarColor` carries the owning
 /// calendar's colour so we can draw a coloured dot without holding an `EKEvent`.
 public struct CalendarEventItem: Identifiable, Sendable {
     public let id: String
@@ -23,6 +23,16 @@ public struct CalendarEventItem: Identifiable, Sendable {
     public let end: Date
     public let isAllDay: Bool
     public let calendarColor: CGColor?
+    /// Identifier of the owning calendar, matched against the hidden-calendar set.
+    public let calendarIdentifier: String?
+    /// Owning calendar's name, shown as the row's subtitle so the colour dot is decodable.
+    public let calendarTitle: String?
+    /// `EKEvent.eventIdentifier` — the *series* identifier, kept separate from `id` (which is
+    /// per-occurrence) because Calendar.app's URL scheme addresses the series plus a date.
+    public let eventIdentifier: String?
+    /// The occurrence's originally scheduled start, which disambiguates one occurrence of a
+    /// recurring series from another.
+    public let occurrenceDate: Date?
 
     public init(
         id: String,
@@ -30,7 +40,11 @@ public struct CalendarEventItem: Identifiable, Sendable {
         start: Date,
         end: Date,
         isAllDay: Bool,
-        calendarColor: CGColor?
+        calendarColor: CGColor?,
+        calendarIdentifier: String? = nil,
+        calendarTitle: String? = nil,
+        eventIdentifier: String? = nil,
+        occurrenceDate: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -38,12 +52,45 @@ public struct CalendarEventItem: Identifiable, Sendable {
         self.end = end
         self.isAllDay = isAllDay
         self.calendarColor = calendarColor
+        self.calendarIdentifier = calendarIdentifier
+        self.calendarTitle = calendarTitle
+        self.eventIdentifier = eventIdentifier
+        self.occurrenceDate = occurrenceDate
     }
 
     /// SwiftUI colour for the owning calendar, falling back to the accent if none is set.
     public var swiftUIColor: Color {
         if let calendarColor {
             return Color(cgColor: calendarColor)
+        }
+        return .accentColor
+    }
+
+    /// The Calendar.app URL for this exact occurrence, or `nil` when the event carries no identifier
+    /// (in which case the row is not clickable rather than opening the wrong thing).
+    public var showURL: URL? {
+        CalendarKit.eventShowURL(eventIdentifier: eventIdentifier, occurrenceDate: occurrenceDate)
+    }
+}
+
+/// One calendar in the filter list: enough of an `EKCalendar` to render a toggle row without the
+/// view holding on to EventKit objects.
+public struct CalendarSourceItem: Identifiable, Sendable {
+    /// `EKCalendar.calendarIdentifier`, the key stored in the hidden-calendar set.
+    public let id: String
+    public let title: String
+    public let color: CGColor?
+
+    public init(id: String, title: String, color: CGColor?) {
+        self.id = id
+        self.title = title
+        self.color = color
+    }
+
+    /// SwiftUI colour for this calendar, falling back to the accent if none is set.
+    public var swiftUIColor: Color {
+        if let color {
+            return Color(cgColor: color)
         }
         return .accentColor
     }
@@ -64,11 +111,20 @@ public final class CalendarController: ObservableObject {
     /// Current calendar-access state, drives the permission banner.
     @Published public private(set) var accessState: CalendarAccessState = .notDetermined
     /// Days (midnight Dates) in the visible month that have at least one event — used for grid dots.
-    @Published public private(set) var daysWithEvents: Set<Date> = []
+    /// Distinct calendar colours per day, in stable order — drives the month-grid dots.
+    ///
+    /// A day is "has events" when its entry is non-empty, so this replaces the old `Set<Date>`
+    /// rather than sitting beside it: two sources for the same fact drift.
+    @Published public private(set) var eventColorsByDay: [Date: [CGColor]] = [:]
     /// Events on the selected day, time-sorted.
     @Published public private(set) var selectedDayEvents: [CalendarEventItem] = []
     /// Events over the next ~7 days, time-sorted.
     @Published public private(set) var upcomingEvents: [CalendarEventItem] = []
+    /// Every calendar EventKit knows about, title-sorted — the rows of the filter list.
+    @Published public private(set) var calendarSources: [CalendarSourceItem] = []
+    /// Calendars the user has hidden. Persisted as exclusions so an account added later is visible
+    /// without the user having to go and find it.
+    @Published public private(set) var excludedCalendarIDs: Set<String> = []
 
     /// The store. Created eagerly; access is gated on `accessState` so an unauthorized store is never
     /// queried for events.
@@ -85,6 +141,7 @@ public final class CalendarController: ObservableObject {
         displayedMonth = components.month ?? 1
         selectedDate = cal.startOfDay(for: today)
         accessState = Self.mapStatus(EKEventStore.authorizationStatus(for: .event))
+        excludedCalendarIDs = CalendarKit.persistedExcludedCalendarIDs(defaults: AppDefaults.shared)
     }
 
     // MARK: - Permission
@@ -159,6 +216,57 @@ public final class CalendarController: ObservableObject {
         reloadEvents()
     }
 
+    // MARK: - Calendar filter
+
+    /// Whether events from `calendarID` are currently shown.
+    public func isCalendarVisible(_ calendarID: String) -> Bool {
+        CalendarKit.isCalendarVisible(calendarID, excludedCalendarIDs: excludedCalendarIDs)
+    }
+
+    /// Shows or hides one calendar, persists the change, and refreshes every list that depends on it
+    /// (the grid dots included) so the toggle reads as instant.
+    public func setCalendar(_ calendarID: String, visible: Bool) {
+        let updated = CalendarKit.excludedCalendarIDs(
+            excludedCalendarIDs,
+            setting: calendarID,
+            visible: visible
+        )
+        guard updated != excludedCalendarIDs else { return }
+        excludedCalendarIDs = updated
+        CalendarKit.persistExcludedCalendarIDs(updated, defaults: AppDefaults.shared)
+        reloadEvents()
+    }
+
+    /// Clears the whole filter. Cheaper than hunting for the one calendar that was switched off when
+    /// the list is long.
+    public func showAllCalendars() {
+        guard !excludedCalendarIDs.isEmpty else { return }
+        excludedCalendarIDs = []
+        CalendarKit.persistExcludedCalendarIDs([], defaults: AppDefaults.shared)
+        reloadEvents()
+    }
+
+    /// Re-reads the account's calendars. Only meaningful once access is granted; without it EventKit
+    /// returns an empty list and the filter list would look (wrongly) like the user has no calendars.
+    private func reloadCalendarSources() {
+        guard accessState == .authorized else {
+            calendarSources = []
+            return
+        }
+        calendarSources = store.calendars(for: .event)
+            .map { CalendarSourceItem(id: $0.calendarIdentifier, title: $0.title, color: $0.cgColor) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    // MARK: - Opening in Calendar.app
+
+    /// Reveals an event in Calendar.app. A missing identifier is not an error worth interrupting the
+    /// user over — the row simply does nothing, and the view keeps such rows unclickable anyway.
+    public func openInCalendarApp(_ event: CalendarEventItem) {
+        guard let url = event.showURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     // MARK: - Grid
 
     /// The 6×7 grid for the displayed month, respecting the system `firstWeekday`.
@@ -185,7 +293,13 @@ public final class CalendarController: ObservableObject {
     }
 
     public func hasEvents(on date: Date) -> Bool {
-        daysWithEvents.contains(calendar.startOfDay(for: date))
+        !(eventColorsByDay[calendar.startOfDay(for: date)] ?? []).isEmpty
+    }
+
+    /// Up to `limit` distinct calendar colours for the day, so a day holding a work event and a
+    /// personal one shows both rather than one colour standing in for everything.
+    public func eventColors(on date: Date, limit: Int = 3) -> [CGColor] {
+        Array((eventColorsByDay[calendar.startOfDay(for: date)] ?? []).prefix(limit))
     }
 
     // MARK: - Event loading
@@ -194,11 +308,13 @@ public final class CalendarController: ObservableObject {
     /// not granted: it simply clears the event lists (the grid still works without permission).
     public func reloadEvents() {
         guard accessState == .authorized else {
-            daysWithEvents = []
+            eventColorsByDay = [:]
             selectedDayEvents = []
             upcomingEvents = []
+            calendarSources = []
             return
         }
+        reloadCalendarSources()
         reloadMonthDots()
         reloadSelectedDayEvents()
         reloadUpcoming()
@@ -214,26 +330,40 @@ public final class CalendarController: ObservableObject {
         guard let monthStart = calendar.date(from: components),
               let dayRange = calendar.range(of: .day, in: .month, for: monthStart),
               let monthEnd = calendar.date(byAdding: .day, value: dayRange.count, to: monthStart) else {
-            daysWithEvents = []
+            eventColorsByDay = [:]
             return
         }
 
+        // Queried across every calendar and filtered here rather than narrowing the predicate: one
+        // rule, in one place, drives the dots and both lists.
         let predicate = store.predicateForEvents(withStart: monthStart, end: monthEnd, calendars: nil)
-        let events = store.events(matching: predicate)
-        var days: Set<Date> = []
+        let events = visible(store.events(matching: predicate))
+        var colorsByDay: [Date: [CGColor]] = [:]
         for event in events {
             guard let start = event.startDate else { continue }
-            days.formUnion(
-                Self.eventDays(
-                    start: start,
-                    end: event.endDate ?? start,
-                    monthStart: monthStart,
-                    monthEnd: monthEnd,
-                    calendar: calendar
-                )
+            let days = Self.eventDays(
+                start: start,
+                end: event.endDate ?? start,
+                monthStart: monthStart,
+                monthEnd: monthEnd,
+                calendar: calendar
             )
+            guard let color = event.calendar?.cgColor else {
+                // Still mark the day: a colourless calendar must not make its events invisible.
+                for day in days where colorsByDay[day] == nil { colorsByDay[day] = [] }
+                continue
+            }
+            for day in days {
+                var existing = colorsByDay[day] ?? []
+                // Distinct colours only — a day with six work events should show one work dot,
+                // not six identical ones.
+                if !existing.contains(where: { CalendarKit.colorsMatch($0, color) }) {
+                    existing.append(color)
+                }
+                colorsByDay[day] = existing
+            }
         }
-        daysWithEvents = days
+        eventColorsByDay = colorsByDay
     }
 
     private func reloadSelectedDayEvents() {
@@ -249,7 +379,7 @@ public final class CalendarController: ObservableObject {
         }
 
         let predicate = store.predicateForEvents(withStart: dayStart, end: dayEnd, calendars: nil)
-        selectedDayEvents = store.events(matching: predicate)
+        selectedDayEvents = visible(store.events(matching: predicate))
             .sorted { $0.startDate < $1.startDate }
             .map(Self.makeItem(from:))
     }
@@ -267,9 +397,16 @@ public final class CalendarController: ObservableObject {
         }
 
         let predicate = store.predicateForEvents(withStart: now, end: end, calendars: nil)
-        upcomingEvents = store.events(matching: predicate)
+        upcomingEvents = visible(store.events(matching: predicate))
             .sorted { $0.startDate < $1.startDate }
             .map(Self.makeItem(from:))
+    }
+
+    /// Drops events owned by a hidden calendar.
+    private func visible(_ events: [EKEvent]) -> [EKEvent] {
+        CalendarKit.visibleEvents(events, excludedCalendarIDs: excludedCalendarIDs) {
+            $0.calendar?.calendarIdentifier
+        }
     }
 
     // MARK: - Helpers
@@ -309,7 +446,13 @@ public final class CalendarController: ObservableObject {
             start: event.startDate ?? Date(),
             end: event.endDate ?? event.startDate ?? Date(),
             isAllDay: event.isAllDay,
-            calendarColor: event.calendar?.cgColor
+            calendarColor: event.calendar?.cgColor,
+            calendarIdentifier: event.calendar?.calendarIdentifier,
+            calendarTitle: event.calendar?.title,
+            eventIdentifier: event.eventIdentifier,
+            // The same occurrence date the row id is keyed on: it survives an occurrence being
+            // detached and moved, which is what Calendar.app resolves the deep link against.
+            occurrenceDate: occurrence
         )
     }
 
@@ -328,12 +471,16 @@ public final class CalendarController: ObservableObject {
 }
 
 /// The floating Calendar popover: a month grid with weekday headers, today highlighting, event
-/// dots, prev/next/today navigation, the selected day's events, and an upcoming-events list. The
+/// dots, prev/next/today navigation, the selected day's events, and an upcoming-events list. Events
+/// can be narrowed to a chosen set of calendars, and a row opens the occurrence in Calendar.app. The
 /// grid works without Calendar permission; events appear once access is granted. Content is scaled
 /// to match the menu-bar/display scale so it fits the scaled panel (same approach as the other
 /// tools).
 public struct CalendarPopoverView: View {
     @StateObject private var controller = CalendarController()
+    /// The filter list takes over the events area rather than opening a second window: the popover
+    /// closes the moment focus leaves it, so a sheet or child panel would fight the panel host.
+    @State private var showsCalendarFilter = false
     var onQuit: () -> Void
 
     private let scale = CalendarSizing.currentScale
@@ -368,7 +515,11 @@ public struct CalendarPopoverView: View {
             weekdayHeader
             grid
             Divider().opacity(0.6)
-            eventsSection
+            if showsCalendarFilter {
+                calendarFilterSection
+            } else {
+                eventsSection
+            }
             footer
         }
         .frame(width: CalendarSizing.preferredSize().width, height: CalendarSizing.preferredSize().height)
@@ -398,6 +549,16 @@ public struct CalendarPopoverView: View {
             Spacer()
 
             Button {
+                showsCalendarFilter.toggle()
+            } label: {
+                Image(systemName: filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                    .font(.system(size: s(14), weight: .semibold))
+                    .foregroundStyle(showsCalendarFilter || filterIsActive ? accent : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(showsCalendarFilter ? "Back to events" : "Choose which calendars to show")
+
+            Button {
                 controller.goToToday()
             } label: {
                 Text("Today")
@@ -413,6 +574,85 @@ public struct CalendarPopoverView: View {
         .padding(.horizontal, s(16))
         .padding(.top, s(14))
         .padding(.bottom, s(10))
+    }
+
+    /// `true` when at least one calendar that still exists is hidden, so the header icon can advertise
+    /// that the lists are showing less than everything. Measured against the live calendar list rather
+    /// than the raw exclusion set, which retains identifiers of calendars that have since been deleted.
+    private var filterIsActive: Bool {
+        CalendarKit.hasHiddenCalendars(
+            among: controller.calendarSources.map(\.id),
+            excludedCalendarIDs: controller.excludedCalendarIDs
+        )
+    }
+
+    // MARK: - Calendar filter
+
+    private var calendarFilterSection: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: s(6)) {
+                HStack {
+                    Text("CALENDARS")
+                        .font(.system(size: s(10), weight: .bold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if filterIsActive {
+                        Button("Show All") {
+                            controller.showAllCalendars()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: s(11), weight: .semibold))
+                        .foregroundStyle(accent)
+                    }
+                }
+
+                if controller.accessState != .authorized {
+                    Text("Grant access to choose calendars.")
+                        .font(.system(size: s(11)))
+                        .foregroundStyle(.secondary)
+                } else if controller.calendarSources.isEmpty {
+                    Text("No calendars found.")
+                        .font(.system(size: s(11)))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(controller.calendarSources) { source in
+                        calendarFilterRow(source)
+                    }
+                }
+            }
+            .padding(.horizontal, s(14))
+            .padding(.vertical, s(10))
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func calendarFilterRow(_ source: CalendarSourceItem) -> some View {
+        HStack(spacing: s(8)) {
+            Circle()
+                .fill(source.swiftUIColor)
+                .frame(width: s(8), height: s(8))
+
+            Text(source.title)
+                .font(.system(size: s(12), weight: .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: s(4))
+
+            GreenSwitch(isOn: Binding(
+                get: { controller.isCalendarVisible(source.id) },
+                set: { controller.setCalendar(source.id, visible: $0) }
+            ))
+        }
+        .padding(.horizontal, s(8))
+        .padding(.vertical, s(4))
+        .background(
+            RoundedRectangle(cornerRadius: s(7), style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
     }
 
     // MARK: - Permission banner
@@ -517,9 +757,25 @@ public struct CalendarPopoverView: View {
                     Text("\(day.day)")
                         .font(.system(size: s(13), weight: day.isToday ? .bold : .medium))
                         .foregroundStyle(dayTextColor(isToday: day.isToday, isSelected: selected))
-                    Circle()
-                        .fill(controller.hasEvents(on: day.date) ? accent : Color.clear)
-                        .frame(width: s(4), height: s(4))
+                    // One dot per distinct calendar colour on the day, so a work event and a
+                    // personal one are told apart at a glance instead of both reading as the
+                    // accent. Capped at three: the cell is 34pt tall and the dots have to stay
+                    // legible. A colourless calendar still gets a dot, in the accent.
+                    HStack(spacing: s(2)) {
+                        let colors = controller.eventColors(on: day.date)
+                        if colors.isEmpty {
+                            Circle()
+                                .fill(controller.hasEvents(on: day.date) ? accent : Color.clear)
+                                .frame(width: s(4), height: s(4))
+                        } else {
+                            ForEach(Array(colors.enumerated()), id: \.offset) { _, color in
+                                Circle()
+                                    .fill(Color(cgColor: color))
+                                    .frame(width: s(4), height: s(4))
+                            }
+                        }
+                    }
+                    .frame(height: s(4))
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: s(34))
@@ -599,17 +855,46 @@ public struct CalendarPopoverView: View {
         }
     }
 
+    @ViewBuilder
     private func eventRow(_ event: CalendarEventItem) -> some View {
-        HStack(spacing: s(8)) {
-            Circle()
-                .fill(event.swiftUIColor)
-                .frame(width: s(8), height: s(8))
+        // Only events we can actually address become buttons; a row that would open the wrong thing
+        // (or nothing) should not look clickable.
+        if event.showURL != nil {
+            Button {
+                controller.openInCalendarApp(event)
+            } label: {
+                eventRowContent(event)
+            }
+            .buttonStyle(.plain)
+            .help("Open “\(event.title)” in Calendar")
+        } else {
+            eventRowContent(event)
+        }
+    }
 
-            Text(event.title)
-                .font(.system(size: s(12), weight: .medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+    private func eventRowContent(_ event: CalendarEventItem) -> some View {
+        HStack(spacing: s(8)) {
+            // The calendar's colour, so which calendar a row belongs to — and therefore what the
+            // filter is doing — is readable without opening the event.
+            RoundedRectangle(cornerRadius: s(2), style: .continuous)
+                .fill(event.swiftUIColor)
+                .frame(width: s(3))
+
+            VStack(alignment: .leading, spacing: s(1)) {
+                Text(event.title)
+                    .font(.system(size: s(12), weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if let calendarTitle = event.calendarTitle, !calendarTitle.isEmpty {
+                    Text(calendarTitle)
+                        .font(.system(size: s(9), weight: .medium))
+                        .foregroundStyle(event.swiftUIColor)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
 
             Spacer(minLength: s(4))
 
@@ -620,10 +905,12 @@ public struct CalendarPopoverView: View {
         }
         .padding(.horizontal, s(8))
         .padding(.vertical, s(5))
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: s(7), style: .continuous)
                 .fill(Color.primary.opacity(0.05))
         )
+        .contentShape(RoundedRectangle(cornerRadius: s(7), style: .continuous))
     }
 
     private func timeLabel(for event: CalendarEventItem) -> String {

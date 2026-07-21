@@ -35,12 +35,14 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Color Picker** | System eyedropper with hex / RGB / HSL and a recent‑colors palette |
 | **Window Manager** | Snap windows to halves, thirds, and corners with global shortcuts (⌃⌥ + arrows) |
 | **Audio Switcher** | One‑click switching of the default input/output device |
+| **Mic Control** | Mute your microphone system‑wide from the menu bar, with the tray icon showing at a glance whether you're live |
 | **Volume Mixer** | Per‑app volume sliders and per‑app output routing via CoreAudio process taps (macOS 14.2+) |
 | **Audio Router** | Virtual audio routing — install independent loopback cables for app‑to‑app audio, build mirror/aggregate devices with presets, and "listen" to any input through an output |
 | **Focus Timer** | Pomodoro timer with a live menu bar countdown |
 | **Calendar** | Menu bar month view with your upcoming events |
 | **Keep Awake** | Prevent sleep, optionally for a set duration |
 | **Maintenance** | Handy Finder/system toggles and cache/index refreshes |
+| **Dev Tools** | JSON, Base64, JWT, URL, hashing, UUID, timestamp, and case utilities |
 | **Dev Tools** | JSON, Base64, URL, hashing, UUID, timestamp, and case utilities |
 | **Snippets** | A searchable library of reusable text — click one to paste it into the app you came from |
 
