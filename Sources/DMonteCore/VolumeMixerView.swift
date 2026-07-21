@@ -436,8 +436,18 @@ public final class AppVolumeMixerController: ObservableObject {
         isActive: Bool,
         gain: Float,
         hasCustomRoute: Bool,
-        manualOverride: Bool?
+        manualOverride: Bool?,
+        isIgnored: Bool = false
     ) -> Bool {
+        // Ignoring an app moves it to the denylist tab: the mixer is being told to leave it
+        // alone. That has to release the tap, not merely hide the row — an ignored app should
+        // play back through the system untouched. Checked first, so it overrides even an explicit
+        // play override or a custom route. The app's gain is left persisted, so un-ignoring it
+        // restores the level the reconciler will then re-apply.
+        //
+        // This does NOT couple to the "Hide Ignored Apps" display filter: the reconciler runs over
+        // the unfiltered target set, so hiding a row still changes nothing about processing.
+        guard !isIgnored else { return false }
         guard isActive else { return false }
         if let manualOverride {
             return manualOverride
@@ -458,7 +468,8 @@ public final class AppVolumeMixerController: ObservableObject {
                 isActive: target.isActive,
                 gain: target.gain,
                 hasCustomRoute: !outputRouteUIDs(for: target).isEmpty,
-                manualOverride: manualProcessingOverrides[target.stableKey]
+                manualOverride: manualProcessingOverrides[target.stableKey],
+                isIgnored: target.isIgnored
             ) {
                 ensureProcessing(for: target, reportError: false)
             } else if audioEngines[target.id] != nil {
