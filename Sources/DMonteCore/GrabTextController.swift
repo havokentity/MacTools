@@ -118,6 +118,12 @@ public final class GrabTextController: ObservableObject {
     /// Whether this process currently holds the Screen Recording grant that screen capture needs.
     @Published public private(set) var hasScreenRecordingAccess: Bool
 
+    /// Whether the current result is still only in this window — recognized, but never put on the
+    /// clipboard because "copy automatically" was off. The window renders the status line *beside*
+    /// the text on the strength of this, since the result box shows the text instead of the status
+    /// once there is one, and a sentence written to `statusMessage` there would never be seen.
+    @Published public private(set) var resultNeedsCopying = false
+
     /// Called after a hotkey-started grab whose result the user still has to see or act on — a
     /// failure, a missing permission, or text that wasn't auto-copied. A hotkey grab deliberately
     /// leaves the window closed, so this is the only way that outcome reaches the user.
@@ -132,10 +138,20 @@ public final class GrabTextController: ObservableObject {
     private let store: GrabTextShortcutStore
     private let capture: GrabTextCapture
     private let screenRecordingAccess: @Sendable () -> Bool
+    private let secureInput: @MainActor () -> Bool
     private let registrar: GrabTextHotKeyRegistrar
 
     /// Held only to keep the Carbon registration alive; releasing it unregisters.
     private var hotKey: AnyObject?
+
+    /// Re-reads the environment while the window is on screen; nil when it isn't. See
+    /// `beginEnvironmentMonitoring(interval:)`.
+    private var environmentTimer: Timer?
+
+    /// Whether a hotkey grab has already pulled the window forward to report the missing Screen
+    /// Recording grant. Re-armed the moment the grant comes back, so a later revocation is
+    /// announced again.
+    private var hasAnnouncedMissingScreenRecording = false
 
     /// Whether the owner has asked for a live hotkey. Assigning a shortcut re-registers only when
     /// it is true, so a controller that was never asked to claim a hotkey (every unit test, and any
@@ -146,6 +162,7 @@ public final class GrabTextController: ObservableObject {
         defaults: UserDefaults? = nil,
         capture: @escaping GrabTextCapture = GrabTextCapturer.grabRegion,
         screenRecordingAccess: @escaping @Sendable () -> Bool = { ScreenRecordingAccess.isGranted },
+        secureInput: @escaping @MainActor () -> Bool = { SecureInputState.isBlockingHotKeys },
         registrar: @escaping GrabTextHotKeyRegistrar = GrabTextController.registerGlobalHotKey
     ) {
         let resolvedDefaults = defaults ?? AppDefaults.shared
@@ -153,6 +170,7 @@ public final class GrabTextController: ObservableObject {
         self.store = GrabTextShortcutStore(defaults: resolvedDefaults)
         self.capture = capture
         self.screenRecordingAccess = screenRecordingAccess
+        self.secureInput = secureInput
         self.registrar = registrar
         // Default to copying: the tool's whole point is getting text onto the clipboard, and the
         // key may be unregistered in a scratch suite, where `bool(forKey:)` would read false.
@@ -162,6 +180,11 @@ public final class GrabTextController: ObservableObject {
         self.shortcut = store.effectiveShortcut()
         self.hasScreenRecordingAccess = screenRecordingAccess()
     }
+
+    // No `deinit` teardown for `environmentTimer`: under Swift 6 a nonisolated deinit may not
+    // touch a @MainActor, non-Sendable property (the same constraint WindowManagerController
+    // documents). The timer captures only `[weak self]`, so it cannot keep the controller alive,
+    // and it is invalidated deterministically on the main actor when the window leaves the screen.
 
     // MARK: - Hotkey
 
@@ -181,7 +204,7 @@ public final class GrabTextController: ObservableObject {
         wantsHotKey = true
         hotKey = nil
         registrationFailure = nil
-        secureInputBlocked = SecureInputState.isBlockingHotKeys
+        secureInputBlocked = secureInput()
 
         guard let shortcut else { return } // deliberately off
 
@@ -221,11 +244,54 @@ public final class GrabTextController: ObservableObject {
         if wantsHotKey { registerHotKey() }
     }
 
-    /// Re-reads the state that can change behind our back while the window is closed: Secure Input
-    /// and the Screen Recording grant. Neither posts a notification.
+    /// Re-reads the state that can change behind our back: Secure Input and the Screen Recording
+    /// grant. Neither posts a notification, so the only way to have it right is to look again.
     public func refreshEnvironment() {
-        secureInputBlocked = SecureInputState.isBlockingHotKeys
-        hasScreenRecordingAccess = screenRecordingAccess()
+        secureInputBlocked = secureInput()
+        updateScreenRecordingAccess()
+    }
+
+    /// How often the environment is re-read while the window is on screen. Matches Window
+    /// Manager's permission poll; both reads are cheap local lookups.
+    public static let environmentPollInterval: TimeInterval = 1.0
+
+    /// Starts re-reading the environment on a timer, and reads it once immediately. Pair with
+    /// `endEnvironmentMonitoring()`; the owner drives both from the window's on-screen visibility.
+    ///
+    /// A poll rather than a view lifecycle hook because there is no view lifecycle to hang this
+    /// on: `HelperWindowHost` builds the hosting controller once and never tears it down, so the
+    /// root view's `onAppear` fires at launch and never again however many times the window is
+    /// shown. Sampling only at launch leaves the hint permanently wrong in both directions — no
+    /// warning while Secure Input silently eats every press, or a warning that outlives the
+    /// stuck `loginwindow` that caused it. And a poll rather than a notification because macOS
+    /// announces neither of these two states.
+    public func beginEnvironmentMonitoring(interval: TimeInterval = GrabTextController.environmentPollInterval) {
+        refreshEnvironment()
+
+        environmentTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            // Timers fire on the run loop that scheduled them, which is the main one here.
+            MainActor.assumeIsolated {
+                self?.refreshEnvironment()
+            }
+        }
+        environmentTimer = timer
+        // Common modes so the hint keeps updating while a menu is open or the window is dragged.
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// Stops the environment poll — the window is off screen, so nobody can read the hint.
+    public func endEnvironmentMonitoring() {
+        environmentTimer?.invalidate()
+        environmentTimer = nil
+    }
+
+    /// Re-reads the Screen Recording grant. Regaining it re-arms the one-shot hotkey announcement:
+    /// a grant that is given and later revoked has to be reported again.
+    private func updateScreenRecordingAccess() {
+        let granted = screenRecordingAccess()
+        hasScreenRecordingAccess = granted
+        if granted { hasAnnouncedMissingScreenRecording = false }
     }
 
     private static func statusCode(for error: GlobalHotKeyRegistrationError) -> Int32 {
@@ -287,6 +353,7 @@ public final class GrabTextController: ObservableObject {
 
         isGrabbing = true
         recognizedText = ""
+        resultNeedsCopying = false
         statusMessage = "Drag to select the region containing text…"
 
         return Task {
@@ -297,7 +364,6 @@ public final class GrabTextController: ObservableObject {
 
     private func finish(_ outcome: GrabTextOutcome, source: GrabSource) {
         isGrabbing = false
-        hasScreenRecordingAccess = screenRecordingAccess()
 
         // Whether the user has to look at this. A hotkey grab that quietly landed on the clipboard
         // is the success case and must stay invisible; everything else has to surface somewhere.
@@ -309,6 +375,16 @@ public final class GrabTextController: ObservableObject {
             needsAttention = false // they cancelled it; they know
         case .needsScreenRecordingPermission:
             statusMessage = Self.permissionMessage
+            // Say this once, not on every press. While the grant is missing, an Esc-cancel is
+            // indistinguishable from a capture TCC blocked (see `GrabTextKit.classifyCapture`),
+            // so surfacing it every time would steal activation from whatever the user was typing
+            // in each time they dismissed the crosshair — the precise interruption the shortcut
+            // exists to avoid. The preflight can also disagree with reality (it is read in this
+            // process while `screencapture` runs in another), which makes "every time" a way to
+            // be repeatedly wrong. Once is enough to send them to Settings; the window stays open
+            // behind them with the explanation on it.
+            needsAttention = !hasAnnouncedMissingScreenRecording
+            hasAnnouncedMissingScreenRecording = true
         case .failure(let reason):
             statusMessage = reason
         case .success(let text):
@@ -322,11 +398,18 @@ public final class GrabTextController: ObservableObject {
                     needsAttention = false
                 } else {
                     // Nothing was copied, so the text exists only in the window — which a hotkey
-                    // grab left closed. Showing it is the only way the grab isn't wasted.
+                    // grab left closed. Showing it is the only way the grab isn't wasted, and
+                    // `resultNeedsCopying` is what gets this sentence rendered next to the result
+                    // rather than behind it.
+                    resultNeedsCopying = true
                     statusMessage = "Grabbed \(text.count) characters. Press Copy to put them on the clipboard."
                 }
             }
         }
+
+        // After the switch: regaining the grant re-arms the announcement above, so this must not
+        // run before the branch that consumes it.
+        updateScreenRecordingAccess()
 
         if source == .hotKey, needsAttention {
             onHotKeyResultNeedsAttention?()
@@ -337,13 +420,14 @@ public final class GrabTextController: ObservableObject {
     public func copyRecognizedText() {
         guard !recognizedText.isEmpty else { return }
         Self.copyToPasteboard(recognizedText)
+        resultNeedsCopying = false
         statusMessage = "Copied to clipboard."
     }
 
     /// Asks for the Screen Recording grant and re-reads it.
     public func requestScreenRecordingAccess() {
         ScreenRecordingAccess.request()
-        hasScreenRecordingAccess = screenRecordingAccess()
+        updateScreenRecordingAccess()
     }
 
     static let permissionMessage = """

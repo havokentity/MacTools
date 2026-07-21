@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import XCTest
 @testable import DMonteCore
 
@@ -111,6 +112,7 @@ final class GrabTextHotKeyTests: XCTestCase {
         defaults: UserDefaults,
         capture: @escaping GrabTextCapture,
         hasScreenRecordingAccess: Bool = true,
+        secureInput: @escaping @MainActor () -> Bool = { false },
         registrarError: GlobalHotKeyRegistrationError? = nil
     ) -> (controller: GrabTextController, press: () -> Void) {
         let box = HandlerBox()
@@ -118,6 +120,7 @@ final class GrabTextHotKeyTests: XCTestCase {
             defaults: defaults,
             capture: capture,
             screenRecordingAccess: { hasScreenRecordingAccess },
+            secureInput: secureInput,
             registrar: { _, _, handler in
                 if let registrarError { throw registrarError }
                 box.handler = handler
@@ -341,6 +344,178 @@ final class GrabTextHotKeyTests: XCTestCase {
     }
 
     @MainActor
+    func testUncopiedTextIsFlaggedSoTheWindowCanSayItWasNotCopied() async {
+        let defaults = scratchDefaults()
+        defaults.set(false, forKey: DefaultsKey.grabTextCopyAutomatically)
+        let (controller, press) = makeController(defaults: defaults, capture: { .success("only in the window") })
+        controller.registerHotKey()
+
+        press()
+        await settle()
+
+        // The sentence explaining that nothing was copied lives in `statusMessage`, which the
+        // result box replaces with the text itself as soon as there is one. `resultNeedsCopying`
+        // is what lets the window render it anyway — without it the instruction is unreachable UI.
+        XCTAssertTrue(controller.resultNeedsCopying)
+        XCTAssertTrue(controller.statusMessage.contains("Press Copy"))
+
+        controller.copyRecognizedText()
+        XCTAssertFalse(controller.resultNeedsCopying, "once it is on the clipboard there is nothing left to say")
+        XCTAssertEqual(controller.statusMessage, "Copied to clipboard.")
+    }
+
+    @MainActor
+    func testAutoCopiedTextIsNotFlaggedAsNeedingACopy() async {
+        let (controller, press) = makeController(defaults: scratchDefaults(), capture: { .success("straight to the clipboard") })
+        controller.registerHotKey()
+        controller.copyAutomatically = true
+
+        press()
+        await settle()
+
+        XCTAssertFalse(controller.resultNeedsCopying)
+    }
+
+    @MainActor
+    func testMissingScreenRecordingInterruptsOnceRatherThanOnEveryPress() async {
+        let (controller, press) = makeController(
+            defaults: scratchDefaults(),
+            capture: { .needsScreenRecordingPermission },
+            hasScreenRecordingAccess: false
+        )
+        controller.registerHotKey()
+
+        var interruptions = 0
+        controller.onHotKeyResultNeedsAttention = { interruptions += 1 }
+
+        press()
+        await settle()
+        XCTAssertEqual(interruptions, 1, "a missing grant has to be explained")
+
+        // While the grant is missing an Esc-cancel is classified as a permission problem, so
+        // surfacing it every time would steal activation on every cancelled press — the exact
+        // interruption the shortcut exists to avoid.
+        press()
+        await settle()
+        press()
+        await settle()
+        XCTAssertEqual(interruptions, 1, "saying it again on every press is the interruption, not the fix")
+        XCTAssertEqual(controller.statusMessage, GrabTextController.permissionMessage, "the window still explains it")
+    }
+
+    @MainActor
+    func testMissingScreenRecordingIsAnnouncedAgainAfterTheGrantIsLostASecondTime() async {
+        let grant = EnvironmentSwitch(isOn: false)
+        let box = HandlerBox()
+        let controller = GrabTextController(
+            defaults: scratchDefaults(),
+            capture: { .needsScreenRecordingPermission },
+            screenRecordingAccess: { MainActor.assumeIsolated { grant.isOn } },
+            secureInput: { false },
+            registrar: { _, _, handler in
+                box.handler = handler
+                return NSObject()
+            }
+        )
+        controller.registerHotKey()
+
+        var interruptions = 0
+        controller.onHotKeyResultNeedsAttention = { interruptions += 1 }
+
+        box.handler?()
+        await settle()
+        XCTAssertEqual(interruptions, 1)
+
+        // The user grants it; the one-shot has to re-arm, or a later revocation would be silent.
+        grant.isOn = true
+        controller.refreshEnvironment()
+        XCTAssertTrue(controller.hasScreenRecordingAccess)
+
+        grant.isOn = false
+        box.handler?()
+        await settle()
+        XCTAssertEqual(interruptions, 2, "a grant that is lost again is a new problem, not the old one")
+    }
+
+    // MARK: - Controller: the environment behind the window
+
+    @MainActor
+    func testSecureInputIsReReadRatherThanTrustedFromLaunch() {
+        let secure = EnvironmentSwitch(isOn: false)
+        let (controller, _) = makeController(
+            defaults: scratchDefaults(),
+            capture: { .cancelled },
+            secureInput: { secure.isOn }
+        )
+        controller.registerHotKey()
+        XCTAssertFalse(controller.secureInputBlocked)
+
+        // Secure Input comes on behind our back — a password field, the lock screen. macOS
+        // announces nothing, so only looking again can tell.
+        secure.isOn = true
+        controller.refreshEnvironment()
+        XCTAssertTrue(controller.secureInputBlocked, "the hint has to say why the shortcut stopped working")
+
+        // And the other direction: a warning that outlives its cause is just as wrong.
+        secure.isOn = false
+        controller.refreshEnvironment()
+        XCTAssertFalse(controller.secureInputBlocked, "the warning must not outlive the block it describes")
+    }
+
+    @MainActor
+    func testEnvironmentPollNoticesSecureInputTurningOnWhileTheWindowIsOpen() async {
+        let secure = EnvironmentSwitch(isOn: false)
+        let (controller, _) = makeController(
+            defaults: scratchDefaults(),
+            capture: { .cancelled },
+            secureInput: { secure.isOn }
+        )
+        controller.registerHotKey()
+
+        // The window is on screen and stays there. Its `onAppear` has already fired and can never
+        // fire again — the hosting controller is built once — so the poll is the only thing that
+        // can keep this true.
+        controller.beginEnvironmentMonitoring(interval: 0.02)
+        XCTAssertFalse(controller.secureInputBlocked)
+
+        let blocked = expectation(description: "the poll surfaces Secure Input turning on")
+        blocked.assertForOverFulfill = false
+        let subscription = controller.$secureInputBlocked
+            .filter { $0 }
+            .sink { _ in blocked.fulfill() }
+
+        secure.isOn = true
+        await fulfillment(of: [blocked], timeout: 5)
+        subscription.cancel()
+        controller.endEnvironmentMonitoring()
+
+        XCTAssertTrue(controller.secureInputBlocked)
+    }
+
+    @MainActor
+    func testEnvironmentPollStopsWhenTheWindowLeavesTheScreen() async {
+        let secure = EnvironmentSwitch(isOn: false)
+        let (controller, _) = makeController(
+            defaults: scratchDefaults(),
+            capture: { .cancelled },
+            secureInput: { secure.isOn }
+        )
+
+        controller.beginEnvironmentMonitoring(interval: 0.02)
+        controller.endEnvironmentMonitoring()
+
+        // Nobody can read the hint, so nothing should be spent keeping it fresh.
+        secure.isOn = true
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(controller.secureInputBlocked, "the poll must not outlive the window it serves")
+
+        // And it comes back when the window does.
+        controller.beginEnvironmentMonitoring(interval: 0.02)
+        controller.endEnvironmentMonitoring()
+        XCTAssertTrue(controller.secureInputBlocked, "showing the window re-reads immediately, not a tick later")
+    }
+
+    @MainActor
     func testCopyAutomaticallyIsPersistedOnChange() {
         let defaults = scratchDefaults()
         let (controller, _) = makeController(defaults: defaults, capture: { .cancelled })
@@ -370,6 +545,14 @@ final class GrabTextHotKeyTests: XCTestCase {
         private var count = 0
         func increment() { count += 1 }
         func value() -> Int { count }
+    }
+
+    /// A system flag the test can flip mid-run — Secure Input, the Screen Recording grant. Both
+    /// are read through injected closures precisely because macOS gives no way to script them.
+    @MainActor
+    private final class EnvironmentSwitch {
+        var isOn: Bool
+        init(isOn: Bool) { self.isOn = isOn }
     }
 
     /// Makes the first N registration attempts fail. Main-actor confined: the registrar runs there.

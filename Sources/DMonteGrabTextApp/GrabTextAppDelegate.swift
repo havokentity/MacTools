@@ -36,6 +36,20 @@ final class GrabTextAppDelegate: NSObject, NSApplicationDelegate {
         windowHost = host
         host.configureWindow()
 
+        // The hint line under the button reports two things macOS changes without telling anyone:
+        // Secure Input (which silently swallows every hotkey press) and the Screen Recording grant.
+        // Sampled once at launch they go stale in both directions — no warning while the shortcut
+        // is being eaten, or a warning that outlives the password field that caused it. The window
+        // is built once and never rebuilt, so `onAppear` cannot do this; re-read while it is on
+        // screen, and stop the moment it isn't, because this is an idle helper the rest of the time.
+        host.onVisibilityChanged = { [controller] isVisible in
+            if isVisible {
+                controller.beginEnvironmentMonitoring()
+            } else {
+                controller.endEnvironmentMonitoring()
+            }
+        }
+
         let icon = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Grab Text") ?? NSImage()
         statusItem = HelperStatusItem(
             image: icon,
@@ -65,6 +79,7 @@ final class GrabTextAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        controller.endEnvironmentMonitoring()
         controller.unregisterHotKey()
         windowHost?.tearDownForTermination()
         statusItem?.remove()

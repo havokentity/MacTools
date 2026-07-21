@@ -50,6 +50,9 @@ public struct GrabTextWindowView: View {
         }
         .frame(width: layout.windowSize.width, height: layout.windowSize.height)
         .frostedPanel(cornerRadius: 18)
+        // Fires exactly once, at launch: the hosting controller is built once and never torn
+        // down, so this is the first reading rather than the mechanism that keeps it true. The
+        // window host drives that — see `GrabTextController.beginEnvironmentMonitoring()`.
         .onAppear { controller.refreshEnvironment() }
     }
 
@@ -187,12 +190,27 @@ public struct GrabTextWindowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(layout.cardPadding)
             } else {
-                Text(controller.recognizedText)
-                    .font(.system(size: layout.fieldFontSize, weight: .regular, design: .default))
-                    .foregroundStyle(Color.primary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(layout.cardPadding)
+                VStack(alignment: .leading, spacing: layout.buttonRowSpacing / 2) {
+                    // With a result on screen the box shows the text, so the status line has
+                    // nowhere left to be read — and after a hotkey grab with "copy automatically"
+                    // off it is carrying the one thing the user has to act on: nothing was copied.
+                    // Above the text is the only place that sentence is ever seen.
+                    if controller.resultNeedsCopying {
+                        Text(controller.statusMessage)
+                            .font(.system(size: layout.captionFontSize, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    Text(controller.recognizedText)
+                        .font(.system(size: layout.fieldFontSize, weight: .regular, design: .default))
+                        .foregroundStyle(Color.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(layout.cardPadding)
             }
         }
         .frame(maxWidth: .infinity)
