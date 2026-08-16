@@ -41,6 +41,7 @@ HELPERS=(
   "DMonteDriveEjector|DMonte Drive Ejector.app|DriveEjectorInfo.plist"
   "DMonteScratchpad|DMonte Scratchpad.app|ScratchpadInfo.plist"
   "DMonteNetworkInfo|DMonte Network Info.app|NetworkInfoInfo.plist"
+  "DMonteVideoSplitter|DMonte Video Splitter.app|VideoSplitterInfo.plist"
 )
 
 stamp_version() {
@@ -106,6 +107,12 @@ done
 
 # Video Downloader ships bundled yt-dlp + ffmpeg/ffprobe in its Resources/bin, so
 # downloads (including merges and recodes) work without any system install.
+#
+# The Video Splitter helper reads ffmpeg/ffprobe from this exact path rather than
+# carrying its own copies — they are 126 MB and both helpers ship inside the same
+# signed container. If these binaries ever move or this helper is renamed, update
+# VideoSplitterTools.siblingVideoDownloaderBinDirectory to match, or the splitter
+# silently falls back to a system ffmpeg the user may not have.
 VIDEO_DOWNLOADER_RESOURCES_DIR="$HELPERS_DIR/DMonte Video Downloader.app/Contents/Resources"
 VIDEO_DOWNLOADER_BIN_DIR="$VIDEO_DOWNLOADER_RESOURCES_DIR/bin"
 mkdir -p "$VIDEO_DOWNLOADER_BIN_DIR"

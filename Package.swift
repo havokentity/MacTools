@@ -115,6 +115,10 @@ let package = Package(
         .executable(
             name: "DMonteNetworkInfo",
             targets: ["DMonteNetworkInfo"]
+        ),
+        .executable(
+            name: "DMonteVideoSplitter",
+            targets: ["DMonteVideoSplitter"]
         )
     ],
     dependencies: [
@@ -307,6 +311,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteNetworkInfoApp"
+        ),
+        .executableTarget(
+            name: "DMonteVideoSplitter",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteVideoSplitterApp"
         ),
         .testTarget(
             name: "DMonteCoreTests",
