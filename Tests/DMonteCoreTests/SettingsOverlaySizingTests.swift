@@ -23,6 +23,16 @@ final class SettingsOverlaySizingTests: XCTestCase {
         assertSheetFits(panel: FocusTimerSizing.preferredSize(), sheet: FocusTimerSizing.settingsSize(), tool: "Focus Timer")
     }
 
+    /// System Monitor's sheet was a literal 338x350 against a 370pt panel, so at scale 1 it
+    /// overhung by 4pt once the overlay's padding was added. It is capped at the panel now.
+    func testSystemMonitorSettingsSheetFitsItsPanel() {
+        assertSheetFits(
+            panel: SystemMonitorPanelSizing.preferredSize(),
+            sheet: SystemMonitorPanelSizing.settingsSize(),
+            tool: "System Monitor"
+        )
+    }
+
     /// Clean Drive's developer-junk sheet is sized to fill the panel rather than to a comfortable
     /// literal, so it is the one sheet that would spill the instant the 18pt-per-side padding
     /// `PreferencesOverlay` adds were forgotten. Asserted against the padded size for that reason.

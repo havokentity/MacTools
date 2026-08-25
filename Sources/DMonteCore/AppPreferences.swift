@@ -53,6 +53,9 @@ public enum DefaultsKey {
     public static let systemMonitorTemperatureUnit = "tool.systemMonitor.temperatureUnit"
     public static let systemMonitorOpenAtLogin = "tool.systemMonitor.openAtLogin"
     public static let systemMonitorShowsTrayIcon = "tool.systemMonitor.showsTrayIcon"
+    /// Which column the popover's top-process list is ranked by. Persisted because whichever of
+    /// the two a user cares about, they care about it every time they open the panel.
+    public static let systemMonitorProcessSortKey = "tool.systemMonitor.processSortKey"
     public static let clipboardOpenAtLogin = "tool.clipboard.openAtLogin"
     public static let clipboardMaxHistory = "tool.clipboard.maxHistory"
     public static let grabTextCopyAutomatically = "tool.grabText.copyAutomatically"
@@ -114,6 +117,7 @@ public enum AppDefaults {
             DefaultsKey.systemMonitorTemperatureUnit: TemperatureUnitPreference.celsius.rawValue,
             DefaultsKey.systemMonitorOpenAtLogin: false,
             DefaultsKey.systemMonitorShowsTrayIcon: true,
+            DefaultsKey.systemMonitorProcessSortKey: TopProcessSortKey.cpu.rawValue,
             DefaultsKey.clipboardOpenAtLogin: false,
             DefaultsKey.clipboardMaxHistory: 200,
             DefaultsKey.grabTextCopyAutomatically: true,

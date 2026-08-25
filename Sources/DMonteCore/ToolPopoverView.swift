@@ -449,13 +449,16 @@ public struct SystemMonitorPopoverView: View {
                 .padding(.vertical, layout.headerVerticalPadding)
 
                 LazyVGrid(columns: columns, spacing: layout.gridSpacing) {
-                    LoadCard(snapshot: monitor.snapshot, layout: layout)
-                    MemoryCard(snapshot: monitor.snapshot, layout: layout)
+                    LoadCard(snapshot: monitor.snapshot, history: monitor.history, layout: layout)
+                    MemoryCard(snapshot: monitor.snapshot, history: monitor.history, layout: layout)
                     DiskCard(snapshot: monitor.snapshot, layout: layout)
-                    NetworkCard(snapshot: monitor.snapshot, layout: layout)
+                    NetworkCard(snapshot: monitor.snapshot, history: monitor.history, layout: layout)
                 }
                 .padding(.horizontal, layout.gridHorizontalPadding)
                 .padding(.bottom, layout.gridBottomPadding)
+
+                TopProcessCard(snapshot: monitor.topProcesses, layout: layout)
+                    .padding(.horizontal, layout.gridHorizontalPadding)
 
                 Spacer(minLength: 0)
             }
@@ -480,13 +483,16 @@ public struct SystemMonitorPopoverView: View {
     }
 }
 
-private struct SystemMonitorPanelLayout {
+/// Internal rather than private so the suite can add its metrics up and check they still fit the
+/// panel: the sparkline row and the process card were both added by editing one of these numbers
+/// and the panel height separately, which is exactly how content ends up clipped.
+struct SystemMonitorPanelLayout {
     let scale: CGFloat
 
+    /// Taken from the sizing enum rather than recomputed, so the panel the host sizes and the
+    /// content laid out inside it always agree on how much room there is.
     static var current: SystemMonitorPanelLayout {
-        let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let scale = min(1.0, max(0.88, visibleFrame.height / 950))
-        return SystemMonitorPanelLayout(scale: scale)
+        SystemMonitorPanelLayout(scale: SystemMonitorPanelSizing.currentScale)
     }
 
     var titleFontSize: CGFloat { 15 * scale }
@@ -497,7 +503,7 @@ private struct SystemMonitorPanelLayout {
     var gridHorizontalPadding: CGFloat { 10 * scale }
     var gridBottomPadding: CGFloat { 8 * scale }
     var gridSpacing: CGFloat { 8 * scale }
-    var cardHeight: CGFloat { 130 * scale }
+    var cardHeight: CGFloat { 148 * scale }
     var cardPadding: CGFloat { 8 * scale }
     var cardCornerRadius: CGFloat { 14 * scale }
     var badgeSize: CGFloat { 20 * scale }
@@ -523,16 +529,43 @@ private struct SystemMonitorPanelLayout {
     var networkIconFontSize: CGFloat { 10 * scale }
     var networkValueFontSize: CGFloat { 15 * scale }
     var networkLineWidth: CGFloat { 100 * scale }
+    var sparklineHeight: CGFloat { 18 * scale }
+    var sparklineTopGap: CGFloat { 5 * scale }
+    var sparklineLineWidth: CGFloat { 1.4 * scale }
+    /// 16 padding + a 20pt header row + five 16pt rows + the five 2pt gaps between them, rounded
+    /// up so the last row is not shaved off.
+    var processCardHeight: CGFloat { 130 * scale }
+    var processCardPadding: CGFloat { 8 * scale }
+    var processHeaderFontSize: CGFloat { 10.5 * scale }
+    var processRowHeight: CGFloat { 16 * scale }
+    var processRowSpacing: CGFloat { 2 * scale }
+    var processHeaderSpacing: CGFloat { 4 * scale }
+    var processNameFontSize: CGFloat { 11.5 * scale }
+    var processValueFontSize: CGFloat { 11.5 * scale }
+    var processSegmentFontSize: CGFloat { 9.5 * scale }
+    var processSegmentWidth: CGFloat { 34 * scale }
+    var processSegmentHeight: CGFloat { 16 * scale }
+    var processSegmentCornerRadius: CGFloat { 5 * scale }
 }
 
 private struct LoadCard: View {
     var snapshot: MetricSnapshot
+    var history: MetricHistory
     var layout: SystemMonitorPanelLayout
     @AppStorage(DefaultsKey.systemMonitorTemperatureUnit, store: AppDefaults.shared) private var temperatureUnitRaw = TemperatureUnitPreference.celsius.rawValue
 
     var body: some View {
         MonitorCard(badge: "waveform.path.ecg", layout: layout) {
             ArcGauge(value: snapshot.cpuUsage, color: .green, label: snapshot.cpuUsage.percentString, layout: layout)
+
+            // Load is already a fraction of one, so the trace is plotted against that fixed
+            // ceiling. Auto-scaling would redraw an idle machine's 2% jitter as a mountain range.
+            MetricSparkline(
+                series: history.series(\.cpuUsage),
+                scale: .unitInterval,
+                color: .green,
+                layout: layout
+            )
 
             Color.clear.frame(height: layout.visualGap)
 
@@ -553,11 +586,19 @@ private struct LoadCard: View {
 
 private struct MemoryCard: View {
     var snapshot: MetricSnapshot
+    var history: MetricHistory
     var layout: SystemMonitorPanelLayout
 
     var body: some View {
         MonitorCard(badge: "memorychip", layout: layout) {
             ArcGauge(value: snapshot.memoryUsage, color: .green, label: snapshot.memoryUsage.percentString, layout: layout)
+
+            MetricSparkline(
+                series: history.series(\.memoryUsage),
+                scale: .unitInterval,
+                color: .green,
+                layout: layout
+            )
 
             Color.clear.frame(height: layout.visualGap)
 
@@ -606,6 +647,7 @@ private struct DiskCard: View {
 
 private struct NetworkCard: View {
     var snapshot: MetricSnapshot
+    var history: MetricHistory
     var layout: SystemMonitorPanelLayout
 
     var body: some View {
@@ -616,6 +658,26 @@ private struct NetworkCard: View {
                 layout: layout
             )
 
+            // Both directions share one axis. Scaled independently the upstream trace — typically
+            // a fortieth of the downstream one — would draw just as tall and imply a symmetry the
+            // link does not have.
+            ZStack {
+                MetricSparkline(
+                    series: history.series(\.networkDownRate),
+                    scale: networkScale,
+                    color: .green,
+                    layout: layout
+                )
+
+                MetricSparkline(
+                    series: history.series(\.networkUpRate),
+                    scale: networkScale,
+                    color: .blue,
+                    showsFill: false,
+                    layout: layout
+                )
+            }
+
             Color.clear.frame(height: layout.visualGap)
 
             MetricTitle(icon: "network", title: "Ethernet", layout: layout)
@@ -625,6 +687,172 @@ private struct NetworkCard: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.top, layout.textLineGap)
         }
+    }
+
+    /// Zero is pinned to the floor so a quiet link draws along the bottom instead of down the
+    /// middle, and the ceiling never drops below one byte per second so an idle minute still has a
+    /// range to divide by.
+    private var networkScale: SparklineScale {
+        let peak = max(
+            history.series(\.networkDownRate).max() ?? 0,
+            history.series(\.networkUpRate).max() ?? 0
+        )
+
+        return .fixed(lower: 0, upper: max(peak, 1))
+    }
+}
+
+/// A metric's recent history: a filled area under a stroked line, sized to sit inside a card
+/// without disturbing the rows above and below it.
+private struct MetricSparkline: View {
+    var series: [Double]
+    var scale: SparklineScale
+    var color: Color
+    var showsFill = true
+    var layout: SystemMonitorPanelLayout
+
+    var body: some View {
+        ZStack {
+            if showsFill {
+                SparklineShape(series: series, scale: scale, isFilled: true)
+                    .fill(
+                        LinearGradient(
+                            colors: [color.opacity(0.28), color.opacity(0.02)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            }
+
+            SparklineShape(series: series, scale: scale)
+                .stroke(
+                    color.opacity(0.85),
+                    style: StrokeStyle(lineWidth: layout.sparklineLineWidth, lineCap: .round, lineJoin: .round)
+                )
+        }
+        .frame(height: layout.sparklineHeight)
+        .padding(.top, layout.sparklineTopGap)
+        // The numbers above the chart already say everything the trace does, and VoiceOver reading
+        // out a shape it cannot describe is only noise.
+        .accessibilityHidden(true)
+    }
+}
+
+/// The busiest processes, ranked by whichever column the user last picked.
+private struct TopProcessCard: View {
+    var snapshot: TopProcessSnapshot
+    var layout: SystemMonitorPanelLayout
+    @AppStorage(DefaultsKey.systemMonitorProcessSortKey, store: AppDefaults.shared) private var sortKeyRaw = TopProcessSortKey.cpu.rawValue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: layout.processRowSpacing) {
+            HStack(spacing: layout.processHeaderSpacing) {
+                Text("TOP PROCESSES")
+                    .font(.system(size: layout.processHeaderFontSize, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                Spacer(minLength: layout.processHeaderSpacing)
+
+                ForEach(TopProcessSortKey.allCases, id: \.self) { key in
+                    ProcessSortButton(key: key, selectedKeyRaw: $sortKeyRaw, layout: layout)
+                }
+            }
+            .padding(.bottom, layout.processHeaderSpacing)
+
+            // Always five slots, filled or not: a card that resized itself as processes came and
+            // went would shove the rest of the panel around every few seconds.
+            ForEach(0..<TopProcessKit.listLimit, id: \.self) { index in
+                TopProcessRow(process: process(at: index), sortKey: sortKey, layout: layout)
+            }
+        }
+        .padding(layout.processCardPadding)
+        .frame(maxWidth: .infinity)
+        .frame(height: layout.processCardHeight)
+        .background(
+            RoundedRectangle(cornerRadius: layout.cardCornerRadius, style: .continuous)
+                .fill(.regularMaterial)
+        )
+        .background(
+            RoundedRectangle(cornerRadius: layout.cardCornerRadius, style: .continuous)
+                .fill(Color.white.opacity(0.34))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: layout.cardCornerRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
+        }
+    }
+
+    private var sortKey: TopProcessSortKey {
+        TopProcessSortKey(rawValue: sortKeyRaw) ?? .cpu
+    }
+
+    private func process(at index: Int) -> ProcessUsage? {
+        let processes = snapshot.processes(for: sortKey)
+        return index < processes.count ? processes[index] : nil
+    }
+}
+
+private struct TopProcessRow: View {
+    var process: ProcessUsage?
+    var sortKey: TopProcessSortKey
+    var layout: SystemMonitorPanelLayout
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(process?.name ?? "—")
+                .font(.system(size: layout.processNameFontSize, weight: .semibold))
+                .foregroundStyle(process == nil ? .secondary : .primary)
+                .lineLimit(1)
+                // Helper executables share long prefixes and differ at the end, so the middle is
+                // the part worth dropping.
+                .truncationMode(.middle)
+
+            Spacer(minLength: 4)
+
+            Text(valueText)
+                .font(.system(size: layout.processValueFontSize, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(height: layout.processRowHeight)
+    }
+
+    private var valueText: String {
+        guard let process else {
+            return "--"
+        }
+
+        let value = sortKey == .cpu ? process.cpuPercent : process.memoryPercent
+        return String(format: "%.1f%%", value)
+    }
+}
+
+private struct ProcessSortButton: View {
+    var key: TopProcessSortKey
+    @Binding var selectedKeyRaw: String
+    var layout: SystemMonitorPanelLayout
+
+    var body: some View {
+        Button {
+            selectedKeyRaw = key.rawValue
+        } label: {
+            Text(key.label)
+                .font(.system(size: layout.processSegmentFontSize, weight: .bold))
+                .foregroundStyle(isSelected ? .white : .secondary)
+                .frame(width: layout.processSegmentWidth, height: layout.processSegmentHeight)
+                .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.16))
+                .clipShape(RoundedRectangle(cornerRadius: layout.processSegmentCornerRadius, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: layout.processSegmentCornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Rank processes by \(key == .cpu ? "CPU" : "memory") use")
+    }
+
+    private var isSelected: Bool {
+        selectedKeyRaw == key.rawValue
     }
 }
 
@@ -953,8 +1181,10 @@ private struct SystemMonitorSettingsLayout {
         SystemMonitorSettingsLayout(scale: SystemMonitorPanelLayout.current.scale)
     }
 
-    var width: CGFloat { (338 * scale).rounded() }
-    var height: CGFloat { (350 * scale).rounded() }
+    /// Capped against the panel by the sizing enum rather than stated here, because the sheet is
+    /// centred *over* the panel and anything wider is clipped on both sides.
+    var width: CGFloat { SystemMonitorPanelSizing.settingsSize(scale: scale).width.rounded() }
+    var height: CGFloat { SystemMonitorPanelSizing.settingsSize(scale: scale).height.rounded() }
     var horizontalPadding: CGFloat { 20 * scale }
     var topPadding: CGFloat { 24 * scale }
     var bottomPadding: CGFloat { 18 * scale }

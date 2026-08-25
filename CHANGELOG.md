@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org) and the
 ## [Unreleased]
 
 ### Added
+- **System Monitor** now shows where the load is coming from, not just how much
+  of it there is. Each of the CPU, memory and network cards carries a sparkline
+  of the last minute, and a new card at the foot of the panel lists the five
+  busiest processes — ranked by CPU or by memory, whichever you picked last.
+  CPU and memory are drawn against a fixed 0–100% axis so an idle machine looks
+  idle; the two network traces share one axis so upstream is not flattered into
+  looking like downstream. The history is a fixed-size ring of sixty samples,
+  so a monitor left running for months uses exactly as much memory on day two
+  hundred as it did on day one, and the process list is read every fifth poll
+  on a background thread rather than once a second on the main one.
 - **Grab Text** global shortcut: press ⌃⌥G anywhere to start the region capture
   and OCR without opening the window first. The recognised text lands on the
   clipboard when "Copy automatically" is on, and the window only comes forward
