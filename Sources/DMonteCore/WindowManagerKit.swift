@@ -96,7 +96,8 @@ public enum WindowAction: String, CaseIterable, Sendable, Identifiable {
     }
 }
 
-/// Carbon virtual key codes used for the default shortcuts.
+/// Carbon virtual key codes used for the default shortcuts. Shared across the tools that claim
+/// global hotkeys, not only Window Manager — hence letters that no window action uses.
 public enum HotKeyCode {
     public static let left: UInt32 = 0x7B
     public static let right: UInt32 = 0x7C
@@ -105,6 +106,7 @@ public enum HotKeyCode {
     public static let returnKey: UInt32 = 0x24
     public static let keypadEnter: UInt32 = 0x4C
     public static let c: UInt32 = 0x08
+    public static let g: UInt32 = 0x05
     public static let delete: UInt32 = 0x33
 }
 

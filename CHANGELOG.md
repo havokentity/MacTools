@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org) and the
 ## [Unreleased]
 
 ### Added
+- **Grab Text** global shortcut: press ⌃⌥G anywhere to start the region capture
+  and OCR without opening the window first. The recognised text lands on the
+  clipboard when "Copy automatically" is on, and the window only comes forward
+  when the result needs you — a failure, a missing permission, or text that
+  wasn't copied and would otherwise be lost. The combination is recorded in a
+  new Settings sheet and can be changed or turned off. A combination another app
+  already owns exclusively is reported with the error macOS gave, rather than
+  quietly doing nothing, as is a Secure Input session suppressing every global
+  shortcut. Screen capture needs Screen Recording access; without it a grab
+  comes back blank rather than failing, so Grab Text now says so instead of
+  reporting "no text found".
 - **Disk Usage Analyzer** can now act on what it finds. Right-click any treemap
   block or tree row for Reveal in Finder, Copy Path and Move to Trash; the same
   three commands sit in the breadcrumb bar with Finder's own shortcuts (⌘R, ⌥⌘C

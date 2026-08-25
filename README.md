@@ -31,7 +31,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Download Video** | Save videos from the web (bundled, checksum‑verified yt‑dlp) |
 | **Image Converter** | Batch convert / resize / compress images (HEIC, JPEG, PNG, …) |
 | **Video Splitter** | Cut long videos into clips that fit a 15/30/60/90‑second upload cap — several clips at once, on the CPU or the GPU |
-| **Grab Text** | OCR any region of the screen straight to your clipboard |
+| **Grab Text** | OCR any region of the screen straight to your clipboard, from a global shortcut (⌃⌥G) |
 | **QR Studio** | Generate QR codes and scan them from the screen |
 | **Color Picker** | System eyedropper with hex / RGB / HSL and a recent‑colors palette |
 | **Window Manager** | Snap windows to halves, thirds, and corners with global shortcuts (⌃⌥ + arrows) |
