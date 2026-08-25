@@ -117,6 +117,10 @@ let package = Package(
             targets: ["DMonteNetworkInfo"]
         ),
         .executable(
+            name: "DMonteVideoSplitter",
+            targets: ["DMonteVideoSplitter"]
+        ),
+        .executable(
             name: "DMonteFileShelf",
             targets: ["DMonteFileShelf"]
         )
@@ -311,6 +315,13 @@ let package = Package(
                 "DMonteCore"
             ],
             path: "Sources/DMonteNetworkInfoApp"
+        ),
+        .executableTarget(
+            name: "DMonteVideoSplitter",
+            dependencies: [
+                "DMonteCore"
+            ],
+            path: "Sources/DMonteVideoSplitterApp"
         ),
         .executableTarget(
             name: "DMonteFileShelf",

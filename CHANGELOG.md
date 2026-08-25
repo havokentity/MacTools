@@ -7,6 +7,77 @@ adheres to [Semantic Versioning](https://semver.org) and the
 ## [Unreleased]
 
 ### Added
+- **Audio Switcher** now saves device profiles: name the input/output pair you
+  are on — "Headset", "Desk", "Meeting" — and switch back to it with one click.
+  Profiles remember devices by their CoreAudio UID rather than the numeric
+  device id the system recycles across reboots and re-plugs, so a profile keeps
+  pointing at the headset you saved and never at whatever inherited its number.
+  A profile whose device is unplugged is shown greyed out with the reason
+  (Output “Bose QC 35” isn’t connected) and cannot be applied at all, rather
+  than half-applying and leaving you on a setup you did not ask for. Profiles
+  can be renamed and deleted in the popover.
+- **System Monitor** now shows where the load is coming from, not just how much
+  of it there is. Each of the CPU, memory and network cards carries a sparkline
+  of the last minute, and a new card at the foot of the panel lists the five
+  busiest processes — ranked by CPU or by memory, whichever you picked last.
+  CPU and memory are drawn against a fixed 0–100% axis so an idle machine looks
+  idle; the two network traces share one axis so upstream is not flattered into
+  looking like downstream. The history is a fixed-size ring of sixty samples,
+  so a monitor left running for months uses exactly as much memory on day two
+  hundred as it did on day one, and the process list is read every fifth poll
+  on a background thread rather than once a second on the main one.
+- **Grab Text** global shortcut: press ⌃⌥G anywhere to start the region capture
+  and OCR without opening the window first. The recognised text lands on the
+  clipboard when "Copy automatically" is on, and the window only comes forward
+  when the result needs you — a failure, a missing permission, or text that
+  wasn't copied and would otherwise be lost. The combination is recorded in a
+  new Settings sheet and can be changed or turned off. A combination another app
+  already owns exclusively is reported with the error macOS gave, rather than
+  quietly doing nothing, as is a Secure Input session suppressing every global
+  shortcut. Screen capture needs Screen Recording access; without it a grab
+  comes back blank rather than failing, so Grab Text now says so instead of
+  reporting "no text found".
+- **Disk Usage Analyzer** can now act on what it finds. Right-click any treemap
+  block or tree row for Reveal in Finder, Copy Path and Move to Trash; the same
+  three commands sit in the breadcrumb bar with Finder's own shortcuts (⌘R, ⌥⌘C
+  and ⌘⌫) so they are reachable without a mouse. Deleting always goes through
+  the Trash, never a straight unlink, and asks first — naming the folder, its
+  full path and the size that is about to move. Afterwards the row disappears
+  and every folder above it shrinks by exactly what left, so the totals stay
+  true instead of pointing at space that has already been freed. A row whose
+  file something else already deleted or moved says so plainly and is dropped
+  from the results rather than failing silently, the volume being analyzed and
+  the "Unaccounted / Inaccessible" estimate are never trashable, and the command
+  is held back while a scan is still walking that volume so a half-measured
+  folder can't be pulled out from under it.
+
+## [0.15.0] — 2026-08-16
+
+### Added
+- **Video Splitter**, a new tool: drop in long videos and get back clips that fit
+  a 15, 30, 60, or 90‑second upload cap — the limit Reels, Shorts and status
+  posts enforce. Each video gets its own `…_60s_clips` folder, clips are named
+  `_part_000`, `_part_001`, … so they sort in playback order, and the run can be
+  cancelled mid‑clip. Clips are re‑encoded rather than stream‑copied (a copy can
+  only cut on keyframes, which overshoots the cap by seconds) and cut just under
+  the limit, with the whole run failing loudly rather than leaving a folder that
+  is one unusable clip short. The re‑encode matches the source's own bitrate, so
+  clips are neither visibly softer nor several times the size of what they came
+  from. Uses the ffmpeg already shipped with **Download Video**, adding nothing
+  to the download; run outside the Tool Box it falls back to a system ffmpeg and
+  says so plainly when there is none.
+
+  Clips are independent, so several are cut at once — four at a time on a 16‑core
+  Mac, fewer on smaller ones, and a single clip still gets the whole machine.
+  Measured on an M4 Max cutting four 60‑second clips from a 1080p30 21 Mbps
+  source: 26s one‑at‑a‑time, 19s in parallel.
+
+  An encoder switch picks between **CPU** (x264) and **GPU** (VideoToolbox).
+  This is not a fast/slow choice: on a many‑core Mac x264 finishes first, while
+  hardware encoding runs on the media engine, leaving the CPU and the battery
+  alone — and wins outright where there are fewer performance cores. The GPU
+  option appears only when this ffmpeg actually has the encoder, and a stored
+  preference for it falls back to the CPU on a machine that no longer offers it.
 - **File Shelf**, a new menu bar tool: a drag‑and‑drop staging area for moving
   files between apps and Spaces without keeping a Finder window open. Drop
   files onto the menu bar icon or into the popover to park them, then drag them
@@ -486,7 +557,9 @@ Switcher, Focus Timer, Calendar, Keep Awake, Maintenance, and Dev Tools.
 - The menu bar tool box shell and the first tool, System Monitor (live CPU,
   memory, disk, network, and temperature metrics).
 
-[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/havokentity/MacTools/releases/tag/v0.15.0
+[0.14.0]: https://github.com/havokentity/MacTools/releases/tag/v0.14.0
 [0.13.0]: https://github.com/havokentity/MacTools/releases/tag/v0.13.0
 [0.12.0]: https://github.com/havokentity/MacTools/releases/tag/v0.12.0
 [0.11.0]: https://github.com/havokentity/MacTools/releases/tag/v0.11.0

@@ -53,6 +53,9 @@ public enum DefaultsKey {
     public static let systemMonitorTemperatureUnit = "tool.systemMonitor.temperatureUnit"
     public static let systemMonitorOpenAtLogin = "tool.systemMonitor.openAtLogin"
     public static let systemMonitorShowsTrayIcon = "tool.systemMonitor.showsTrayIcon"
+    /// Which column the popover's top-process list is ranked by. Persisted because whichever of
+    /// the two a user cares about, they care about it every time they open the panel.
+    public static let systemMonitorProcessSortKey = "tool.systemMonitor.processSortKey"
     public static let clipboardOpenAtLogin = "tool.clipboard.openAtLogin"
     public static let clipboardMaxHistory = "tool.clipboard.maxHistory"
     public static let grabTextCopyAutomatically = "tool.grabText.copyAutomatically"
@@ -68,6 +71,11 @@ public enum DefaultsKey {
     public static let volumeMixerStoppedApps = "tool.volumeMixer.stoppedApps"
     public static let windowManagerShortcuts = "tool.windowManager.shortcuts"
     public static let audioRouterPresets = "tool.audioRouter.presets"
+    /// JSON blob of the Audio Switcher's saved input/output device profiles. Not in
+    /// `register(defaults:)`: `AudioProfileStore.load` already reads "absent" as "no
+    /// profiles", and a registered placeholder would only be a second thing to keep
+    /// in sync with the encoder.
+    public static let audioSwitcherProfiles = "tool.audioSwitcher.profiles"
     public static let qrTemplate = "tool.qr.template"
 
     /// Calendars the user has hidden. Excluded rather than included, so a calendar added later shows
@@ -114,6 +122,7 @@ public enum AppDefaults {
             DefaultsKey.systemMonitorTemperatureUnit: TemperatureUnitPreference.celsius.rawValue,
             DefaultsKey.systemMonitorOpenAtLogin: false,
             DefaultsKey.systemMonitorShowsTrayIcon: true,
+            DefaultsKey.systemMonitorProcessSortKey: TopProcessSortKey.cpu.rawValue,
             DefaultsKey.clipboardOpenAtLogin: false,
             DefaultsKey.clipboardMaxHistory: 200,
             DefaultsKey.grabTextCopyAutomatically: true,
@@ -131,6 +140,7 @@ public enum AppDefaults {
             DefaultsKey.driveEjectorConfirmsEjectAll: true,
             DefaultsKey.scratchpadFontSize: 13,
             DefaultsKey.networkInfoFetchesPublicIPAutomatically: false,
+            DefaultsKey.videoSplitterClipSeconds: VideoSplitterKit.defaultClipLengthSeconds,
             DefaultsKey.fileShelfConfirmsClearAll: true
         ])
     }

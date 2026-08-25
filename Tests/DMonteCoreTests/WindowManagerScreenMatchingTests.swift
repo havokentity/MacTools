@@ -50,8 +50,11 @@ final class WindowManagerScreenMatchingTests: XCTestCase {
         for (index, area) in realArrangement.enumerated() {
             let matched = WindowManagerKit.areaIndex(forWindow: window(centeredIn: area), in: realArrangement)
             XCTAssertEqual(matched, index)
-            for action in WindowAction.allCases {
-                let target = WindowManagerKit.frame(for: action, in: area)
+            for action in WindowAction.areaRelativeCases {
+                guard let target = WindowManagerKit.frame(for: action, in: area) else {
+                    XCTFail("\(action.rawValue) is area-relative but produced no frame")
+                    continue
+                }
                 XCTAssertGreaterThanOrEqual(target.minX, area.minX - 0.001, "\(action.rawValue) escaped screen \(index) left")
                 XCTAssertGreaterThanOrEqual(target.minY, area.minY - 0.001, "\(action.rawValue) escaped screen \(index) top")
                 XCTAssertLessThanOrEqual(target.maxX, area.maxX + 0.001, "\(action.rawValue) escaped screen \(index) right")
@@ -165,8 +168,11 @@ final class WindowManagerRealScreensDiagnosticTests: XCTestCase {
             let matched = WindowManagerKit.areaIndex(forWindow: window, in: areas)
             XCTAssertEqual(matched, index, "synthetic window centered on screen \(index) matched \(String(describing: matched))")
 
-            for action in WindowAction.allCases {
-                let target = WindowManagerKit.frame(for: action, in: area)
+            for action in WindowAction.areaRelativeCases {
+                guard let target = WindowManagerKit.frame(for: action, in: area) else {
+                    XCTFail("\(action.rawValue) is area-relative but produced no frame")
+                    continue
+                }
                 XCTAssertGreaterThanOrEqual(target.minX, area.minX - 0.001, "\(action.rawValue) escaped screen \(index)")
                 XCTAssertGreaterThanOrEqual(target.minY, area.minY - 0.001, "\(action.rawValue) escaped screen \(index)")
                 XCTAssertLessThanOrEqual(target.maxX, area.maxX + 0.001, "\(action.rawValue) escaped screen \(index)")

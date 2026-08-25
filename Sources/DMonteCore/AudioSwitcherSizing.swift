@@ -23,9 +23,11 @@ public enum AudioSwitcherSizing {
         NSSize(width: panelWidth.rounded(), height: panelHeight.rounded())
     }
 
-    // Base canvas
+    // Base canvas. The extra 60pt over the original 460 is the profiles section: the
+    // chrome outside the scroll view is unchanged, so `scrollMaxHeight` grew by the
+    // same amount.
     public static var panelWidth: CGFloat { s(340) }
-    public static var panelHeight: CGFloat { s(460) }
+    public static var panelHeight: CGFloat { s(520) }
 
     // Spacing scale
     public static var outerPadding: CGFloat { s(16) }
@@ -47,5 +49,8 @@ public enum AudioSwitcherSizing {
     // Controls
     public static var iconButtonSize: CGFloat { s(28) }
     public static var checkmarkSize: CGFloat { s(13) }
-    public static var scrollMaxHeight: CGFloat { s(240) }
+    public static var scrollMaxHeight: CGFloat { s(300) }
+    /// Trailing rename/delete glyphs on a profile row. Smaller than `checkmarkSize` so
+    /// they read as secondary actions next to the row's primary "apply" tap target.
+    public static var profileActionSize: CGFloat { s(11) }
 }

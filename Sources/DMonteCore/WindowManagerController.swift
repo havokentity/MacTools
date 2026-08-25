@@ -11,6 +11,13 @@ public enum WindowApplyResult: Equatable, Sendable {
     case success(appName: String?)
     case needsPermission
     case noFocusedWindow
+    /// "Move to next display" on a Mac with only one display. A distinct outcome rather than
+    /// `.failed`: nothing went wrong, there is simply nowhere to move to, and the window is
+    /// deliberately left untouched.
+    case noOtherDisplay
+    /// "Restore" with nothing remembered for this window — it hasn't been arranged yet in this
+    /// session, or its restore point was already consumed.
+    case nothingToRestore
     case failed
 }
 
@@ -58,6 +65,11 @@ public final class WindowManagerController: NSObject, ObservableObject {
     /// The half-snap most recently fired by a hotkey, for corner-chord detection (⌃⌥→ then ⌃⌥↑ =
     /// top-right). Popover tile clicks never touch this — a click is always a single action.
     private var chordState: WindowManagerKit.ChordState?
+
+    /// Pre-action frames for the `restorePrevious` undo. Bounded LRU (see `WindowFrameMemory`), and
+    /// process-local: window numbers don't survive a relaunch, so persisting it would restore the
+    /// wrong window.
+    private var frameMemory = WindowFrameMemory()
 
     private var permissionTimer: Timer?
     private var windowSelectionMonitor: Any?
@@ -308,12 +320,19 @@ public final class WindowManagerController: NSObject, ObservableObject {
         registrationFailures = [:]
 
         var nextID: UInt32 = 1
+        // Every combination may be claimed once per pass. Carbon happily registers the same combo
+        // twice under different ids, and both handlers then fire on one keypress — two actions
+        // fighting over the same window in no fixed order. `WindowShortcutStore` already keeps a
+        // default from colliding with a user override; this is the backstop at the point of
+        // consequence, for any path that ever hands us a duplicate.
+        var claimedCombos: Set<WindowShortcut> = []
         for action in WindowAction.allCases {
             guard let shortcut = shortcuts[action] else { continue }
             let keyCodes = Self.registrationKeyCodes(for: shortcut).filter { keyCode in
                 keyCode == shortcut.keyCode || actionUsing(WindowShortcut(keyCode: keyCode, modifiers: shortcut.modifiers), excluding: action) == nil
             }
             for keyCode in keyCodes {
+                guard claimedCombos.insert(WindowShortcut(keyCode: keyCode, modifiers: shortcut.modifiers)).inserted else { continue }
                 let id = nextID
                 nextID += 1
                 do {
@@ -424,12 +443,15 @@ public final class WindowManagerController: NSObject, ObservableObject {
         }
         let now = Date()
         switch WindowManagerKit.resolveChord(previous: chordState, current: action, now: now) {
-        case .corner(let corner):
+        case .corner(let corner, let preservesRestorePoint):
             chordState = nil
-            apply(corner)
+            // The chord is two applies but one gesture. The half already stored the frame the user
+            // had before any of it; overwriting that here with the intermediate half-snapped frame
+            // would leave Restore undoing the chord back to the half, not to where they were.
+            applyOutcome(corner, preservesRestorePoint: preservesRestorePoint)
         case .half(let half):
-            chordState = WindowManagerKit.ChordState(action: half, at: now)
-            apply(half)
+            let outcome = applyOutcome(half, preservesRestorePoint: false)
+            chordState = WindowManagerKit.ChordState(action: half, at: now, storedRestorePoint: outcome.storedRestorePoint)
         }
     }
 
@@ -437,47 +459,121 @@ public final class WindowManagerController: NSObject, ObservableObject {
     /// publishes it to `lastResult`.
     @discardableResult
     public func apply(_ action: WindowAction) -> WindowApplyResult {
-        lastResult = applyResult(for: action)
-        return lastResult ?? .failed
+        applyOutcome(action, preservesRestorePoint: false).result
     }
 
-    private func applyResult(for action: WindowAction) -> WindowApplyResult {
+    /// One apply's full outcome. `storedRestorePoint` is what the corner completing a chord needs
+    /// from the half that opened it: whether there is already an undo for this gesture to preserve.
+    private struct ApplyOutcome {
+        let result: WindowApplyResult
+        let storedRestorePoint: Bool
+
+        init(_ result: WindowApplyResult, storedRestorePoint: Bool = false) {
+            self.result = result
+            self.storedRestorePoint = storedRestorePoint
+        }
+    }
+
+    @discardableResult
+    private func applyOutcome(_ action: WindowAction, preservesRestorePoint: Bool) -> ApplyOutcome {
+        let outcome = applyResult(for: action, preservesRestorePoint: preservesRestorePoint)
+        lastResult = outcome.result
+        return outcome
+    }
+
+    private func applyResult(for action: WindowAction, preservesRestorePoint: Bool) -> ApplyOutcome {
         guard AXIsProcessTrusted() else {
             hasAccessibility = false
-            return .needsPermission
+            return ApplyOutcome(.needsPermission)
         }
         hasAccessibility = true
 
         guard let target = targetApplication(), let targetApp = target.app else {
-            return .noFocusedWindow
+            return ApplyOutcome(.noFocusedWindow)
         }
         let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
         // Bound how long a hung app may block us; without this a beachballing app freezes the
         // helper (and the popover) for the system default of several seconds per call.
         AXUIElementSetMessagingTimeout(appElement, Self.axMessagingTimeoutSeconds)
         guard let window = target.windowSnapshot.flatMap({ Self.window(in: appElement, matching: $0) }) ?? Self.focusedWindow(of: appElement) else {
-            return .noFocusedWindow
+            return ApplyOutcome(.noFocusedWindow)
         }
 
         guard let currentFrame = Self.frame(of: window) else {
-            return .failed
+            return ApplyOutcome(.failed)
         }
+        let identity = WindowIdentity(pid: targetApp.processIdentifier, windowNumber: Self.windowNumber(of: window))
 
         // Pick the screen the window mostly lives on, then compute the target in AX (top-left)
         // space. The pure matcher gets the real screens as plain rects; if the window overlaps no
         // screen at all, fall back to the primary screen (never NSScreen.main — when a snap tile
         // is clicked, the key window is our own popover, so NSScreen.main is the popover's screen,
         // not anything to do with the target window).
-        let screens = NSScreen.screens
-        let areas = screens.map { Self.axRect(fromCocoa: $0.visibleFrame) }
-        let matched = WindowManagerKit.areaIndex(forWindow: currentFrame, in: areas).map { screens[$0] }
-        guard let screen = matched ?? screens.first else {
-            return .failed
-        }
-        let axArea = Self.axRect(fromCocoa: screen.visibleFrame)
-        let targetFrame = WindowManagerKit.frame(for: action, in: axArea)
+        let areas = NSScreen.screens.map { Self.axRect(fromCocoa: $0.visibleFrame) }
+        guard !areas.isEmpty else { return ApplyOutcome(.failed) }
+        let areaIndex = WindowManagerKit.areaIndex(forWindow: currentFrame, in: areas) ?? 0
+        let axArea = areas[areaIndex]
 
-        return setFrameVerified(targetFrame, on: window, appElement: appElement, appName: targetApp.localizedName)
+        let targetFrame: CGRect
+        switch action {
+        case .nextDisplay:
+            guard let destination = WindowManagerKit.nextAreaIndex(after: areaIndex, in: areas) else {
+                return ApplyOutcome(.noOtherDisplay)
+            }
+            targetFrame = WindowManagerKit.frame(movingWindow: currentFrame, from: axArea, to: areas[destination])
+        case .restorePrevious:
+            guard let remembered = frameMemory.frame(for: identity) else {
+                return ApplyOutcome(.nothingToRestore)
+            }
+            // Written back as remembered whenever it still meets a screen — a frame spanning two
+            // displays is a placement restore promises to return to, not one to "fix". Only a frame
+            // whose display has since been unplugged or rearranged is rescued onto this window's
+            // current screen (see `restoreFrame`).
+            targetFrame = WindowManagerKit.restoreFrame(remembered, onScreens: areas, fallback: axArea)
+        default:
+            guard let frame = WindowManagerKit.frame(for: action, in: axArea) else {
+                return ApplyOutcome(.failed)
+            }
+            targetFrame = frame
+        }
+
+        let attempt = setFrameVerified(targetFrame, on: window, appElement: appElement, appName: targetApp.localizedName)
+
+        // Bookkeeping runs on what the window actually ended up with, never on the reported result:
+        // an app that moves the window but drops the size fails verification and still owes the user
+        // an undo, while a snap the window was already sitting in changes nothing and must leave the
+        // undo it has alone. The policy itself is pure (`restorePointUpdate`).
+        var storedRestorePoint = false
+        switch WindowManagerKit.restorePointUpdate(
+            for: action,
+            previous: currentFrame,
+            target: targetFrame,
+            achieved: attempt.achieved,
+            preservesRestorePoint: preservesRestorePoint
+        ) {
+        case .remember:
+            frameMemory.remember(currentFrame, for: identity)
+            storedRestorePoint = true
+        case .keep:
+            break
+        case .forget:
+            frameMemory.forget(identity)
+        }
+        return ApplyOutcome(attempt.result, storedRestorePoint: storedRestorePoint)
+    }
+
+    /// What one `setFrameVerified` pass produced: the outcome to report, plus the frame the window
+    /// actually ended up with (nil when nothing was written or it could not be read back). The
+    /// achieved frame is what separates "the app ignored us" from "the app moved the window, just
+    /// not exactly where we asked", which is what decides whether there is an undo to record.
+    private struct FrameSetAttempt {
+        let result: WindowApplyResult
+        let achieved: CGRect?
+
+        init(_ result: WindowApplyResult, achieved: CGRect? = nil) {
+            self.result = result
+            self.achieved = achieved
+        }
     }
 
     /// Writes `target` to the window and verifies it landed, retrying with alternating set
@@ -486,7 +582,7 @@ public final class WindowManagerController: NSObject, ObservableObject {
     /// with `AXEnhancedUserInterface` set — the window moved but kept its size). Reads back after
     /// each attempt and only reports success when the achieved frame matches within
     /// `WindowManagerKit.frameMatchTolerance`.
-    private func setFrameVerified(_ target: CGRect, on window: AXUIElement, appElement: AXUIElement, appName: String?) -> WindowApplyResult {
+    private func setFrameVerified(_ target: CGRect, on window: AXUIElement, appElement: AXUIElement, appName: String?) -> FrameSetAttempt {
         // Clear AXEnhancedUserInterface for the duration of the writes (restore after): while it
         // is set, the app animates position changes and silently drops size changes that arrive
         // mid-animation. With it cleared, the same writes apply exactly, first try.
@@ -504,21 +600,23 @@ public final class WindowManagerController: NSObject, ObservableObject {
         for order in WindowManagerKit.frameSetAttempts {
             let results = performFrameSets(target, on: window, order: order)
             if results.contains(.apiDisabled) {
-                return .needsPermission
+                // The grant was pulled mid-write. Whatever landed before that is unknown, so the
+                // achieved frame from an earlier attempt is deliberately not carried forward.
+                return FrameSetAttempt(.needsPermission)
             }
             // Tiny settle so apps that apply geometry asynchronously finish before the read-back.
             usleep(Self.frameVerifyDelayMicroseconds)
             guard let now = Self.frame(of: window) else {
-                return .failed
+                return FrameSetAttempt(.failed)
             }
             achieved = now
             if WindowManagerKit.frameMatches(now, target: target) {
-                return .success(appName: appName)
+                return FrameSetAttempt(.success(appName: appName), achieved: now)
             }
         }
 
         Self.log.debug("Snap failed verification: target \(target.debugDescription, privacy: .public), achieved \(achieved?.debugDescription ?? "nil", privacy: .public), app \(appName ?? "?", privacy: .public)")
-        return .failed
+        return FrameSetAttempt(.failed, achieved: achieved)
     }
 
     /// One write pass in the given order. Both orders write the redundant first attribute again
