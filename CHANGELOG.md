@@ -6,6 +6,34 @@ adheres to [Semantic Versioning](https://semver.org) and the
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-16
+
+### Added
+- **Video Splitter**, a new tool: drop in long videos and get back clips that fit
+  a 15, 30, 60, or 90‑second upload cap — the limit Reels, Shorts and status
+  posts enforce. Each video gets its own `…_60s_clips` folder, clips are named
+  `_part_000`, `_part_001`, … so they sort in playback order, and the run can be
+  cancelled mid‑clip. Clips are re‑encoded rather than stream‑copied (a copy can
+  only cut on keyframes, which overshoots the cap by seconds) and cut just under
+  the limit, with the whole run failing loudly rather than leaving a folder that
+  is one unusable clip short. The re‑encode matches the source's own bitrate, so
+  clips are neither visibly softer nor several times the size of what they came
+  from. Uses the ffmpeg already shipped with **Download Video**, adding nothing
+  to the download; run outside the Tool Box it falls back to a system ffmpeg and
+  says so plainly when there is none.
+
+  Clips are independent, so several are cut at once — four at a time on a 16‑core
+  Mac, fewer on smaller ones, and a single clip still gets the whole machine.
+  Measured on an M4 Max cutting four 60‑second clips from a 1080p30 21 Mbps
+  source: 26s one‑at‑a‑time, 19s in parallel.
+
+  An encoder switch picks between **CPU** (x264) and **GPU** (VideoToolbox).
+  This is not a fast/slow choice: on a many‑core Mac x264 finishes first, while
+  hardware encoding runs on the media engine, leaving the CPU and the battery
+  alone — and wins outright where there are fewer performance cores. The GPU
+  option appears only when this ffmpeg actually has the encoder, and a stored
+  preference for it falls back to the CPU on a machine that no longer offers it.
+
 ## [0.14.0] — 2026-07-21
 
 ### Added
@@ -469,7 +497,9 @@ Switcher, Focus Timer, Calendar, Keep Awake, Maintenance, and Dev Tools.
 - The menu bar tool box shell and the first tool, System Monitor (live CPU,
   memory, disk, network, and temperature metrics).
 
-[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/havokentity/MacTools/releases/tag/v0.15.0
+[0.14.0]: https://github.com/havokentity/MacTools/releases/tag/v0.14.0
 [0.13.0]: https://github.com/havokentity/MacTools/releases/tag/v0.13.0
 [0.12.0]: https://github.com/havokentity/MacTools/releases/tag/v0.12.0
 [0.11.0]: https://github.com/havokentity/MacTools/releases/tag/v0.11.0
