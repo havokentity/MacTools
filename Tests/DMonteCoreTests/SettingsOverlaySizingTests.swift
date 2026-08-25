@@ -23,10 +23,53 @@ final class SettingsOverlaySizingTests: XCTestCase {
         assertSheetFits(panel: FocusTimerSizing.preferredSize(), sheet: FocusTimerSizing.settingsSize(), tool: "Focus Timer")
     }
 
+    /// Clean Drive's developer-junk sheet is sized to fill the panel rather than to a comfortable
+    /// literal, so it is the one sheet that would spill the instant the 18pt-per-side padding
+    /// `PreferencesOverlay` adds were forgotten. Asserted against the padded size for that reason.
+    func testCleanDriveDevJunkSheetFitsItsPanelOncePadded() {
+        let panel = CleanDriveSizing.preferredSize()
+        let sheet = CleanDriveSizing.devJunkSize()
+        let overlayChrome = PreferencesOverlayMetrics.chrome
+
+        assertSheetFits(panel: panel, sheet: sheet, tool: "Clean Drive developer junk")
+        XCTAssertLessThanOrEqual(
+            sheet.width + overlayChrome, panel.width,
+            "Clean Drive: PreferencesOverlay pads the sheet by \(PreferencesOverlayMetrics.padding)pt a side, so it must be \(overlayChrome)pt narrower than the panel"
+        )
+        XCTAssertLessThanOrEqual(
+            sheet.height + overlayChrome, panel.height,
+            "Clean Drive: PreferencesOverlay pads the sheet by \(PreferencesOverlayMetrics.padding)pt a side, so it must be \(overlayChrome)pt shorter than the panel"
+        )
+    }
+
+    /// The chrome a sizing file subtracts is two of `PreferencesOverlay`'s paddings, not a number of
+    /// its own. `PreferencesOverlayMetrics` is now the single definition and the overlay pads with
+    /// it, so asserting the *budget* here rather than a literal means moving that padding fails this
+    /// test — including for the tools that still spell the total out locally — instead of quietly
+    /// pushing their sheets over their panels.
+    func testSettingsSheetsLeaveRoomForTheOverlayChrome() {
+        let chrome = PreferencesOverlayMetrics.chrome
+        XCTAssertEqual(chrome, PreferencesOverlayMetrics.padding * 2)
+
+        for (tool, panel, sheet) in [
+            ("Keep Awake", KeepAwakeSizing.preferredSize(), KeepAwakeSizing.settingsSize()),
+            ("Focus Timer", FocusTimerSizing.preferredSize(), FocusTimerSizing.settingsSize())
+        ] {
+            XCTAssertLessThanOrEqual(
+                sheet.width + chrome, panel.width,
+                "\(tool): the sheet has to leave the overlay's padding on both sides"
+            )
+            XCTAssertLessThanOrEqual(
+                sheet.height + chrome, panel.height,
+                "\(tool): the sheet has to leave the overlay's padding above and below"
+            )
+        }
+    }
+
     /// Both tools derive from the same clamped scale, so the guarantee has to hold across its
     /// whole range rather than at whatever this machine reports.
     func testScaleStaysWithinItsDocumentedBounds() {
-        for scale in [KeepAwakeSizing.currentScale, FocusTimerSizing.currentScale] {
+        for scale in [KeepAwakeSizing.currentScale, FocusTimerSizing.currentScale, CleanDriveSizing.currentScale] {
             XCTAssertGreaterThanOrEqual(scale, 0.82)
             XCTAssertLessThanOrEqual(scale, 1.0)
         }
