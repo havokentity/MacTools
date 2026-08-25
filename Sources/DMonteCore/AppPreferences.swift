@@ -71,6 +71,11 @@ public enum DefaultsKey {
     public static let volumeMixerStoppedApps = "tool.volumeMixer.stoppedApps"
     public static let windowManagerShortcuts = "tool.windowManager.shortcuts"
     public static let audioRouterPresets = "tool.audioRouter.presets"
+    /// JSON blob of the Audio Switcher's saved input/output device profiles. Not in
+    /// `register(defaults:)`: `AudioProfileStore.load` already reads "absent" as "no
+    /// profiles", and a registered placeholder would only be a second thing to keep
+    /// in sync with the encoder.
+    public static let audioSwitcherProfiles = "tool.audioSwitcher.profiles"
     public static let qrTemplate = "tool.qr.template"
 
     /// Calendars the user has hidden. Excluded rather than included, so a calendar added later shows

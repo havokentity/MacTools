@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org) and the
 ## [Unreleased]
 
 ### Added
+- **Audio Switcher** now saves device profiles: name the input/output pair you
+  are on — "Headset", "Desk", "Meeting" — and switch back to it with one click.
+  Profiles remember devices by their CoreAudio UID rather than the numeric
+  device id the system recycles across reboots and re-plugs, so a profile keeps
+  pointing at the headset you saved and never at whatever inherited its number.
+  A profile whose device is unplugged is shown greyed out with the reason
+  (Output “Bose QC 35” isn’t connected) and cannot be applied at all, rather
+  than half-applying and leaving you on a setup you did not ask for. Profiles
+  can be renamed and deleted in the popover.
 - **System Monitor** now shows where the load is coming from, not just how much
   of it there is. Each of the CPU, memory and network cards carries a sparkline
   of the last minute, and a new card at the foot of the panel lists the five
