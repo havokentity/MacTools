@@ -12,9 +12,11 @@ public enum CleanDriveSizing {
     /// right up to the overlay's own padding rather than to a comfortable fixed size.
     public static func devJunkSize() -> NSSize {
         let panel = preferredSize()
-        // PreferencesOverlay adds 18pt of padding on every side; a sheet sized to the full panel
-        // becomes panel+36 once padded and spills out of it.
-        let overlayChrome: CGFloat = 36
+        // PreferencesOverlay pads the sheet on every side; a sheet sized to the full panel becomes
+        // panel + chrome once padded and spills out of it. Taken from the overlay's own constant so
+        // the two cannot drift: this sheet fills the panel exactly, with no slack to absorb a
+        // change to the padding.
+        let overlayChrome = PreferencesOverlayMetrics.chrome
         return NSSize(width: panel.width - overlayChrome, height: panel.height - overlayChrome)
     }
 

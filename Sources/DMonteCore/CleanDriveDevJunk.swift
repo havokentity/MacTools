@@ -553,6 +553,19 @@ public struct DevJunkSelection: Sendable, Equatable {
         }
     }
 
+    /// Applies one freshly scanned category's default. Categories land one at a time as a scan
+    /// streams them in, so the defaults have to be seeded per category rather than in a single pass
+    /// at the end; seeding every category of a scan this way is equivalent to `init(defaultsFor:)`.
+    ///
+    /// Only ever correct for a *fresh* scan. A default-on category is seeded wholesale, so applying
+    /// this during a rescan would re-tick the entries the user had deliberately unchecked.
+    public mutating func seedDefaults(for report: DevJunkCategoryReport) {
+        guard report.category.isSelectedByDefault else {
+            return
+        }
+        setCategory(report, selected: true)
+    }
+
     /// Drops paths that the latest scan no longer reports. Without this, a path deleted in a
     /// previous pass (or one that the user removed in Finder) would stay checked forever and keep
     /// inflating the "will free" total.

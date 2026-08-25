@@ -249,11 +249,22 @@ struct CleanDriveDevJunkPanel: View {
         }
     }
 
-    private func startScan() {
+    /// - Parameter preservingSelection: `true` only for the rescan that follows a trash. What is
+    ///   still on disk there is, by definition, what the user chose *not* to delete, so re-seeding
+    ///   the defaults would re-tick the one project they took the trouble to uncheck — and re-arm
+    ///   the Move to Trash button over it. Every other scan starts from a clean selection so the
+    ///   defaults land on all eleven categories consistently: seeding the default-on categories on
+    ///   top of a kept selection used to leave the sheet showing a mixture of the two that no
+    ///   single scan could have produced (a stale Archives tick beside force-reselected defaults).
+    private func startScan(preservingSelection: Bool = false) {
         scanTask?.cancel()
         scanGeneration &+= 1
         let generation = scanGeneration
+        let seedsDefaults = !preservingSelection
         reports = []
+        if seedsDefaults {
+            selection = DevJunkSelection()
+        }
         isScanning = true
         didStopScan = false
         scanFraction = 0
@@ -277,8 +288,8 @@ struct CleanDriveDevJunkPanel: View {
                     // Categories land one at a time so the list fills in as it goes; seeding the
                     // selection per category keeps the "will free" total honest during the scan.
                     reports.append(report)
-                    if report.category.isSelectedByDefault {
-                        selection.setCategory(report, selected: true)
+                    if seedsDefaults {
+                        selection.seedDefaults(for: report)
                     }
                 case let .finished(finished):
                     reports = finished
@@ -323,8 +334,7 @@ struct CleanDriveDevJunkPanel: View {
 
         let alert = NSAlert()
         alert.messageText = DevJunkRemover.confirmationMessage(for: entries)
-        alert.informativeText = "You can put them back from the Trash if you change your mind. "
-            + "Anything still in use by a running build may fail to move."
+        alert.informativeText = "You can put them back from the Trash if you change your mind. Anything still in use by a running build may fail to move."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
@@ -353,7 +363,9 @@ struct CleanDriveDevJunkPanel: View {
             // status line with "Scanning...", so a report published afterwards would be the only
             // trace of a bulk move and would vanish immediately.
             presentResult(result)
-            startScan()
+            // Whatever survived the move is what the user left unticked, so the rescan keeps their
+            // choices instead of handing the defaults a second chance at them.
+            startScan(preservingSelection: true)
         }
     }
 

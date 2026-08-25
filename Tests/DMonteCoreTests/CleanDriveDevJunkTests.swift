@@ -428,6 +428,51 @@ final class CleanDriveDevJunkTests: XCTestCase {
         XCTAssertEqual(selection.state(for: empty), .none)
     }
 
+    /// The panel does not build its selection with `init(defaultsFor:)` — categories arrive one at
+    /// a time from the scan stream, so it seeds them as they land. The two have to agree.
+    func testSeedingCategoryByCategoryMatchesTheDefaultsInitializer() {
+        let reports = sampleReports
+        var streamed = DevJunkSelection()
+
+        for report in reports {
+            streamed.seedDefaults(for: report)
+        }
+
+        XCTAssertEqual(streamed, DevJunkSelection(defaultsFor: reports))
+    }
+
+    /// Why the rescan that follows a trash must not re-seed: a default-on category is seeded
+    /// wholesale, so seeding it again would tick the entry the user deliberately unticked and re-arm
+    /// Move to Trash over the one project they were protecting.
+    func testSeedingADefaultOnCategoryRetickesWhatTheUserDeselected() {
+        let reports = sampleReports
+        var selection = DevJunkSelection(defaultsFor: reports)
+        selection.toggle(reports[0].entries[0])
+        XCTAssertEqual(selection.state(for: reports[0]), .partial)
+
+        selection.seedDefaults(for: reports[0])
+
+        XCTAssertEqual(selection.state(for: reports[0]), .all)
+    }
+
+    /// The mirror image: a fresh scan starts from an empty selection, so a tick on an off-by-default
+    /// category cannot outlive it while the default-on categories are being re-seeded. Carrying one
+    /// forward while re-seeding the others left the sheet in a state no single scan could produce.
+    func testAFreshScanDropsAnArchivesTickFromThePreviousScan() {
+        let reports = sampleReports
+        var previous = DevJunkSelection(defaultsFor: reports)
+        previous.toggle(reports[1].entries[0])
+        XCTAssertEqual(previous.state(for: reports[1]), .all)
+
+        var fresh = DevJunkSelection()
+        for report in reports {
+            fresh.seedDefaults(for: report)
+        }
+
+        XCTAssertEqual(fresh.state(for: reports[0]), .all)
+        XCTAssertEqual(fresh.state(for: reports[1]), .none)
+    }
+
     func testReconcileDropsPathsTheLatestScanNoLongerReports() {
         let reports = sampleReports
         var selection = DevJunkSelection(defaultsFor: reports)

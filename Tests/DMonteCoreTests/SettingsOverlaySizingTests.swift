@@ -29,17 +29,41 @@ final class SettingsOverlaySizingTests: XCTestCase {
     func testCleanDriveDevJunkSheetFitsItsPanelOncePadded() {
         let panel = CleanDriveSizing.preferredSize()
         let sheet = CleanDriveSizing.devJunkSize()
-        let overlayChrome: CGFloat = 36
+        let overlayChrome = PreferencesOverlayMetrics.chrome
 
         assertSheetFits(panel: panel, sheet: sheet, tool: "Clean Drive developer junk")
         XCTAssertLessThanOrEqual(
             sheet.width + overlayChrome, panel.width,
-            "Clean Drive: PreferencesOverlay pads the sheet by 18pt a side, so it must be 36pt narrower than the panel"
+            "Clean Drive: PreferencesOverlay pads the sheet by \(PreferencesOverlayMetrics.padding)pt a side, so it must be \(overlayChrome)pt narrower than the panel"
         )
         XCTAssertLessThanOrEqual(
             sheet.height + overlayChrome, panel.height,
-            "Clean Drive: PreferencesOverlay pads the sheet by 18pt a side, so it must be 36pt shorter than the panel"
+            "Clean Drive: PreferencesOverlay pads the sheet by \(PreferencesOverlayMetrics.padding)pt a side, so it must be \(overlayChrome)pt shorter than the panel"
         )
+    }
+
+    /// The chrome a sizing file subtracts is two of `PreferencesOverlay`'s paddings, not a number of
+    /// its own. `PreferencesOverlayMetrics` is now the single definition and the overlay pads with
+    /// it, so asserting the *budget* here rather than a literal means moving that padding fails this
+    /// test — including for the tools that still spell the total out locally — instead of quietly
+    /// pushing their sheets over their panels.
+    func testSettingsSheetsLeaveRoomForTheOverlayChrome() {
+        let chrome = PreferencesOverlayMetrics.chrome
+        XCTAssertEqual(chrome, PreferencesOverlayMetrics.padding * 2)
+
+        for (tool, panel, sheet) in [
+            ("Keep Awake", KeepAwakeSizing.preferredSize(), KeepAwakeSizing.settingsSize()),
+            ("Focus Timer", FocusTimerSizing.preferredSize(), FocusTimerSizing.settingsSize())
+        ] {
+            XCTAssertLessThanOrEqual(
+                sheet.width + chrome, panel.width,
+                "\(tool): the sheet has to leave the overlay's padding on both sides"
+            )
+            XCTAssertLessThanOrEqual(
+                sheet.height + chrome, panel.height,
+                "\(tool): the sheet has to leave the overlay's padding above and below"
+            )
+        }
     }
 
     /// Both tools derive from the same clamped scale, so the guarantee has to hold across its
