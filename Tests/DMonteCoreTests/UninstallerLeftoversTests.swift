@@ -364,6 +364,41 @@ final class UninstallerLeftoversTests: XCTestCase {
         XCTAssertTrue(UninstallerLeftovers.isRemovable(planted, allowedRoots: roots))
     }
 
+    /// A link that stays inside an allowed root is legitimately removable, so the sheet offers it
+    /// — and must then price it as the link it is. Trashing a link frees the link, not the 400 KB
+    /// it points at, and a sweep that promises to free the target is lying about the one number
+    /// the user is looking at.
+    func testASymlinkedLeftoverIsPricedAsTheLinkAndNotAsItsTarget() throws {
+        let real = try makeLeaf(userLibrary, "Caches", "com.example.real", bytes: 400_000)
+        let planted = userLibrary.appendingPathComponent("Caches/com.example.app")
+        try FileManager.default.createSymbolicLink(at: planted, withDestinationURL: real)
+
+        let found = scan(bundleIdentifier: "com.example.app")
+
+        XCTAssertEqual(found.map(\.url.path), [planted.path])
+        XCTAssertGreaterThan(found[0].bytes, 0, "a link is measured as itself, not as nothing")
+        XCTAssertLessThan(found[0].bytes, 1_024, "the link's 400 KB target must not be billed to the app")
+    }
+
+    /// The same promise one level down: a link met *inside* a leftover directory is a leaf, not a
+    /// doorway into whatever volume it points at.
+    func testASymlinkInsideALeftoverDoesNotBillItsTargetToTheApp() throws {
+        let elsewhere = sandbox.appendingPathComponent("Elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data(repeating: 0x45, count: 400_000).write(to: elsewhere.appendingPathComponent("huge.bin"))
+
+        let leaf = try makeLeaf(userLibrary, "Application Support", "com.example.app", bytes: 64)
+        try FileManager.default.createSymbolicLink(
+            at: leaf.appendingPathComponent("link-to-elsewhere"),
+            withDestinationURL: elsewhere
+        )
+
+        let found = scan(bundleIdentifier: "com.example.app")
+
+        XCTAssertEqual(found.count, 1)
+        XCTAssertLessThan(found[0].bytes, 100_000, "the walk followed a symlink out of the leftover directory")
+    }
+
     func testScanDropsAnEscapingSymlinkInsteadOfOfferingIt() throws {
         let secrets = sandbox.appendingPathComponent("Documents")
         try FileManager.default.createDirectory(at: secrets, withIntermediateDirectories: true)
@@ -429,6 +464,46 @@ final class UninstallerLeftoversTests: XCTestCase {
         let result = LeftoverScanner.moveToTrash([], userLibrary: userLibrary, systemLibrary: systemLibrary)
 
         XCTAssertEqual(result, LeftoverRemovalResult())
+    }
+
+    // MARK: - What the review sheet says out loud
+
+    /// The row's checkbox draws no label of its own, so without this every row on the sheet
+    /// announces itself as an identical unlabelled checkbox — on the one screen whose entire job
+    /// is letting the user decide, row by row, what gets deleted.
+    func testEveryReviewRowAnnouncesItsLocationAndPath() {
+        let item = LeftoverItem(
+            candidate: LeftoverCandidate(
+                url: userLibrary.appendingPathComponent("Caches/com.example.app"),
+                label: "Caches",
+                scope: .user,
+                match: .bundleIdentifier
+            ),
+            bytes: 1_024
+        )
+
+        XCTAssertEqual(item.accessibilityLabel, "Caches, \(item.candidate.displayPath)")
+        XCTAssertFalse(item.accessibilityLabel.contains("matched by name"))
+        XCTAssertFalse(item.accessibilityLabel.contains("system-wide"))
+    }
+
+    /// The two badges are warnings, not decoration, so they are spoken too: a reader who cannot
+    /// see "matched by name" is exactly the reader who needs to hear it.
+    func testAReviewRowSpeaksTheBadgesThatMakeItRisky() {
+        let item = LeftoverItem(
+            candidate: LeftoverCandidate(
+                url: systemLibrary.appendingPathComponent("Logs/Fantastical"),
+                label: "Logs",
+                scope: .system,
+                match: .appName
+            ),
+            bytes: 1_024
+        )
+
+        XCTAssertEqual(
+            item.accessibilityLabel,
+            "Logs, \(item.candidate.displayPath), matched by name, system-wide"
+        )
     }
 
     // MARK: - Selection arithmetic

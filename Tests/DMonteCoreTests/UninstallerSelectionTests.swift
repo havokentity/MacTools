@@ -17,6 +17,14 @@ final class UninstallerSelectionTests: XCTestCase {
         bundleIdentifier: "com.example.beta"
     )
 
+    private let gamma = InstalledApplication(
+        id: "/Applications/Gamma.app",
+        name: "Gamma",
+        path: "/Applications/Gamma.app",
+        size: nil,
+        bundleIdentifier: "com.example.gamma"
+    )
+
     func testSelectedAppFallsBackWithinFilteredResultsOnly() {
         let filtered = UninstallerSelection.filteredApps([alpha, beta], query: "Beta")
         let selected = UninstallerSelection.selectedApp(in: filtered, selectedID: alpha.id)
@@ -103,6 +111,62 @@ final class UninstallerSelectionTests: XCTestCase {
 
         XCTAssertNil(pane.app)
         XCTAssertFalse(pane.showsFeedback)
+    }
+
+    // MARK: - The sidebar is frozen while an uninstall is in flight
+
+    func testSelectionOnlyMovesWhileNoUninstallIsInFlight() {
+        XCTAssertTrue(UninstallerSelection.canChangeSelection(isPreparingRemoval: false, isRemoving: false))
+        XCTAssertFalse(UninstallerSelection.canChangeSelection(isPreparingRemoval: true, isRemoving: false))
+        XCTAssertFalse(UninstallerSelection.canChangeSelection(isPreparingRemoval: false, isRemoving: true))
+        XCTAssertFalse(UninstallerSelection.canChangeSelection(isPreparingRemoval: true, isRemoving: true))
+    }
+
+    /// The ordering hole this guard closes. Selecting an app clears the last report on purpose,
+    /// but the sweep's report is written by a background task that lands *after* the click — so
+    /// without the freeze a mid-sweep click cleared the report only for the sweep to re-file it
+    /// under whichever app the user had wandered onto in the meantime.
+    func testAMidSweepClickCannotRefileTheReportUnderAnotherApp() {
+        // Where `performUninstall` leaves things once macOS has accepted Alpha's bundle: Alpha is
+        // gone from the list, Beta is selected, and the leftover sweep is still running.
+        var apps = [alpha, beta, gamma]
+        apps.removeAll { $0.id == alpha.id }
+        let filtered = UninstallerSelection.filteredApps(apps, query: "")
+        var selectedID = filtered.first?.id
+        var feedback = UninstallerFeedback.empty
+
+        // What `select(_:)` does with a click.
+        func select(_ app: InstalledApplication, isRemoving: Bool) {
+            guard UninstallerSelection.canChangeSelection(isPreparingRemoval: false, isRemoving: isRemoving) else {
+                return
+            }
+
+            selectedID = app.id
+            feedback = .empty
+        }
+
+        select(gamma, isRemoving: true)
+        XCTAssertEqual(selectedID, beta.id, "the sidebar must not answer clicks mid-sweep")
+
+        // The background task lands.
+        feedback = .sweepFinished(
+            appName: alpha.name,
+            result: LeftoverRemovalResult(trashedCount: 2, trashedBytes: 2_048)
+        )
+
+        let pane = UninstallerDetailsPane.resolve(
+            filteredApps: filtered,
+            selectedID: selectedID,
+            feedback: feedback
+        )
+
+        XCTAssertEqual(pane.app, beta)
+        XCTAssertTrue(pane.showsFeedback)
+
+        // And the sidebar answers again the moment the sweep is done.
+        select(gamma, isRemoving: false)
+        XCTAssertEqual(selectedID, gamma.id)
+        XCTAssertTrue(feedback.isEmpty)
     }
 
     // MARK: - Uninstall feedback

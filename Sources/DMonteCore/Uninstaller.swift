@@ -116,6 +116,21 @@ enum UninstallerSelection {
 
         return filteredApps.first { $0.id == selectedID } ?? filteredApps.first
     }
+
+    /// Whether a click in the sidebar may move the selection. It may not while an uninstall is in
+    /// flight, and that is the point of the function.
+    ///
+    /// Selecting an app clears the last uninstall's report on purpose — a report left standing
+    /// under a different app's name, path and size reads as a claim about *that* app. But the
+    /// sweep writes its own report from a background task that finishes after the click, so a
+    /// selection change mid-uninstall does not stop the report: it clears it, and then the sweep
+    /// puts it straight back under whichever app the user has since wandered onto. Freezing the
+    /// selection for the second or two the sweep takes is what keeps "the report describes the
+    /// app shown beside it" true, and it matches the Move to Trash button, which is already
+    /// disabled for exactly this window.
+    static func canChangeSelection(isPreparingRemoval: Bool, isRemoving: Bool) -> Bool {
+        !isPreparingRemoval && !isRemoving
+    }
 }
 
 /// What the last uninstall has to say for itself.
@@ -338,6 +353,7 @@ public struct UninstallerPopoverView: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.bottom, 10)
+                    .disabled(!canChangeSelection)
                 }
             }
         }
@@ -453,9 +469,23 @@ public struct UninstallerPopoverView: View {
     /// Moves the selection, and drops the previous uninstall's report along with it. The report
     /// names the app it describes, so leaving it on screen under a different app's name, path and
     /// size reads as a claim that *this* app was just trashed.
+    ///
+    /// Refused outright while an uninstall is in flight: the sweep's report is written when the
+    /// background task finishes, so a click during that window would clear the report only for
+    /// the sweep to re-file it under the newly selected app. See
+    /// `UninstallerSelection.canChangeSelection`.
     private func select(_ app: InstalledApplication) {
+        guard canChangeSelection else {
+            return
+        }
+
         selectedAppID = app.id
         feedback = .empty
+    }
+
+    /// The sidebar is inert while the sweep runs — see `UninstallerSelection.canChangeSelection`.
+    private var canChangeSelection: Bool {
+        UninstallerSelection.canChangeSelection(isPreparingRemoval: isPreparingRemoval, isRemoving: isRemoving)
     }
 
     private var filteredApps: [InstalledApplication] {
@@ -709,9 +739,13 @@ private struct LeftoverReviewSheet: View {
 
     private func row(for item: LeftoverItem) -> some View {
         HStack(alignment: .top, spacing: 10) {
+            // The visible label is hidden because the row prints the location and path itself,
+            // which leaves VoiceOver with eight identical unlabelled checkboxes on the one screen
+            // where the user is deciding, row by row, what gets deleted.
             Toggle("", isOn: binding(for: item))
                 .labelsHidden()
                 .toggleStyle(.checkbox)
+                .accessibilityLabel(item.accessibilityLabel)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {

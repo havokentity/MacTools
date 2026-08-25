@@ -89,6 +89,28 @@ public struct LeftoverItem: Identifiable, Sendable, Hashable {
         candidate.match == .bundleIdentifier
     }
 
+    /// What VoiceOver reads for this row's checkbox. The checkbox draws no label of its own — the
+    /// row prints the location, the path and the badges beside it — so without this every one of
+    /// the eight rows announces itself as an identical unlabelled checkbox, which is precisely the
+    /// screen where the user is deciding, row by row, what gets deleted.
+    ///
+    /// The two badges are part of the label rather than decoration: "matched by name" and
+    /// "system-wide" are the warnings on the sheet, and a reader who cannot see them is exactly
+    /// the reader who needs to hear them.
+    public var accessibilityLabel: String {
+        var label = "\(candidate.label), \(candidate.displayPath)"
+
+        if candidate.match == .appName {
+            label += ", matched by name"
+        }
+
+        if candidate.scope == .system {
+            label += ", system-wide"
+        }
+
+        return label
+    }
+
     public init(candidate: LeftoverCandidate, bytes: UInt64) {
         self.candidate = candidate
         self.bytes = bytes
@@ -482,36 +504,58 @@ public enum LeftoverScanner {
         (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil
     }
 
-    /// Allocated size on disk. Symlinks are counted as themselves: the enumerator does not
-    /// descend through them, so a link's target is never billed to the app being uninstalled.
+    /// Allocated size on disk, with symlinks counted as themselves rather than as their target.
+    ///
+    /// The type is read with `attributesOfItem` — the same non-following call `exists(at:)` uses —
+    /// and deliberately not with `fileExists(atPath:isDirectory:)`, which follows the link and
+    /// answers for whatever is on the other end. A link is worth the handful of bytes it occupies
+    /// no matter how large its target is, because trashing a link frees the link.
+    ///
+    /// The same promise has to survive the walk, so a symlink met inside a real directory has its
+    /// descendants skipped explicitly. Foundation's URL enumerator already walks physically and
+    /// hands a symlinked directory over as a leaf, but nothing in its contract says so, and the
+    /// cost of writing it down is one line against a link into a 400 GB volume being billed to
+    /// the app being uninstalled.
     private static func size(of url: URL) -> UInt64 {
         let sizeKeys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
 
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
             return 0
         }
 
-        if !isDirectory.boolValue {
+        let type = attributes[.type] as? FileAttributeType
+
+        if type == .typeSymbolicLink {
+            return (attributes[.size] as? UInt64) ?? 0
+        }
+
+        guard type == .typeDirectory else {
             let values = try? url.resourceValues(forKeys: sizeKeys)
             return UInt64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
         }
 
         guard let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: Array(sizeKeys),
+            includingPropertiesForKeys: Array(sizeKeys) + [.isSymbolicLinkKey],
             options: []
         ) else {
             return 0
         }
 
-        return enumerator.reduce(UInt64(0)) { partialResult, entry in
-            guard let fileURL = entry as? URL,
-                  let values = try? fileURL.resourceValues(forKeys: sizeKeys) else {
-                return partialResult
+        var total: UInt64 = 0
+
+        for case let fileURL as URL in enumerator {
+            if (try? fileURL.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+                enumerator.skipDescendants()
             }
 
-            return partialResult + UInt64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+            guard let values = try? fileURL.resourceValues(forKeys: sizeKeys) else {
+                continue
+            }
+
+            total += UInt64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
         }
+
+        return total
     }
 }
