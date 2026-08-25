@@ -76,6 +76,19 @@ extension View {
     }
 }
 
+/// What `PreferencesOverlay` costs a sheet. The overlay centres a sheet *over* its panel and insets
+/// it, so every tool's sizing code has to subtract that inset — a sheet sized to the full panel
+/// becomes panel + `chrome` once padded and spills out of both edges. The number therefore lives
+/// here, beside the `.padding` that creates it, instead of being re-derived by hand at each
+/// measuring site.
+enum PreferencesOverlayMetrics {
+    /// The inset the overlay adds on every side of the sheet.
+    static let padding: CGFloat = 18
+
+    /// What that inset costs a sheet across a whole axis — both sides of it.
+    static let chrome: CGFloat = padding * 2
+}
+
 struct PreferencesOverlay<Content: View>: View {
     var cornerRadius: CGFloat
     @ViewBuilder var content: Content
@@ -100,7 +113,7 @@ struct PreferencesOverlay<Content: View>: View {
                         .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75)
                 }
                 .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
-                .padding(18)
+                .padding(PreferencesOverlayMetrics.padding)
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }

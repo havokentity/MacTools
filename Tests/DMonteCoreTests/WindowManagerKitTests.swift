@@ -9,8 +9,10 @@ final class WindowManagerKitTests: XCTestCase {
     /// bugs surface.
     private let area = CGRect(x: 100, y: 50, width: 1200, height: 800)
 
+    /// Every action asserted on below is area-relative, so a nil here is a kit bug. `.infinite`
+    /// makes that bug fail the containment assertions loudly instead of being swallowed.
     private func frame(_ action: WindowAction) -> CGRect {
-        WindowManagerKit.frame(for: action, in: area)
+        WindowManagerKit.frame(for: action, in: area) ?? .infinite
     }
 
     // MARK: - Corner chords
@@ -36,7 +38,7 @@ final class WindowManagerKitTests: XCTestCase {
         let previous = WindowManagerKit.ChordState(action: .rightHalf, at: t0)
         XCTAssertEqual(
             WindowManagerKit.resolveChord(previous: previous, current: .topHalf, now: t0.addingTimeInterval(0.2)),
-            .corner(.topRight)
+            .corner(.topRight, preservesRestorePoint: false)
         )
     }
 
@@ -45,7 +47,27 @@ final class WindowManagerKitTests: XCTestCase {
         let previous = WindowManagerKit.ChordState(action: .rightHalf, at: t0)
         XCTAssertEqual(
             WindowManagerKit.resolveChord(previous: previous, current: .bottomHalf, now: t0.addingTimeInterval(WindowManagerKit.cornerChordWindow - 0.02)),
-            .corner(.bottomRight)
+            .corner(.bottomRight, preservesRestorePoint: false)
+        )
+    }
+
+    /// The corner that completes a chord must be told the opening half already stored the undo, or
+    /// it overwrites it with the intermediate half-snapped frame and Restore stops undoing the
+    /// gesture the user actually made.
+    func testResolveChordCarriesTheOpeningHalfsRestorePoint() {
+        let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+        let stored = WindowManagerKit.ChordState(action: .rightHalf, at: t0, storedRestorePoint: true)
+        XCTAssertEqual(
+            WindowManagerKit.resolveChord(previous: stored, current: .topHalf, now: t0.addingTimeInterval(0.1)),
+            .corner(.topRight, preservesRestorePoint: true)
+        )
+
+        // A half that stored nothing (it moved nothing, or its app refused it) leaves the corner to
+        // record the undo itself — there is no pre-gesture frame to protect.
+        let notStored = WindowManagerKit.ChordState(action: .rightHalf, at: t0, storedRestorePoint: false)
+        XCTAssertEqual(
+            WindowManagerKit.resolveChord(previous: notStored, current: .topHalf, now: t0.addingTimeInterval(0.1)),
+            .corner(.topRight, preservesRestorePoint: false)
         )
     }
 
@@ -143,21 +165,35 @@ final class WindowManagerKitTests: XCTestCase {
     }
 
     func testAllActionsProduceFinitePositiveSizes() {
-        for action in WindowAction.allCases {
-            let f = WindowManagerKit.frame(for: action, in: area)
+        for action in WindowAction.areaRelativeCases {
+            let f = frame(action)
             XCTAssertTrue(f.width > 0 && f.height > 0, "\(action.rawValue) produced non-positive size \(f)")
             XCTAssertTrue(f.width.isFinite && f.height.isFinite, "\(action.rawValue) produced non-finite size")
         }
     }
 
     func testAllActionsStayWithinArea() {
-        for action in WindowAction.allCases {
-            let f = WindowManagerKit.frame(for: action, in: area)
+        for action in WindowAction.areaRelativeCases {
+            let f = frame(action)
             XCTAssertGreaterThanOrEqual(f.minX, area.minX - 0.001, "\(action.rawValue) escaped left")
             XCTAssertGreaterThanOrEqual(f.minY, area.minY - 0.001, "\(action.rawValue) escaped top")
             XCTAssertLessThanOrEqual(f.maxX, area.maxX + 0.001, "\(action.rawValue) escaped right")
             XCTAssertLessThanOrEqual(f.maxY, area.maxY + 0.001, "\(action.rawValue) escaped bottom")
         }
+    }
+
+    /// The area-relative set must stay exactly "everything except the two display actions", so
+    /// switching the loops above off `allCases` cannot become a way for coverage to quietly shrink.
+    func testAreaRelativeCasesCoverEverythingButTheDisplayActions() {
+        XCTAssertEqual(
+            Set(WindowAction.areaRelativeCases),
+            Set(WindowAction.allCases).subtracting([.nextDisplay, .restorePrevious])
+        )
+        for action in WindowAction.areaRelativeCases {
+            XCTAssertNotNil(WindowManagerKit.frame(for: action, in: area), "\(action.rawValue) has no area frame")
+        }
+        XCTAssertNil(WindowManagerKit.frame(for: .nextDisplay, in: area))
+        XCTAssertNil(WindowManagerKit.frame(for: .restorePrevious, in: area))
     }
 
     func testActionMetadataIsComplete() {

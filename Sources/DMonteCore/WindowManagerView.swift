@@ -26,6 +26,7 @@ public struct WindowManagerPopoverView: View {
     private let corners: [WindowAction] = [.topLeft, .topRight, .bottomLeft, .bottomRight]
     private let thirds: [WindowAction] = [.leftThird, .centerThird, .rightThird, .firstTwoThirds, .lastTwoThirds]
     private let sizing: [WindowAction] = [.maximize, .almostMaximize, .center]
+    private let displays: [WindowAction] = [.nextDisplay, .restorePrevious]
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +43,8 @@ public struct WindowManagerPopoverView: View {
                     cornerChordHint
                     section("Thirds", thirds, columns: 5)
                     section("Size", sizing, columns: 3)
+                    section("Display & Undo", displays, columns: 2)
+                    displayActionHint
                     resultFeedback
                     shortcutSection
                 }
@@ -126,6 +129,19 @@ public struct WindowManagerPopoverView: View {
         .foregroundStyle(.tertiary)
     }
 
+    /// "Restore" on its own reads as "restore what?", and "Next Display" gives no clue that the
+    /// window keeps its proportions rather than its coordinates. One line spells out both.
+    private var displayActionHint: some View {
+        HStack(alignment: .top, spacing: s(5)) {
+            Image(systemName: "info.circle")
+                .font(.system(size: s(8), weight: .semibold))
+            Text("Next Display keeps the window's relative place and proportions on the new screen. Restore undoes the last arrange.")
+                .font(.system(size: s(9)))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(.tertiary)
+    }
+
     private func section(_ title: String, _ actions: [WindowAction], columns: Int) -> some View {
         VStack(alignment: .leading, spacing: s(6)) {
             Text(title)
@@ -180,6 +196,14 @@ public struct WindowManagerPopoverView: View {
             Text("No focused window to arrange.")
                 .font(.system(size: s(9.5)))
                 .foregroundStyle(.orange)
+        case .noOtherDisplay:
+            Text("Only one display — the window stayed put.")
+                .font(.system(size: s(9.5)))
+                .foregroundStyle(.secondary)
+        case .nothingToRestore:
+            Text("Nothing to restore — arrange this window first.")
+                .font(.system(size: s(9.5)))
+                .foregroundStyle(.secondary)
         case .failed:
             Text("The focused window couldn't be moved — its app may not allow it.")
                 .font(.system(size: s(9.5)))
