@@ -166,6 +166,110 @@ final class FileShelfStoreTests: XCTestCase {
         XCTAssertEqual(store.items.map(\.displayName), ["a.txt", "b.txt", "c.txt"])
     }
 
+    /// A shelf holds files. The popover's drop path asks `NSItemProvider` for "a URL" and gets back
+    /// whichever representation the provider preferred, so a drag carrying both a file and a web
+    /// address can hand over the web address — and that must not become a row.
+    ///
+    /// The damage is not a harmlessly broken entry. A URL is reduced to its path when it is
+    /// shelved, and the path of `https://example.com/tmp` is `/tmp`, which exists on every Mac:
+    /// unfiltered, the row would be reported as *available* and would carry the identity of the
+    /// local `/tmp`, so a later genuine drop of that folder would collapse onto a web link.
+    func testAWebAddressIsNotShelvedEvenWhenItsPathExistsLocally() throws {
+        let store = makeStore()
+
+        let link = try XCTUnwrap(URL(string: "https://example.com/tmp"))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: link.standardizedFileURL.path),
+            "This test is only meaningful while the link's path names something that really exists"
+        )
+
+        XCTAssertEqual(store.shelve(urls: [link]), 0)
+        XCTAssertTrue(store.items.isEmpty, "A web address must never take a row on a file shelf")
+    }
+
+    /// …and a mixed drop still shelves the half that was real, rather than refusing the lot.
+    func testAMixedDropShelvesTheFilesAndDiscardsTheRest() throws {
+        let store = makeStore()
+        let file = try makeFile(named: "real.txt")
+        let link = try XCTUnwrap(URL(string: "https://example.com/tmp"))
+
+        XCTAssertEqual(store.shelve(urls: [link, file]), 1)
+
+        XCTAssertEqual(store.items.map(\.displayName), ["real.txt"])
+    }
+
+    // MARK: - Drop collection
+
+    /// The whole point of batching a multi-file drop is that it waits for the slowest provider —
+    /// which is only safe because the wait ends.
+    ///
+    /// An `NSItemProvider` in a drag from another application is that application's promise to
+    /// call back, and nothing here can make it keep that promise: a wedged loader, or a source app
+    /// that dies before its reply lands, simply never answers. Without the deadline the batch's
+    /// outstanding count never reaches zero and *every* file in the drag is silently discarded,
+    /// including the ones that arrived perfectly.
+    func testADropWhoseProviderNeverAnswersStillShelvesTheOnesThatDid() async throws {
+        let store = makeStore()
+        let arrived = try makeFile(named: "arrived.txt")
+
+        let collector = DroppedURLCollector(expected: 2, store: store)
+        collector.startDeadline(after: 0.1)
+        collector.accept(arrived, at: 0)
+        // Slot 1 is the provider that never calls back.
+
+        XCTAssertTrue(store.items.isEmpty, "Nothing may be shelved while the batch is still expecting an answer")
+
+        try await Task.sleep(nanoseconds: 600_000_000)
+
+        XCTAssertEqual(
+            store.items.map(\.displayName), ["arrived.txt"],
+            "A batch that timed out must still hand over everything that did arrive"
+        )
+    }
+
+    /// The deadline is a backstop, not a second delivery: a batch that completed normally must not
+    /// be shelved again when the clock runs out.
+    func testTheDeadlineDoesNotReshelveABatchThatAlreadyCompleted() async throws {
+        let store = makeStore()
+        let first = try makeFile(named: "one.txt")
+        let second = try makeFile(named: "two.txt")
+
+        let collector = DroppedURLCollector(expected: 2, store: store)
+        collector.startDeadline(after: 0.1)
+        collector.accept(first, at: 0)
+        collector.accept(second, at: 1)
+
+        XCTAssertEqual(store.items.map(\.displayName), ["one.txt", "two.txt"])
+        store.clearStatus()
+
+        try await Task.sleep(nanoseconds: 600_000_000)
+
+        XCTAssertEqual(store.items.map(\.displayName), ["one.txt", "two.txt"])
+        XCTAssertNil(
+            store.statusMessage,
+            "A second delivery would re-shelve the same files and announce them as already on the shelf"
+        )
+    }
+
+    /// A provider is allowed to answer twice. Counting the second answer would run the outstanding
+    /// count past zero, and the batch would be shelved short — or never.
+    func testAProviderThatAnswersTwiceDoesNotShortenTheBatch() throws {
+        let store = makeStore()
+        let first = try makeFile(named: "one.txt")
+        let second = try makeFile(named: "two.txt")
+
+        let collector = DroppedURLCollector(expected: 2, store: store)
+        collector.startDeadline(after: 5)
+        collector.accept(first, at: 0)
+        collector.accept(first, at: 0)
+
+        XCTAssertTrue(store.items.isEmpty, "The second file has not answered yet, so the batch is not complete")
+
+        collector.accept(second, at: 1)
+
+        XCTAssertEqual(store.items.map(\.displayName), ["one.txt", "two.txt"])
+    }
+
     // MARK: - Availability
 
     /// The rule the feature turns on: an entry whose file is gone is shown as unavailable, never

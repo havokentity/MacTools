@@ -109,7 +109,7 @@ public final class StatusItemFileDropView: NSView {
     ///
     /// `urlReadingFileURLsOnly` is what keeps a dragged web link or a text selection from arriving
     /// as a shelf entry pointing at nothing.
-    static func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+    private static func fileURLs(from sender: NSDraggingInfo) -> [URL] {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         let objects = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options)
         return (objects as? [URL]) ?? []

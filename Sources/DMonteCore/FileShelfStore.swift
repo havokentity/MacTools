@@ -72,7 +72,16 @@ public final class FileShelfStore: ObservableObject {
     /// one, and reporting "1 added" when the list is the same length reads as a bug.
     @discardableResult
     public func shelve(urls: [URL]) -> Int {
-        let candidates = urls.map { FileShelfKit.makeItem(for: $0) }
+        // Filtered here rather than trusted from the callers, because only one of the two drop
+        // paths filters on its own: the menu-bar overlay reads the pasteboard with
+        // `urlReadingFileURLsOnly`, while the popover asks `NSItemProvider` for a `URL` and gets
+        // back whatever representation the provider preferred — which, for a drag that carries
+        // both a file and a web address, can be the web address. A non-file URL is not merely
+        // useless on a shelf, it is actively wrong: `makeItem` reduces a URL to its path, and the
+        // path of `https://example.com/tmp` is `/tmp` — which exists. The row would come out
+        // *available*, carrying the device/inode of the local `/tmp`, and would then collide with
+        // a genuine drop of that folder.
+        let candidates = urls.filter(\.isFileURL).map { FileShelfKit.makeItem(for: $0) }
         guard !candidates.isEmpty else { return 0 }
 
         // Re-resolve the whole shelf before comparing anything against it, because the identities

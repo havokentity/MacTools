@@ -357,6 +357,7 @@ public struct FileShelfPopoverView: View {
         guard !fileProviders.isEmpty else { return false }
 
         let collector = DroppedURLCollector(expected: fileProviders.count, store: store)
+        collector.startDeadline()
         for (index, provider) in fileProviders.enumerated() {
             // The completion handler runs off the main actor. `collector` is a main-actor class
             // and therefore Sendable, so it can cross the boundary; the hop back onto the main
@@ -380,27 +381,74 @@ public struct FileShelfPopoverView: View {
 /// carrying a file URL hands over the URL, it does not read the file — and it makes a drop into
 /// the popover behave exactly like a drop onto the menu-bar icon, which reads the pasteboard in
 /// one go and is ordered for free.
+///
+/// Waiting for every provider is only safe because the wait has an end. `NSItemProvider`'s
+/// completion handler is a promise made by whichever *other* application assembled the drag, and
+/// nothing in this process can make that application keep it: a provider whose loader wedges, or
+/// whose source crashes before its XPC reply lands, simply never answers. Without a deadline the
+/// count never reaches zero and the entire drop is swallowed in silence, which is the one outcome
+/// this tool must never produce — a drag that visibly landed has to leave something behind.
 @MainActor
-private final class DroppedURLCollector {
+final class DroppedURLCollector {
+    /// How long a batch waits for a provider that has stopped answering.
+    ///
+    /// Long enough that no honest provider is cut off — these hand over a URL, they do not read the
+    /// file — and short enough that a user who dropped something and saw nothing happen has not yet
+    /// given up and gone looking for the menu-bar icon.
+    static let defaultDeadline: TimeInterval = 10
+
     private var urls: [URL?]
+    /// Which slots have answered. Tracked separately from `urls`, because a provider is allowed to
+    /// report failure — a `nil` URL is a real answer, and is indistinguishable from an empty slot.
+    private var answered: [Bool]
     private var remaining: Int
+    private var hasShelved = false
     private let store: FileShelfStore
+    private var deadline: Task<Void, Never>?
 
     init(expected: Int, store: FileShelfStore) {
         urls = Array(repeating: nil, count: expected)
+        answered = Array(repeating: false, count: expected)
         remaining = expected
         self.store = store
+    }
+
+    /// Starts the clock on the batch. Separate from `init` so the caller registers every provider
+    /// first, and so a test can ask for a deadline it does not have to sit through.
+    ///
+    /// The task captures `self` strongly on purpose: the collector is otherwise owned only by the
+    /// provider completion handlers, and a provider that is torn down without calling back would
+    /// take the whole batch with it. Holding it until the deadline fires — or until the normal path
+    /// cancels the task — is what makes "the batch is always flushed exactly once" true.
+    func startDeadline(after seconds: TimeInterval = defaultDeadline) {
+        deadline = Task { [self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            shelveWhatArrived()
+        }
     }
 
     /// Records one provider's answer, and shelves the batch once every provider has replied. A
     /// provider that failed contributes `nil` and is simply left out; it must still be counted, or
     /// one unreadable item in a drag would strand the whole batch.
     func accept(_ url: URL?, at index: Int) {
-        guard remaining > 0, urls.indices.contains(index) else { return }
+        guard !hasShelved, urls.indices.contains(index), !answered[index] else { return }
 
+        answered[index] = true
         urls[index] = url
         remaining -= 1
         guard remaining == 0 else { return }
+
+        shelveWhatArrived()
+    }
+
+    /// Hands the store whatever the batch has, once. Everything that has not answered by now is
+    /// treated as a provider that failed, which is the same way a `nil` answer is already treated.
+    private func shelveWhatArrived() {
+        guard !hasShelved else { return }
+        hasShelved = true
+        deadline?.cancel()
+        deadline = nil
 
         let resolved = urls.compactMap { $0 }
         guard !resolved.isEmpty else { return }
