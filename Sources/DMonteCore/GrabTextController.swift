@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import Foundation
 
@@ -65,6 +66,38 @@ public enum GrabTextShortcutAssignment: Equatable, Sendable {
     case assigned
     /// The combination lacks ⌘⌃⌥ (and isn't a bare function key), so it would swallow typing.
     case needsModifiers
+}
+
+/// The user-facing wording for a failed capture-hotkey registration.
+///
+/// Split out of the views because `registrationFailure` is not one story. Only
+/// `eventHotKeyExistsErr` means another app got to the combination first; the other values that
+/// reach the UI — `-1` (an error `GlobalHotKey` did not classify), `-2` (a stale Carbon id we
+/// failed to release), `-3` (the shared Carbon event handler would not install) — are failures on
+/// our side of the line. Telling the user "another app has it" for those sends them hunting for a
+/// culprit that does not exist and pressing a different combination that fails the same way, so
+/// the blame is only assigned when the status actually supports it. The code is always shown:
+/// it is the one thing that makes a bug report about this actionable.
+public enum GrabTextHotKeyFailure {
+    /// `eventHotKeyExistsErr` (-9878) — the only status that genuinely means another process
+    /// already owns the combination exclusively.
+    public static let alreadyTakenStatus = Int32(eventHotKeyExistsErr)
+
+    /// The one-liner under the Grab Text button, where space is tight.
+    public static func hint(status: Int32) -> String {
+        if status == alreadyTakenStatus {
+            return "The capture shortcut is already claimed by another app (error \(status)) — pick a different one in Settings."
+        }
+        return "macOS refused the capture shortcut (error \(status)) — try a different one in Settings."
+    }
+
+    /// The longer sentence in the settings sheet, where the fix is one click away.
+    public static func detail(status: Int32) -> String {
+        if status == alreadyTakenStatus {
+            return "macOS refused this shortcut (error \(status)) — another app already owns it exclusively. Pick a different combination."
+        }
+        return "macOS refused to register this shortcut (error \(status)). Try a different combination — if every combination fails, reopening Grab Text usually clears it."
+    }
 }
 
 /// Claims one global hotkey and returns an object whose lifetime keeps the claim alive (releasing

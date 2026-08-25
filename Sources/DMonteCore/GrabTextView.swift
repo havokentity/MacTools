@@ -68,6 +68,8 @@ public struct GrabTextWindowView: View {
             }
             .buttonStyle(.plain)
             .help("Quit DMonte Grab Text")
+            // `.help` is only a tooltip; without this VoiceOver announces the bare glyph.
+            .accessibilityLabel("Quit DMonte Grab Text")
 
             Spacer()
 
@@ -87,6 +89,7 @@ public struct GrabTextWindowView: View {
             }
             .buttonStyle(.plain)
             .help("Settings")
+            .accessibilityLabel("Settings")
         }
         .padding(.horizontal, layout.headerHorizontalPadding)
         .padding(.top, layout.headerTopPadding)
@@ -120,6 +123,9 @@ public struct GrabTextWindowView: View {
         HStack(spacing: layout.buttonRowSpacing / 2) {
             Image(systemName: hotKeyNeedsAttention ? "exclamationmark.triangle.fill" : "command")
                 .font(.system(size: layout.captionFontSize, weight: .semibold))
+                // Decoration: the sentence beside it already says everything the glyph does, and
+                // an SF Symbol left visible to VoiceOver is announced by name ("command").
+                .accessibilityHidden(true)
             Text(hotKeyHintText)
                 .font(.system(size: layout.captionFontSize, weight: .medium))
                 .lineLimit(2)
@@ -135,8 +141,8 @@ public struct GrabTextWindowView: View {
     }
 
     private var hotKeyHintText: String {
-        if controller.registrationFailure != nil {
-            return "The capture shortcut is already claimed by another app — pick a different one in Settings."
+        if let status = controller.registrationFailure {
+            return GrabTextHotKeyFailure.hint(status: status)
         }
         if controller.secureInputBlocked {
             return "macOS Secure Input is blocking global shortcuts right now."
@@ -290,6 +296,7 @@ private struct GrabTextSettingsView: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close Settings")
             }
 
             shortcutRow
@@ -375,7 +382,7 @@ private struct GrabTextSettingsView: View {
             return "macOS Secure Input is blocking all global shortcuts right now (a password field, the lock screen, or a stuck loginwindow). They resume automatically when it ends."
         }
         if let status = controller.registrationFailure {
-            return "macOS refused this shortcut (error \(status)) — another app already owns it exclusively. Pick a different combination."
+            return GrabTextHotKeyFailure.detail(status: status)
         }
         return nil
     }

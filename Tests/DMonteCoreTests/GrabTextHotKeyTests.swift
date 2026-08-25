@@ -437,6 +437,54 @@ final class GrabTextHotKeyTests: XCTestCase {
         XCTAssertEqual(interruptions, 2, "a grant that is lost again is a new problem, not the old one")
     }
 
+    // MARK: - Registration failure wording
+
+    func testTakenShortcutIsTheOnlyFailureBlamedOnAnotherApp() {
+        // -9878 really is "someone else owns this combination", so the wording may say so.
+        XCTAssertEqual(GrabTextHotKeyFailure.alreadyTakenStatus, -9878)
+
+        let hint = GrabTextHotKeyFailure.hint(status: GrabTextHotKeyFailure.alreadyTakenStatus)
+        let detail = GrabTextHotKeyFailure.detail(status: GrabTextHotKeyFailure.alreadyTakenStatus)
+        XCTAssertTrue(hint.contains("another app"))
+        XCTAssertTrue(detail.contains("another app"))
+        XCTAssertTrue(hint.contains("-9878"), "the status code is what makes a report about this actionable")
+        XCTAssertTrue(detail.contains("-9878"))
+    }
+
+    func testInternalFailuresDoNotAccuseAnotherAppButStillShowTheCode() {
+        // Everything the controller can publish besides -9878: an unclassified error, a stale
+        // Carbon id, and a Carbon event handler that would not install. None of them is another
+        // app's doing, so neither message may send the user hunting for one.
+        for status in [Int32(-1), Int32(-2), Int32(-3), Int32(-50)] {
+            let hint = GrabTextHotKeyFailure.hint(status: status)
+            let detail = GrabTextHotKeyFailure.detail(status: status)
+            for message in [hint, detail] {
+                XCTAssertFalse(message.contains("another app"), "\(status) is not another app's doing: \(message)")
+                XCTAssertFalse(message.contains("claimed"), "\(status) is not another app's doing: \(message)")
+                XCTAssertTrue(message.contains("\(status)"), "the status code must survive into \(message)")
+            }
+        }
+    }
+
+    @MainActor
+    func testEveryStatusTheControllerCanPublishHasWording() throws {
+        // The sentinels in `GrabTextController.statusCode(for:)` and the raw OSStatus path have to
+        // round-trip into a sentence, or a failure the user can see becomes a failure they cannot.
+        for error: GlobalHotKeyRegistrationError in [.duplicateID, .eventHandlerUnavailable, .registrationFailed(-9878)] {
+            let controller = GrabTextController(
+                defaults: scratchDefaults(),
+                capture: { .cancelled },
+                screenRecordingAccess: { true },
+                registrar: { _, _, _ in throw error }
+            )
+            controller.registerHotKey()
+
+            let status = try XCTUnwrap(controller.registrationFailure)
+            XCTAssertFalse(GrabTextHotKeyFailure.hint(status: status).isEmpty)
+            XCTAssertTrue(GrabTextHotKeyFailure.detail(status: status).contains("\(status)"))
+        }
+    }
+
     // MARK: - Controller: the environment behind the window
 
     @MainActor
