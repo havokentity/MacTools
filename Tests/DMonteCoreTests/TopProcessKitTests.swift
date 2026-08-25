@@ -93,6 +93,46 @@ final class TopProcessKitTests: XCTestCase {
         XCTAssertEqual(TopProcessKit.displayName(forCommand: "/"), "/")
     }
 
+    /// `CharacterSet.whitespaces` is spaces and tabs only, so a command carrying a carriage return
+    /// used to come back as `launchd\r` — a name that draws with a control character in it and
+    /// compares and sorts as something other than the `launchd` the rest of the app means.
+    func testDisplayNameTrimsCarriageReturnsAsWellAsSpaces() {
+        XCTAssertEqual(TopProcessKit.displayName(forCommand: "/sbin/launchd\r"), "launchd")
+        XCTAssertEqual(TopProcessKit.displayName(forCommand: "kernel_task\r\n"), "kernel_task")
+        XCTAssertEqual(TopProcessKit.displayName(forCommand: "\r\n"), "")
+        XCTAssertEqual(TopProcessKit.displayName(forCommand: "\r\n  /usr/libexec/trustd \r\n"), "trustd")
+    }
+
+    /// Swift treats CRLF as one grapheme cluster that does not compare equal to `"\n"`, so a split
+    /// on the literal newline left CRLF text completely unsplit — the whole listing parsed as a
+    /// single row whose command ran to the end of the input, reporting one process with the first
+    /// row's pid and the last row's name. Splitting on `isNewline` is what makes the line endings
+    /// genuinely not matter.
+    func testCRLFTerminatedListingParsesTheSameAsAnLFOne() {
+        let crlf = "  123  4.0  1.0 /usr/bin/foo\r\n    1 16.5  0.0 /sbin/launchd\r\n"
+        let processes = TopProcessKit.parse(processListing: crlf)
+
+        XCTAssertEqual(processes.map(\.name), ["foo", "launchd"])
+        XCTAssertEqual(processes.map(\.pid), [123, 1])
+    }
+
+    /// The same listing under each line ending has to produce byte-identical rankings, which is the
+    /// property the panel actually depends on.
+    func testLineEndingStyleDoesNotChangeTheParse() {
+        let rows = ["  123  4.0  1.0 /usr/bin/foo", "    1 16.5  0.0 /sbin/launchd", "  701   0.0 24.8 /usr/sbin/bigmemd"]
+        let expected = TopProcessKit.parse(processListing: rows.joined(separator: "\n"))
+
+        XCTAssertEqual(expected.count, 3)
+
+        for terminator in ["\r\n", "\r"] {
+            XCTAssertEqual(
+                TopProcessKit.parse(processListing: rows.joined(separator: terminator) + terminator),
+                expected,
+                "line ending \(terminator.debugDescription) parsed differently"
+            )
+        }
+    }
+
     // MARK: - Ranking
 
     func testTopByCPUIsRankedHighestFirst() {

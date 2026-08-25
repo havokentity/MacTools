@@ -123,6 +123,74 @@ final class MetricHistoryTests: XCTestCase {
         XCTAssertEqual(history.series(\.cpuUsage), [0.7, 0.8])
     }
 
+    /// The clear happens in place now rather than by replacing the buffer, which is exactly the
+    /// kind of edit that silently leaves a ring half-reset. Clearing after a wrap is the case that
+    /// catches it: the write cursor is sitting mid-buffer and `filled` is at capacity, so a reset
+    /// that missed either one would read the samples back rotated or start out already full.
+    func testRemoveAllAfterAWrapRestartsTheRingFromTheBeginning() {
+        var history = MetricHistory(capacity: 4)
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            history.append(MetricHistorySample(cpuUsage: value))
+        }
+
+        XCTAssertEqual(history.series(\.cpuUsage), [3.0, 4.0, 5.0, 6.0])
+
+        history.removeAll()
+
+        XCTAssertTrue(history.isEmpty)
+        XCTAssertFalse(history.isFull)
+        XCTAssertEqual(history.count, 0)
+        XCTAssertEqual(history.samples, [])
+
+        for value in [7.0, 8.0, 9.0] {
+            history.append(MetricHistorySample(cpuUsage: value))
+        }
+
+        XCTAssertEqual(history.count, 3)
+        XCTAssertEqual(history.series(\.cpuUsage), [7.0, 8.0, 9.0])
+
+        // And the refilled ring has to wrap exactly as a brand-new one would.
+        for value in [10.0, 11.0] {
+            history.append(MetricHistorySample(cpuUsage: value))
+        }
+
+        XCTAssertTrue(history.isFull)
+        XCTAssertEqual(history.series(\.cpuUsage), [8.0, 9.0, 10.0, 11.0])
+    }
+
+    /// A cleared ring must be indistinguishable from a new one. `MetricHistory` is `Equatable`
+    /// over its whole storage, so an in-place clear that only reset the indices and left the old
+    /// samples sitting in the buffer would compare unequal to a fresh history of the same capacity.
+    func testRemoveAllLeavesAHistoryEqualToAFreshOne() {
+        var history = MetricHistory(capacity: 4)
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0] {
+            history.append(MetricHistorySample(cpuUsage: value))
+        }
+
+        history.removeAll()
+
+        XCTAssertEqual(history, MetricHistory(capacity: 4))
+    }
+
+    /// The reset is called on every restart of the poll, so it has to survive being run repeatedly
+    /// and from an already-empty ring without walking the indices anywhere.
+    func testRepeatedRemoveAllIsHarmless() {
+        var history = MetricHistory(capacity: 3)
+
+        for _ in 0..<5 {
+            history.removeAll()
+        }
+
+        history.append(MetricHistorySample(cpuUsage: 0.1))
+        history.removeAll()
+        history.removeAll()
+        history.append(MetricHistorySample(cpuUsage: 0.2))
+
+        XCTAssertEqual(history.count, 1)
+        XCTAssertEqual(history.capacity, 3)
+        XCTAssertEqual(history.series(\.cpuUsage), [0.2])
+    }
+
     // MARK: - Snapshot mapping
 
     func testSampleTakesEveryPlottedMetricFromTheSnapshot() {

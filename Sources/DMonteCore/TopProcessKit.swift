@@ -179,8 +179,15 @@ public enum TopProcessKit {
     /// Parses `pid pcpu pmem comm` rows. Anything that does not have all four fields in that shape
     /// — a header row, a blank line, a truncated final line — is skipped rather than failing the
     /// whole listing, because one unreadable row should not empty the panel.
+    ///
+    /// Rows are cut on `isNewline` rather than on a literal `"\n"`, because Swift treats CRLF as a
+    /// single grapheme cluster that does not compare equal to `"\n"`: splitting on the literal
+    /// leaves CRLF text entirely unsplit, and the whole listing then parses as one row whose
+    /// command runs to the end of the input. `/bin/ps` only ever emits LF, so this costs nothing
+    /// in practice — but this is a public entry point and merging every process into one is a far
+    /// worse failure than dropping a row.
     public nonisolated static func parse(processListing listing: String) -> [ProcessUsage] {
-        listing.split(separator: "\n", omittingEmptySubsequences: true).compactMap(parse(row:))
+        listing.split(whereSeparator: \.isNewline).compactMap(parse(row:))
     }
 
     nonisolated static func parse(row: Substring) -> ProcessUsage? {
@@ -208,8 +215,15 @@ public enum TopProcessKit {
     }
 
     /// The recognisable part of an executable path.
+    ///
+    /// Newlines are trimmed alongside spaces. `CharacterSet.whitespaces` is only spaces and tabs,
+    /// so a command carrying a stray carriage return would otherwise come back as `launchd\r` — a
+    /// name that draws with a control character in it and compares and sorts as something other
+    /// than the `launchd` the rest of the app means. The row splitter above now keeps that out of
+    /// the `ps` path, but this is a public entry point that takes whatever it is handed, and a
+    /// trim is cheaper than the class of bug it rules out.
     public nonisolated static func displayName(forCommand command: String) -> String {
-        let trimmed = command.trimmingCharacters(in: .whitespaces)
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
             return ""

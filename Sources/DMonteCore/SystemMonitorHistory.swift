@@ -94,8 +94,18 @@ public struct MetricHistory: Equatable, Sendable {
 
     /// Drops the recorded history without giving up the allocation, so a restart of the poll
     /// begins from an empty chart rather than splicing a gap into the old one.
+    ///
+    /// The slots are overwritten in place rather than replaced with a fresh `Array(repeating:)`,
+    /// which would hand the old buffer back to the allocator and take a new one — precisely what
+    /// a ring that is allocated once at `capacity` exists to avoid. They are zeroed rather than
+    /// merely abandoned because `MetricHistory` is `Equatable` over its whole storage, so leaving
+    /// the stale samples behind the reset indices would make a cleared ring compare unequal to a
+    /// new one holding the same (empty) history.
     public mutating func removeAll() {
-        storage = Array(repeating: .zero, count: capacity)
+        for index in storage.indices {
+            storage[index] = .zero
+        }
+
         writeIndex = 0
         filled = 0
     }
