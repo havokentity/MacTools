@@ -9,8 +9,25 @@ public enum WindowAction: String, CaseIterable, Sendable, Identifiable {
     case leftThird, centerThird, rightThird
     case firstTwoThirds, lastTwoThirds
     case maximize, center, almostMaximize
+    case nextDisplay, restorePrevious
 
     public var id: String { rawValue }
+
+    /// Whether the target frame is fully determined by one screen's usable area, i.e. whether
+    /// `WindowManagerKit.frame(for:in:)` can answer for this action. The two display actions are
+    /// not: `nextDisplay` needs the source *and* destination areas plus the window's own frame,
+    /// and `restorePrevious` needs a frame remembered from before the last action. Keeping the
+    /// distinction on the action (rather than in a comment) is what lets the tests assert the
+    /// area-relative set is exhaustively covered instead of quietly shrinking.
+    public var isAreaRelative: Bool {
+        switch self {
+        case .nextDisplay, .restorePrevious: false
+        default: true
+        }
+    }
+
+    /// The actions `WindowManagerKit.frame(for:in:)` answers for.
+    public static var areaRelativeCases: [WindowAction] { allCases.filter(\.isAreaRelative) }
 
     public var title: String {
         switch self {
@@ -30,6 +47,8 @@ public enum WindowAction: String, CaseIterable, Sendable, Identifiable {
         case .maximize: "Maximize"
         case .center: "Center"
         case .almostMaximize: "Almost Maximize"
+        case .nextDisplay: "Next Display"
+        case .restorePrevious: "Restore"
         }
     }
 
@@ -51,6 +70,8 @@ public enum WindowAction: String, CaseIterable, Sendable, Identifiable {
         case .maximize: "rectangle.fill"
         case .center: "rectangle.center.inset.filled"
         case .almostMaximize: "rectangle.inset.filled"
+        case .nextDisplay: "display.2"
+        case .restorePrevious: "arrow.uturn.backward"
         }
     }
 
@@ -65,12 +86,18 @@ public enum WindowAction: String, CaseIterable, Sendable, Identifiable {
         case .bottomHalf: WindowShortcut(keyCode: HotKeyCode.down, modifiers: HotKeyModifier.controlOption)
         case .maximize: WindowShortcut(keyCode: HotKeyCode.returnKey, modifiers: HotKeyModifier.controlOption)
         case .center: WindowShortcut(keyCode: HotKeyCode.c, modifiers: HotKeyModifier.controlOption)
+        // The display actions take ⌃⌥⌘ rather than plain ⌃⌥: ⌃⌥→ is already Right Half, and
+        // adding ⌘ is the same escalation Rectangle uses for its move-to-display bindings, so the
+        // muscle memory carries over.
+        case .nextDisplay: WindowShortcut(keyCode: HotKeyCode.right, modifiers: HotKeyModifier.controlOptionCommand)
+        case .restorePrevious: WindowShortcut(keyCode: HotKeyCode.delete, modifiers: HotKeyModifier.controlOption)
         default: nil
         }
     }
 }
 
-/// Carbon virtual key codes used for the default shortcuts.
+/// Carbon virtual key codes used for the default shortcuts. Shared across the tools that claim
+/// global hotkeys, not only Window Manager — hence letters that no window action uses.
 public enum HotKeyCode {
     public static let left: UInt32 = 0x7B
     public static let right: UInt32 = 0x7C
@@ -79,6 +106,8 @@ public enum HotKeyCode {
     public static let returnKey: UInt32 = 0x24
     public static let keypadEnter: UInt32 = 0x4C
     public static let c: UInt32 = 0x08
+    public static let g: UInt32 = 0x05
+    public static let delete: UInt32 = 0x33
 }
 
 /// Carbon modifier masks (mirrors Carbon's `cmdKey`/`shiftKey`/`optionKey`/`controlKey` without
@@ -89,6 +118,7 @@ public enum HotKeyModifier {
     public static let option: UInt32 = 0x0800
     public static let control: UInt32 = 0x1000
     public static let controlOption: UInt32 = control | option
+    public static let controlOptionCommand: UInt32 = control | option | command
 }
 
 /// A global keyboard shortcut as Carbon understands it: virtual key code + modifier mask.
@@ -200,13 +230,24 @@ public struct WindowShortcutStore {
         return result
     }
 
-    /// The shortcuts that should actually be registered: defaults overlaid with stored overrides.
+    /// The shortcuts that should actually be registered: defaults overlaid with stored overrides,
+    /// with any default that collides with an override dropped.
+    ///
+    /// The collision check is what keeps "one combination, one action" true across upgrades. A
+    /// user who bound ⌃⌥⌫ to Center before Restore shipped with that combination as its default
+    /// would otherwise get both actions holding it: the registrar claims a Carbon hotkey per
+    /// action, so one keypress would center *and* restore the window, in no fixed order. An
+    /// explicit user binding outranks a built-in default, so the default yields and its action is
+    /// left unbound (the UI shows "Set", and the user can pick something else).
     public func effectiveShortcuts() -> [WindowAction: WindowShortcut] {
+        let overrides = storedShortcuts()
+        let claimed = Set(overrides.values)
         var result: [WindowAction: WindowShortcut] = [:]
         for action in WindowAction.allCases {
-            if let shortcut = action.defaultShortcut { result[action] = shortcut }
+            guard let shortcut = action.defaultShortcut, !claimed.contains(shortcut) else { continue }
+            result[action] = shortcut
         }
-        for (action, shortcut) in storedShortcuts() { result[action] = shortcut }
+        for (action, shortcut) in overrides { result[action] = shortcut }
         return result
     }
 
@@ -241,7 +282,11 @@ public enum WindowManagerKit {
 
     /// Computes the target frame for `action` within `area` (a top-left-origin rect: y grows down).
     /// Pure arithmetic — no global state — so it is exhaustively unit-tested.
-    public static func frame(for action: WindowAction, in area: CGRect) -> CGRect {
+    ///
+    /// Returns nil for the actions that are not area-relative (`WindowAction.isAreaRelative`): a
+    /// single usable area cannot express "move to the next display" or "put it back where it was".
+    /// Those are computed by `frame(movingWindow:from:to:)` and the remembered-frame store instead.
+    public static func frame(for action: WindowAction, in area: CGRect) -> CGRect? {
         let x = area.minX
         let y = area.minY
         let w = area.width
@@ -273,7 +318,105 @@ public enum WindowManagerKit {
         case .almostMaximize:
             let inset = min(w, h) * 0.05
             return CGRect(x: x + inset, y: y + inset, width: w - 2 * inset, height: h - 2 * inset)
+        case .nextDisplay, .restorePrevious:
+            return nil
         }
+    }
+
+    // MARK: - Cross-display mapping (pure)
+
+    /// Shrinks `frame` to fit inside `area` and slides it until it lies entirely within it.
+    /// Used by every cross-display move (a window can legitimately be wider than the display it is
+    /// moving to) and by restore (the display a remembered frame came from may since have been
+    /// unplugged). Pure.
+    public static func clamped(_ frame: CGRect, into area: CGRect) -> CGRect {
+        // A degenerate area carries no information to clamp against; returning the frame untouched
+        // is the only answer that cannot make things worse.
+        guard area.width > 0, area.height > 0 else { return frame }
+        let width = min(frame.width, area.width)
+        let height = min(frame.height, area.height)
+        // width ≤ area.width, so `area.maxX - width` is never left of `area.minX` and the two
+        // bounds cannot cross.
+        let x = min(max(frame.minX, area.minX), area.maxX - width)
+        let y = min(max(frame.minY, area.minY), area.maxY - height)
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// The frame a restore should actually write for a `remembered` one, given the displays that
+    /// exist *now*. `fallback` is the area to rescue it into (the controller passes the window's
+    /// current screen).
+    ///
+    /// A remembered frame that still meets a screen is written back untouched — including one that
+    /// straddles two displays, which is a placement the user chose and restore exists to return to.
+    /// Clamping unconditionally into whichever single screen holds most of the window would move a
+    /// straddling window by hundreds of points, i.e. defeat the feature on exactly the multi-display
+    /// desk it is for.
+    ///
+    /// The clamp is kept for the case it was written for: the display the frame came from has since
+    /// been unplugged or rearranged, so the frame lies in coordinates no screen covers any more and
+    /// writing it back verbatim would strand the window where the user cannot grab it. Pure.
+    public static func restoreFrame(_ remembered: CGRect, onScreens areas: [CGRect], fallback: CGRect) -> CGRect {
+        guard areaIndex(forWindow: remembered, in: areas) == nil else { return remembered }
+        return clamped(remembered, into: fallback)
+    }
+
+    /// Maps `windowFrame` from the `source` usable area onto the `destination` usable area, keeping
+    /// its relative position and its size *as a proportion of the screen*. All three rects are in AX
+    /// top-left space, and both areas are visible frames — not full display frames — so the menu bar
+    /// and the Dock are already accounted for on each side.
+    ///
+    /// Proportional rather than absolute because displays differ in point size and in how much the
+    /// menu bar and Dock take off the top and bottom: copying the coordinates across puts a window
+    /// that sat comfortably on a 2560×1440 screen half off a 1440×900 one, and copying the size
+    /// leaves a maximized window either short of the edge or spilling past it. The result is finally
+    /// clamped into `destination`, which is what handles a window larger than the destination and a
+    /// window that was hanging off the edge of its source screen.
+    ///
+    /// Identical areas return `windowFrame` untouched: on a single-display Mac "move to the next
+    /// display" must be a true no-op, not a round-trip through the mapping that would quietly haul a
+    /// deliberately half-offscreen window back on-screen.
+    public static func frame(movingWindow windowFrame: CGRect, from source: CGRect, to destination: CGRect) -> CGRect {
+        guard source != destination else { return windowFrame }
+        // Zero-sized areas appear while a display is being reconfigured. Dividing by them yields
+        // NaN origins that AX happily accepts and the user then cannot find the window.
+        guard source.width > 0, source.height > 0, destination.width > 0, destination.height > 0 else {
+            return windowFrame
+        }
+
+        let scaleX = destination.width / source.width
+        let scaleY = destination.height / source.height
+        let mapped = CGRect(
+            x: destination.minX + (windowFrame.minX - source.minX) * scaleX,
+            y: destination.minY + (windowFrame.minY - source.minY) * scaleY,
+            width: windowFrame.width * scaleX,
+            height: windowFrame.height * scaleY
+        )
+        return clamped(mapped, into: destination)
+    }
+
+    /// The display indices in the order "next display" cycles through them: left to right, then
+    /// top to bottom, ties broken by the caller's own order. `NSScreen.screens` is ordered by the
+    /// system's arrangement bookkeeping (primary first, then however the displays were registered),
+    /// which does not match the physical layout — cycling in that order feels random on a
+    /// three-display desk, whereas cycling rightwards matches what the user sees. Pure.
+    public static func displayCycleOrder(of areas: [CGRect]) -> [Int] {
+        areas.indices.sorted { lhs, rhs in
+            let a = areas[lhs]
+            let b = areas[rhs]
+            if a.minX != b.minX { return a.minX < b.minX }
+            if a.minY != b.minY { return a.minY < b.minY }
+            return lhs < rhs
+        }
+    }
+
+    /// The display to move to after `current`, wrapping around. Nil when there is nowhere to go —
+    /// a single display, an empty list, or an index that isn't in the list — which the caller
+    /// reports as a no-op rather than moving the window anywhere. Pure.
+    public static func nextAreaIndex(after current: Int, in areas: [CGRect]) -> Int? {
+        guard areas.count > 1, areas.indices.contains(current) else { return nil }
+        let order = displayCycleOrder(of: areas)
+        guard let position = order.firstIndex(of: current) else { return nil }
+        return order[(position + 1) % order.count]
     }
 
     // MARK: - Frame verification (pure)
@@ -370,16 +513,25 @@ public enum WindowManagerKit {
     public struct ChordState: Equatable, Sendable {
         public let action: WindowAction
         public let at: Date
-        public init(action: WindowAction, at: Date) {
+        /// Whether that half-snap stored a restore point. A chord is two applies but one gesture,
+        /// so the corner that completes it must leave the pre-gesture frame the half stored alone;
+        /// when the half stored nothing (it changed nothing, or the app refused it) there is
+        /// nothing to preserve and the corner records its own.
+        public let storedRestorePoint: Bool
+
+        public init(action: WindowAction, at: Date, storedRestorePoint: Bool = false) {
             self.action = action
             self.at = at
+            self.storedRestorePoint = storedRestorePoint
         }
     }
 
     /// What a hotkey-fired half-snap should do given the previous one.
     public enum ChordOutcome: Equatable, Sendable {
-        /// Apply this corner and clear the chord state.
-        case corner(WindowAction)
+        /// Apply this corner and clear the chord state. `preservesRestorePoint` carries the opening
+        /// half's `storedRestorePoint`: true means the undo for this gesture is already recorded and
+        /// this apply must not overwrite it with the intermediate half-snapped frame.
+        case corner(WindowAction, preservesRestorePoint: Bool)
         /// Apply this half and remember it (with `now`) as the new chord state.
         case half(WindowAction)
     }
@@ -395,8 +547,118 @@ public enum WindowManagerKit {
         if let previous,
            now.timeIntervalSince(previous.at) <= window,
            let corner = cornerCombining(previous.action, current) {
-            return .corner(corner)
+            return .corner(corner, preservesRestorePoint: previous.storedRestorePoint)
         }
         return .half(current)
+    }
+
+    // MARK: - Restore points (pure)
+
+    /// What one apply does to the window's restore point.
+    public enum RestorePointUpdate: Equatable, Sendable {
+        /// Store the window's pre-action frame: this apply moved it, so there is now an undo.
+        case remember
+        /// Leave the existing entry (if any) exactly as it is.
+        case keep
+        /// Drop the entry: a restore landed, so its undo has been spent.
+        case forget
+    }
+
+    /// Decides the restore-point bookkeeping for one apply, from what actually happened to the
+    /// window. `previous` is the frame it had before, `target` what we asked for, `achieved` what
+    /// it has now (nil when it could not be read back at all).
+    ///
+    /// Three rules, each of which the naive "remember on success" version got wrong:
+    /// - a restore is undo, not a new arrangement: it consumes its entry when it lands, and keeps
+    ///   it when it does not, so a refused restore can be retried;
+    /// - `preservesRestorePoint` marks the second apply of a corner chord, which is one user
+    ///   gesture: overwriting there would leave Restore undoing only back to the intermediate
+    ///   half-snap;
+    /// - otherwise what counts is whether the window *moved*, not whether it landed exactly where
+    ///   we asked. Re-pressing a snap the window already sits in must not overwrite the undo with
+    ///   the window's own current frame, and an app that moves the window but drops the size (the
+    ///   live-diagnosed `AXEnhancedUserInterface` case) has genuinely rearranged it, so the user
+    ///   must be able to undo that too. Pure.
+    public static func restorePointUpdate(
+        for action: WindowAction,
+        previous: CGRect,
+        target: CGRect,
+        achieved: CGRect?,
+        preservesRestorePoint: Bool = false
+    ) -> RestorePointUpdate {
+        guard let achieved else { return .keep } // nothing was written, or the window is unreadable
+        if action == .restorePrevious {
+            return frameMatches(achieved, target: target) ? .forget : .keep
+        }
+        if preservesRestorePoint { return .keep }
+        return frameMatches(achieved, target: previous) ? .keep : .remember
+    }
+}
+
+/// Identifies the window a remembered frame belongs to. The Quartz window number (read from the
+/// private-but-universally-implemented `AXWindowNumber`) is stable for the life of a window even as
+/// it moves and resizes, which is exactly the identity "restore" needs. Apps that withhold it fall
+/// back to the owning pid alone: coarser — the app's windows then share one restore slot — but
+/// still better than having no undo for those apps at all.
+public struct WindowIdentity: Hashable, Sendable {
+    public let pid: pid_t
+    public let windowNumber: Int?
+
+    public init(pid: pid_t, windowNumber: Int?) {
+        self.pid = pid
+        self.windowNumber = windowNumber
+    }
+}
+
+/// Remembers each window's frame from just before the last Window Manager action, so `restore` has
+/// something to put back. Pure value type, so the eviction and undo semantics are unit-tested
+/// without any windows.
+///
+/// Bounded and least-recently-used, because the natural key space is unbounded: every window of
+/// every app the user ever snaps would otherwise accumulate an entry for the lifetime of the helper,
+/// and windows that close never tell us so. `capacity` entries is far more than the handful of
+/// windows anyone actually arranges in a session, and the eviction victim is by construction the
+/// window whose undo is least likely to still be wanted.
+///
+/// Deliberately in-memory only: window numbers are not stable across a relaunch, so a persisted
+/// frame would restore some *other* window, or nothing at all.
+public struct WindowFrameMemory: Sendable {
+    /// Sized for a working set, not a history: arranging a dozen windows in one session is a lot,
+    /// and 32 leaves generous headroom while keeping the store trivially small.
+    public static let defaultCapacity = 32
+
+    private let capacity: Int
+    private var frames: [WindowIdentity: CGRect] = [:]
+    /// Identities in least-recently-remembered order, so eviction is a `removeFirst`.
+    private var recency: [WindowIdentity] = []
+
+    public init(capacity: Int = defaultCapacity) {
+        self.capacity = max(1, capacity)
+    }
+
+    public var count: Int { frames.count }
+
+    /// Records the frame a window had before an action was applied to it, replacing any earlier
+    /// one: "restore" means undoing the *last* action, not walking a history back.
+    public mutating func remember(_ frame: CGRect, for identity: WindowIdentity) {
+        recency.removeAll { $0 == identity }
+        recency.append(identity)
+        frames[identity] = frame
+        while recency.count > capacity {
+            frames.removeValue(forKey: recency.removeFirst())
+        }
+    }
+
+    /// The remembered frame, without consuming it — the caller only knows whether the restore
+    /// actually landed after it has tried to write it.
+    public func frame(for identity: WindowIdentity) -> CGRect? {
+        frames[identity]
+    }
+
+    /// Drops the entry once a restore has succeeded, so a second restore reports "nothing to
+    /// restore" instead of silently re-applying a frame that is now the window's own history.
+    public mutating func forget(_ identity: WindowIdentity) {
+        frames.removeValue(forKey: identity)
+        recency.removeAll { $0 == identity }
     }
 }

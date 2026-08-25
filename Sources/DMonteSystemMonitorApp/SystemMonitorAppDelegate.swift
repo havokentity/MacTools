@@ -64,6 +64,18 @@ final class SystemMonitorAppDelegate: NSObject, NSApplicationDelegate {
             }),
             anchorView: { [weak self] in self?.statusView }
         )
+        // The process list is the one genuinely expensive thing this app samples — `ps` enumerating
+        // every process on the machine — and nothing reads it while the panel is closed, which for
+        // a login item is nearly always. Hang the gate off the panel's own show/close hooks rather
+        // than off togglePopover, so a dismissal by outside click, by a display change or by the
+        // Space switch stops the sampling exactly as a deliberate close does.
+        host.onDidShow = { [monitor] in
+            monitor.setProcessListVisible(true)
+        }
+        host.onDidClose = { [monitor] in
+            monitor.setProcessListVisible(false)
+        }
+
         panelHost = host
         host.configure()
     }

@@ -53,10 +53,24 @@ public final class HelperWindowHost: NSObject, NSWindowDelegate {
 
     public private(set) var window: NSWindow?
 
+    /// Called when the window starts or stops being visible on screen: `show()` reveals it, and
+    /// occlusion hides it (another window covers it, the app is hidden, the user switches Space),
+    /// as does closing it.
+    ///
+    /// Exists because there is no view-side equivalent. `makeContent` runs exactly once, in
+    /// `configureWindow()`, and the hosting controller is never torn down, so the root view's
+    /// `onAppear` fires at launch and never again no matter how often the window is shown. A tool
+    /// whose UI reports state macOS changes without announcing it — a TCC grant, Secure Event
+    /// Input — has to re-read that state itself, and this is the edge to do it on.
+    public var onVisibilityChanged: (@MainActor (Bool) -> Void)?
+
     private let configuration: Configuration
     private let makeContent: @MainActor () -> NSViewController
     private let onUserClosedWindow: @MainActor () -> Void
     private var hasPositionedWindow = false
+
+    /// Last value handed to `onVisibilityChanged`, so it only ever sees changes.
+    private var isVisibleOnScreen = false
 
     /// - Parameters:
     ///   - makeContent: builds the tool's hosting controller (called once, during
@@ -161,6 +175,22 @@ public final class HelperWindowHost: NSObject, NSWindowDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        // Asserted rather than read back from `occlusionState`, which AppKit updates
+        // asynchronously and would still report the window as hidden at this instant.
+        updateVisibility(true)
+    }
+
+    // MARK: - Visibility
+
+    private func updateVisibility(_ visible: Bool) {
+        guard visible != isVisibleOnScreen else { return }
+        isVisibleOnScreen = visible
+        onVisibilityChanged?(visible)
+    }
+
+    private var windowIsOnScreen: Bool {
+        guard let window else { return false }
+        return window.isVisible && window.occlusionState.contains(.visible)
     }
 
     // MARK: - Show-notification observation
@@ -188,12 +218,20 @@ public final class HelperWindowHost: NSObject, NSWindowDelegate {
         window?.orderOut(nil)
         window?.delegate = nil
         window = nil
+        updateVisibility(false)
     }
 
     // MARK: - NSWindowDelegate
 
     public func windowWillClose(_ notification: Notification) {
+        // Before the tool's own hook, which may terminate the app: whatever the observer stops
+        // (a poll, an observation) should stop while there is still someone to stop it.
+        updateVisibility(false)
         onUserClosedWindow()
+    }
+
+    public func windowDidChangeOcclusionState(_ notification: Notification) {
+        updateVisibility(windowIsOnScreen)
     }
 
     // Drop the rounded corners in full screen (where the content fills the whole display)
