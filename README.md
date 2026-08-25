@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/havokentity/MacTools/actions/workflows/ci.yml/badge.svg)](https://github.com/havokentity/MacTools/actions/workflows/ci.yml)
 
-A native macOS menu bar tool box — 21 fast, focused utilities in one lightweight Swift app, inspired by the convenience of Parallels Toolbox.
+A native macOS menu bar tool box — 26 fast, focused utilities in one lightweight Swift app, inspired by the convenience of Parallels Toolbox.
 
 Open the tool box from the menu bar, search for what you need, and launch it. Each tool is a self-contained helper with its own polished SwiftUI interface; tools that run continuously (like System Monitor and Clipboard History) add their own menu bar item.
 
@@ -30,6 +30,7 @@ The app updates itself automatically via [Sparkle](https://sparkle-project.org);
 | **Uninstall Apps** | Remove apps and their leftover support files |
 | **Download Video** | Save videos from the web (bundled, checksum‑verified yt‑dlp) |
 | **Image Converter** | Batch convert / resize / compress images (HEIC, JPEG, PNG, …) |
+| **Video Splitter** | Cut long videos into clips that fit a 15/30/60/90‑second upload cap — several clips at once, on the CPU or the GPU |
 | **Grab Text** | OCR any region of the screen straight to your clipboard |
 | **QR Studio** | Generate QR codes and scan them from the screen |
 | **Color Picker** | System eyedropper with hex / RGB / HSL and a recent‑colors palette |
