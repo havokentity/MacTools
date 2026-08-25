@@ -124,6 +124,61 @@ final class WindowShortcutTests: XCTestCase {
         XCTAssertTrue(store.storedShortcuts().isEmpty)
     }
 
+    /// The upgrade hazard: a user bound ⌃⌥⌫ to Center in 0.14.0, then Restore shipped with ⌃⌥⌫ as
+    /// its default. Both actions holding it means two Carbon registrations for one combination and
+    /// one keypress firing both, so the shipped default has to yield to the explicit binding.
+    func testANewDefaultYieldsToAPreExistingUserOverride() {
+        let store = WindowShortcutStore(defaults: scratchDefaults())
+        guard let restoreDefault = WindowAction.restorePrevious.defaultShortcut else {
+            return XCTFail("restore should ship with a default")
+        }
+        store.save(restoreDefault, for: .center)
+
+        let effective = store.effectiveShortcuts()
+        XCTAssertEqual(effective[.center], restoreDefault, "the user's own binding wins")
+        XCTAssertNil(effective[.restorePrevious], "the colliding default must not also register")
+        XCTAssertEqual(effective[.leftHalf], WindowAction.leftHalf.defaultShortcut, "unrelated defaults are untouched")
+    }
+
+    /// Whichever default a future release adds, no combination may ever come back bound twice.
+    func testEffectiveShortcutsNeverBindOneCombinationTwice() {
+        for action in WindowAction.allCases {
+            guard let shortcut = action.defaultShortcut else { continue }
+            let store = WindowShortcutStore(defaults: scratchDefaults())
+            store.save(shortcut, for: .topLeft) // .topLeft ships with no default of its own
+
+            let effective = store.effectiveShortcuts()
+            XCTAssertEqual(effective[.topLeft], shortcut)
+            XCTAssertNil(effective[action], "\(action.rawValue) kept a default the user had claimed")
+            XCTAssertEqual(
+                Set(effective.values).count,
+                effective.count,
+                "two actions share a combination after overriding \(action.rawValue)'s default"
+            )
+        }
+    }
+
+    @MainActor
+    func testControllerDropsADefaultThatCollidesWithAStoredOverride() {
+        let defaults = scratchDefaults()
+        guard let restoreDefault = WindowAction.restorePrevious.defaultShortcut else {
+            return XCTFail("restore should ship with a default")
+        }
+        WindowShortcutStore(defaults: defaults).save(restoreDefault, for: .center)
+
+        let controller = WindowManagerController(defaults: defaults)
+        defer { controller.unregisterHotKeys() }
+
+        XCTAssertEqual(controller.shortcut(for: .center), restoreDefault)
+        XCTAssertNil(controller.shortcut(for: .restorePrevious))
+        XCTAssertEqual(controller.actionUsing(restoreDefault), .center, "exactly one action answers for the combination")
+        XCTAssertEqual(
+            Set(controller.shortcuts.values).count,
+            controller.shortcuts.count,
+            "the registrar would claim the same combination twice"
+        )
+    }
+
     func testStoreIgnoresCorruptEntries() {
         let defaults = scratchDefaults()
         defaults.set(

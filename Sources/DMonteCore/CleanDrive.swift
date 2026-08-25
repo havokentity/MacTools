@@ -364,6 +364,7 @@ public struct CleanDriveWindowView: View {
     /// instant delete shows a visible sweep. Smaller moves scale down proportionally.
     private static let fullDrainSeconds: Double = 1.1
     @State private var isShowingSettings = false
+    @State private var isShowingDevJunk = false
     private let layout = CleanDriveLayout.current
 
     public init(onQuit: @escaping () -> Void) {
@@ -392,6 +393,12 @@ public struct CleanDriveWindowView: View {
                         onQuit: requestQuit,
                         onClose: { isShowingSettings = false }
                     )
+                }
+            }
+
+            if isShowingDevJunk {
+                PreferencesOverlay(cornerRadius: 18) {
+                    CleanDriveDevJunkPanel(onClose: { isShowingDevJunk = false })
                 }
             }
         }
@@ -538,16 +545,37 @@ public struct CleanDriveWindowView: View {
         .padding(.top, layout.cleanButtonTopPadding)
     }
 
+    /// Both secondary actions share one row. Giving developer junk its own line would push the
+    /// window past its fixed height at scale 1.0, and the panel cannot grow — it is sized by
+    /// `CleanDriveSizing.preferredSize()`.
     private var storageButton: some View {
-        Button {
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Disk Utility.app"))
-        } label: {
-            Text("Manage Storage...")
-                .font(.system(size: layout.storageFontSize, weight: .medium))
-                .underline()
-                .foregroundStyle(Color.accentColor)
+        HStack(spacing: layout.footerLinkSpacing) {
+            Spacer()
+
+            Button {
+                isShowingDevJunk = true
+            } label: {
+                Text("Developer Junk...")
+                    .font(.system(size: layout.storageFontSize, weight: .medium))
+                    .underline()
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .disabled(isCleaning)
+            .help("Xcode, npm, Homebrew and other developer caches, listed directory by directory")
+
+            Button {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Disk Utility.app"))
+            } label: {
+                Text("Manage Storage...")
+                    .font(.system(size: layout.storageFontSize, weight: .medium))
+                    .underline()
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
         }
-        .buttonStyle(.plain)
     }
 
     private var selectedSize: UInt64 {
@@ -785,6 +813,7 @@ private struct CleanDriveLayout {
     var cleanButtonTopPadding: CGFloat { 4 * scale }
     var buttonCornerRadius: CGFloat { 7 * scale }
     var storageFontSize: CGFloat { 12 * scale }
+    var footerLinkSpacing: CGFloat { 14 * scale }
 }
 
 private struct CleanDriveSettingsView: View {

@@ -1,107 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Captures the next keyDown while the user records a custom shortcut. A local NSEvent monitor
-/// sees the panel's key events (the popover panel can become key); Esc cancels; the event is
-/// swallowed so the recorded keystroke doesn't also type into the UI.
-@MainActor
-final class ShortcutRecorder: ObservableObject {
-    /// The action currently being recorded, or nil when idle.
-    @Published private(set) var recordingAction: WindowAction?
-
-    private var monitor: Any?
-    private var resignObserver: NSObjectProtocol?
-    private var onResumeHotKeys: (() -> Void)?
-
-    /// Starts recording for `action`. `onCapture` receives the captured shortcut, or nil when
-    /// the user cancels with Esc. Recording also auto-cancels when the popover panel resigns
-    /// key (it is ordered out without tearing down the SwiftUI hierarchy, so `onDisappear`
-    /// alone can't be relied on to clean the monitor up).
-    ///
-    /// `suspendHotKeys`/`resumeHotKeys` bracket the capture: the global snap hotkeys are released
-    /// while recording so Carbon doesn't swallow a combination the recorder is trying to read
-    /// (otherwise pressing e.g. ⌃⌥→ just fires Right Half and the monitor never sees it), and are
-    /// re-registered on every exit path (capture, Esc, or the panel losing key).
-    func begin(
-        for action: WindowAction,
-        suspendHotKeys: @escaping () -> Void = {},
-        resumeHotKeys: @escaping () -> Void = {},
-        onCapture: @escaping (WindowShortcut?) -> Void
-    ) {
-        cancel() // ends any prior recording (running its own resume) before we suspend again
-        onResumeHotKeys = resumeHotKeys
-        recordingAction = action
-        suspendHotKeys()
-        NSApp.keyWindow?.makeFirstResponder(nil)
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.cancel()
-            }
-        }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self else { return event }
-            let escapeKeyCode: UInt16 = 53
-            if event.keyCode == escapeKeyCode, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
-                self.end()
-                onCapture(nil)
-            } else {
-                let shortcut = Self.shortcut(from: event)
-                self.end()
-                onCapture(shortcut)
-            }
-            return nil // swallow the keystroke
-        }
-    }
-
-    static func shortcut(from event: NSEvent) -> WindowShortcut {
-        WindowShortcut(
-            keyCode: normalizedKeyCode(UInt32(event.keyCode)),
-            modifiers: carbonModifiers(from: event.modifierFlags)
-        )
-    }
-
-    static func normalizedKeyCode(_ keyCode: UInt32) -> UInt32 {
-        keyCode == HotKeyCode.keypadEnter ? HotKeyCode.returnKey : keyCode
-    }
-
-    /// Stops recording without capturing.
-    func cancel() {
-        end()
-    }
-
-    private func end() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
-            self.monitor = nil
-        }
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-            self.resignObserver = nil
-        }
-        recordingAction = nil
-        // Re-register the global hotkeys we released for capture — after the local monitor is gone,
-        // and on every exit path. Cleared first so a re-entrant begin() can't double-resume.
-        let resume = onResumeHotKeys
-        onResumeHotKeys = nil
-        resume?()
-    }
-
-    /// AppKit modifier flags → Carbon modifier mask (the format `RegisterEventHotKey` wants).
-    static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
-        var mask: UInt32 = 0
-        let device = flags.intersection(.deviceIndependentFlagsMask)
-        if device.contains(.command) { mask |= HotKeyModifier.command }
-        if device.contains(.shift) { mask |= HotKeyModifier.shift }
-        if device.contains(.option) { mask |= HotKeyModifier.option }
-        if device.contains(.control) { mask |= HotKeyModifier.control }
-        return mask
-    }
-}
-
 /// The Window Manager popover: a grid of snap tiles that resize the target app's focused window
 /// (the app snapshotted when the popover opened — shown as "Will snap: X"), an
 /// Accessibility-permission banner when the grant is missing, and a collapsible
@@ -127,6 +26,7 @@ public struct WindowManagerPopoverView: View {
     private let corners: [WindowAction] = [.topLeft, .topRight, .bottomLeft, .bottomRight]
     private let thirds: [WindowAction] = [.leftThird, .centerThird, .rightThird, .firstTwoThirds, .lastTwoThirds]
     private let sizing: [WindowAction] = [.maximize, .almostMaximize, .center]
+    private let displays: [WindowAction] = [.nextDisplay, .restorePrevious]
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -143,6 +43,8 @@ public struct WindowManagerPopoverView: View {
                     cornerChordHint
                     section("Thirds", thirds, columns: 5)
                     section("Size", sizing, columns: 3)
+                    section("Display & Undo", displays, columns: 2)
+                    displayActionHint
                     resultFeedback
                     shortcutSection
                 }
@@ -227,6 +129,19 @@ public struct WindowManagerPopoverView: View {
         .foregroundStyle(.tertiary)
     }
 
+    /// "Restore" on its own reads as "restore what?", and "Next Display" gives no clue that the
+    /// window keeps its proportions rather than its coordinates. One line spells out both.
+    private var displayActionHint: some View {
+        HStack(alignment: .top, spacing: s(5)) {
+            Image(systemName: "info.circle")
+                .font(.system(size: s(8), weight: .semibold))
+            Text("Next Display keeps the window's relative place and proportions on the new screen. Restore undoes the last arrange.")
+                .font(.system(size: s(9)))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(.tertiary)
+    }
+
     private func section(_ title: String, _ actions: [WindowAction], columns: Int) -> some View {
         VStack(alignment: .leading, spacing: s(6)) {
             Text(title)
@@ -281,6 +196,14 @@ public struct WindowManagerPopoverView: View {
             Text("No focused window to arrange.")
                 .font(.system(size: s(9.5)))
                 .foregroundStyle(.orange)
+        case .noOtherDisplay:
+            Text("Only one display — the window stayed put.")
+                .font(.system(size: s(9.5)))
+                .foregroundStyle(.secondary)
+        case .nothingToRestore:
+            Text("Nothing to restore — arrange this window first.")
+                .font(.system(size: s(9.5)))
+                .foregroundStyle(.secondary)
         case .failed:
             Text("The focused window couldn't be moved — its app may not allow it.")
                 .font(.system(size: s(9.5)))
@@ -375,7 +298,7 @@ public struct WindowManagerPopoverView: View {
     }
 
     private func shortcutRow(_ action: WindowAction) -> some View {
-        let isRecording = recorder.recordingAction == action
+        let isRecording = recorder.isRecording(action)
         let failed = controller.registrationFailures[action] != nil
 
         return VStack(alignment: .leading, spacing: s(1)) {
@@ -415,7 +338,7 @@ public struct WindowManagerPopoverView: View {
 
     private func beginRecording(_ action: WindowAction) {
         shortcutNotice = nil
-        if recorder.recordingAction == action {
+        if recorder.isRecording(action) {
             recorder.cancel()
             return
         }
