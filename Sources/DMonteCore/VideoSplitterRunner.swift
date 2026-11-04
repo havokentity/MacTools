@@ -355,14 +355,19 @@ public final class VideoSplitterRunner: @unchecked Sendable {
         // of being read after the process exits.
         let errorText = CollectedOutput()
         let errorHandle = standardError.fileHandleForReading
+        let drained = DispatchSemaphore(value: 0)
         let drain = Thread {
             errorText.append(errorHandle.readDataToEndOfFile())
+            drained.signal()
         }
         drain.start()
 
         do {
             try process.run()
         } catch {
+            // Nothing was spawned, so nothing will ever close the pipe's write end:
+            // close it here or the drain thread blocks on it for the life of the app.
+            try? standardError.fileHandleForWriting.close()
             return .failure(.ffmpeg("Couldn't start ffmpeg"))
         }
 
@@ -391,6 +396,10 @@ public final class VideoSplitterRunner: @unchecked Sendable {
         }
 
         process.waitUntilExit()
+        // The exit is observed independently of the pipe reaching EOF, so the drain can
+        // still be mid-read here; wait for it, or a failure's reason is read before it
+        // has been written and the user is told only "ffmpeg failed".
+        _ = drained.wait(timeout: .now() + 5)
 
         lock.lock()
         runningProcesses[ObjectIdentifier(process)] = nil
