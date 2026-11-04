@@ -477,6 +477,12 @@ public final class CalendarController: ObservableObject {
 /// to match the menu-bar/display scale so it fits the scaled panel (same approach as the other
 /// tools).
 public struct CalendarPopoverView: View {
+    /// Posted by the host when the panel is about to show. The panel is cached and closing only
+    /// orders it out, so `onAppear` fires once for the process — without this an event added in
+    /// Calendar.app, or access granted in System Settings, after the first open would never show.
+    public static let willShowNotification =
+        Notification.Name("com.havokentity.mactools.calendar.willShow")
+
     @StateObject private var controller = CalendarController()
     /// The filter list takes over the events area rather than opening a second window: the popover
     /// closes the moment focus leaves it, so a sheet or child panel would fight the panel host.
@@ -491,6 +497,13 @@ public struct CalendarPopoverView: View {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
         formatter.dateStyle = .none
+        return formatter
+    }()
+
+    /// The selected-day heading's formatter, built once for the same reason as `timeFormatter`.
+    private static let dayTitleFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE, MMM d"
         return formatter
     }()
 
@@ -524,13 +537,18 @@ public struct CalendarPopoverView: View {
         }
         .frame(width: CalendarSizing.preferredSize().width, height: CalendarSizing.preferredSize().height)
         .frostedPanel(cornerRadius: 18)
-        .onAppear {
-            controller.refreshAuthorization()
-            if controller.accessState == .notDetermined {
-                controller.requestAccess()
-            } else if controller.accessState == .authorized {
-                controller.reloadEvents()
-            }
+        .onAppear { refreshOnShow() }
+        .onReceive(NotificationCenter.default.publisher(for: Self.willShowNotification)) { _ in
+            refreshOnShow()
+        }
+    }
+
+    /// Re-checks access and reloads the lists. `refreshAuthorization()` already reloads once
+    /// access is granted, so an authorized store is queried once here, not twice.
+    private func refreshOnShow() {
+        controller.refreshAuthorization()
+        if controller.accessState == .notDetermined {
+            controller.requestAccess()
         }
     }
 
@@ -826,10 +844,7 @@ public struct CalendarPopoverView: View {
     }
 
     private var selectedDayTitle: String {
-        let formatter = DateFormatter()
-        formatter.calendar = controller.calendar
-        formatter.dateFormat = "EEEE, MMM d"
-        return formatter.string(from: controller.selectedDate)
+        Self.dayTitleFormatter.string(from: controller.selectedDate)
     }
 
     @ViewBuilder

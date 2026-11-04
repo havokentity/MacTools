@@ -373,6 +373,10 @@ fileprivate struct TransformPane: View {
     @State private var mode = 0
 
     var body: some View {
+        // Evaluated once per render: the copy button, the text and the error flag all read it,
+        // and for JSON each read would otherwise re-parse and re-serialize the whole paste.
+        let output = self.output
+
         VStack(alignment: .leading, spacing: layout.paneSpacing) {
             HStack {
                 SectionLabel(layout: layout, text: "Input")
@@ -805,6 +809,9 @@ fileprivate struct CasePane: View {
     @State private var style: DevToolsKit.CaseStyle = .camel
 
     var body: some View {
+        // Evaluated once per render rather than once per read (three below).
+        let output = self.output
+
         VStack(alignment: .leading, spacing: layout.paneSpacing) {
             HStack {
                 SectionLabel(layout: layout, text: "Input")
