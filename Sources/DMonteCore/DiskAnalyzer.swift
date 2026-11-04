@@ -237,7 +237,12 @@ public final class ScanPauseGate: Sendable {
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 let waiterID: Int? = state.withLock { state in
-                    guard state.paused else { return nil }
+                    // Re-check cancellation under the lock: a cancel that lands
+                    // between the entry check above and this registration has
+                    // already run the onCancel drain, so a waiter added now would
+                    // sleep until the next resume(), which a torn-down scan never
+                    // gets. Any cancel after this point finds the waiter in the map.
+                    guard state.paused, !Task.isCancelled else { return nil }
                     let id = state.nextID
                     state.nextID += 1
                     state.waiters[id] = continuation
@@ -1386,21 +1391,30 @@ public struct DiskAnalyzerWindowView: View {
                     .opacity(0.35)
 
                 if let root = selectedTreeCache?.root {
+                    // One flat, lazy list of the rows that are actually open, rather
+                    // than a recursive row that nests its children in a plain VStack:
+                    // nested that way, the LazyVStack holds a single child and every
+                    // expanded row on the volume is built eagerly — tens of thousands
+                    // of views for one large folder — and rebuilt on every hover.
+                    let visibleRows = DiskTreeVisibleRows.rows(from: root, expandedNodeIDs: expandedTreeNodeIDs)
+
                     ScrollViewReader { scrollProxy in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 0) {
-                                DiskTreeRow(
-                                    node: root,
-                                    depth: 0,
-                                    expandedNodeIDs: expandedTreeNodeIDs,
-                                    currentNodeID: currentNode?.id,
-                                    highlightedNodeID: hoveredNode?.id,
-                                    focusedNodeID: focusedNode?.id,
-                                    layout: layout,
-                                    onToggleExpand: toggleTreeExpansion,
-                                    onSelect: navigateFromTree,
-                                    onAction: { perform($0, on: $1) }
-                                )
+                                ForEach(visibleRows) { row in
+                                    DiskTreeRow(
+                                        node: row.node,
+                                        depth: row.depth,
+                                        isExpanded: expandedTreeNodeIDs.contains(row.node.id),
+                                        currentNodeID: currentNode?.id,
+                                        highlightedNodeID: hoveredNode?.id,
+                                        focusedNodeID: focusedNode?.id,
+                                        layout: layout,
+                                        onToggleExpand: toggleTreeExpansion,
+                                        onSelect: navigateFromTree,
+                                        onAction: { perform($0, on: $1) }
+                                    )
+                                }
                             }
                             .padding(.vertical, 4)
                         }
@@ -2119,10 +2133,41 @@ private struct VolumeChip: View {
     }
 }
 
+/// One row of the tree pane: a node and how deep it sits, produced by a walk that
+/// only descends into expanded directories. Identified by the node so a scroll
+/// request keyed on a node's id lands on its row.
+private struct DiskTreeVisibleRow: Identifiable {
+    let node: DiskNode
+    let depth: Int
+
+    var id: ObjectIdentifier { node.id }
+}
+
+private enum DiskTreeVisibleRows {
+    /// Pre-order, siblings in their scanned (biggest-first) order, closed
+    /// directories contributing only themselves. Iterative so a deep path never
+    /// costs stack, and proportional to the rows on screen rather than the tree.
+    static func rows(from root: DiskNode, expandedNodeIDs: Set<ObjectIdentifier>) -> [DiskTreeVisibleRow] {
+        var rows: [DiskTreeVisibleRow] = []
+        var pending: [(node: DiskNode, depth: Int)] = [(node: root, depth: 0)]
+
+        while let entry = pending.popLast() {
+            rows.append(DiskTreeVisibleRow(node: entry.node, depth: entry.depth))
+            guard entry.node.isDirectory, expandedNodeIDs.contains(entry.node.id) else { continue }
+            // Pushed in reverse so the first child is the next one popped.
+            for child in entry.node.children.reversed() {
+                pending.append((node: child, depth: entry.depth + 1))
+            }
+        }
+
+        return rows
+    }
+}
+
 private struct DiskTreeRow: View {
     var node: DiskNode
     var depth: Int
-    var expandedNodeIDs: Set<ObjectIdentifier>
+    var isExpanded: Bool
     var currentNodeID: ObjectIdentifier?
     var highlightedNodeID: ObjectIdentifier?
     /// The row the action bar and its shortcuts would act on. Outlined rather than
@@ -2198,23 +2243,6 @@ private struct DiskTreeRow: View {
                         .strokeBorder(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
                 }
             }
-
-            if isExpanded {
-                ForEach(node.children) { child in
-                    DiskTreeRow(
-                        node: child,
-                        depth: depth + 1,
-                        expandedNodeIDs: expandedNodeIDs,
-                        currentNodeID: currentNodeID,
-                        highlightedNodeID: highlightedNodeID,
-                        focusedNodeID: focusedNodeID,
-                        layout: layout,
-                        onToggleExpand: onToggleExpand,
-                        onSelect: onSelect,
-                        onAction: onAction
-                    )
-                }
-            }
         }
         .id(node.id)
     }
@@ -2226,10 +2254,6 @@ private struct DiskTreeRow: View {
     private var disclosureIcon: String {
         guard canExpand else { return "chevron.right" }
         return isExpanded ? "chevron.down" : "chevron.right"
-    }
-
-    private var isExpanded: Bool {
-        expandedNodeIDs.contains(node.id)
     }
 
     private var isCurrent: Bool {
