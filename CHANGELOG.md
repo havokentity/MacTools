@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org) and the
 
 ## [Unreleased]
 
+## [0.16.2] — 2026-11-04
+
 ### Fixed
 - **Audio Router** no longer lists a running input monitor's private aggregate as
   one of your routing devices, nor offers it as an input or output for the next
@@ -682,7 +684,8 @@ Switcher, Focus Timer, Calendar, Keep Awake, Maintenance, and Dev Tools.
 - The menu bar tool box shell and the first tool, System Monitor (live CPU,
   memory, disk, network, and temperature metrics).
 
-[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/havokentity/MacTools/compare/v0.16.2...HEAD
+[0.16.2]: https://github.com/havokentity/MacTools/releases/tag/v0.16.2
 [0.16.1]: https://github.com/havokentity/MacTools/releases/tag/v0.16.1
 [0.16.0]: https://github.com/havokentity/MacTools/releases/tag/v0.16.0
 [0.15.0]: https://github.com/havokentity/MacTools/releases/tag/v0.15.0
