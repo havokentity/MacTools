@@ -40,8 +40,7 @@ public enum QRKit {
         let effectiveScale = max(1, scale)
         let scaled = output.transformed(by: CGAffineTransform(scaleX: effectiveScale, y: effectiveScale))
 
-        let context = CIContext(options: nil)
-        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else {
+        guard let cgImage = renderContext.createCGImage(scaled, from: scaled.extent) else {
             return nil
         }
 
@@ -128,6 +127,14 @@ public enum QRKit {
     }
 
     // MARK: - Private
+
+    /// One context for every render. The preview regenerates on each keystroke, and a
+    /// `CIContext` sets up a Metal device and pipeline when it is created — far more work
+    /// than drawing the code itself, and it was being repeated per call. `CIContext` is not
+    /// `Sendable`, but CoreImage documents it as immutable and safe to share across threads
+    /// (generation runs on the main actor in the app and on arbitrary threads in tests), so
+    /// the unchecked annotation is sound under Swift 6.
+    nonisolated(unsafe) private static let renderContext = CIContext(options: nil)
 
     private static func loadCGImage(at url: URL) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
