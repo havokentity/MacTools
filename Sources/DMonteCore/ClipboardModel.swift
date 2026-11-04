@@ -102,10 +102,21 @@ public struct ClipboardEntry: Identifiable, Codable, Sendable, Equatable {
             }
             return names.first ?? (text ?? "File")
         default:
-            let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            // Bounded the way `Snippet.previewText` is: the row is `lineLimit(1)` with middle
+            // truncation, so CoreText has to shape the whole string to find its tail — for a
+            // multi-megabyte copy (a whole log file, say) that stalled the panel for seconds on
+            // every open while the entry sat in the list. `drop(while:)` walks only the leading
+            // whitespace and `prefix` stops at the cap, so no read is proportional to the copy.
+            let trimmed = (text ?? "")
+                .drop { $0.isWhitespace }
+                .prefix(Self.previewCharacterLimit)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? kind.label : trimmed
         }
     }
+
+    /// How much of the text the one-line row label ever looks at; see `previewText`.
+    private static let previewCharacterLimit = 2_000
 
     /// Full multi-line text shown in the preview pane (single-line collapses to previewText).
     public var fullText: String {
