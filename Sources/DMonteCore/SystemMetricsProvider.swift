@@ -122,15 +122,22 @@ final class SystemMetricsProvider {
 
     private func diskUsage() -> (used: UInt64, total: UInt64) {
         do {
-            let values = try URL(fileURLWithPath: "/").resourceValues(forKeys: [
+            let root = URL(fileURLWithPath: "/")
+            let values = try root.resourceValues(forKeys: [
                 .volumeAvailableCapacityKey,
-                .volumeAvailableCapacityForImportantUsageKey,
                 .volumeTotalCapacityKey
             ])
 
             let total = UInt64(values.volumeTotalCapacity ?? 0)
             let available = UInt64(values.volumeAvailableCapacity ?? 0)
-            let importantAvailable = UInt64(values.volumeAvailableCapacityForImportantUsage ?? 0)
+            // The "important usage" figure is only asked for when the plain one reads as a full
+            // disk, because it is not a `statfs` field: Foundation asks the cache-deletion service
+            // over XPC how much purgeable space could be reclaimed, which is too much to do once a
+            // second on the main thread for a number that is only ever used as a last resort.
+            let importantAvailable = available > 0 ? 0 : UInt64(
+                (try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                    .volumeAvailableCapacityForImportantUsage ?? 0
+            )
             let bestAvailable = available > 0 ? available : importantAvailable
             return (used: total > bestAvailable ? total - bestAvailable : 0, total: total)
         } catch {
