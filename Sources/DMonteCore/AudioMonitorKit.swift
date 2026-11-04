@@ -197,6 +197,13 @@ final class MonitorSampleRateRegistry: @unchecked Sendable {
 /// monitors. Capturing an input device requires microphone permission, so the UI
 /// requests it before starting.
 public final class AudioMonitorEngine: @unchecked Sendable {
+    /// UID prefix of the private aggregates monitors build. A private aggregate
+    /// is hidden from other processes but still enumerates inside the one that
+    /// created it, and this prefix extends `AudioRouterKit.uidPrefix`, so the
+    /// router's own device listings must exclude it or a live monitor's plumbing
+    /// shows up as a routing device the user can destroy from under its IO proc.
+    public static let aggregateUIDPrefix = AudioRouterKit.uidPrefix + "monitor."
+
     /// Gain shared between the main thread (writer, via `setGain`) and the
     /// realtime IO proc (reader). Same handoff as
     /// `AppVolumeMixerAudioEngine.RenderState` (see the rationale there): the
@@ -392,7 +399,7 @@ public final class AudioMonitorEngine: @unchecked Sendable {
     // MARK: - Aggregate
 
     private static func createAggregate(inputUID: String, outputUID: String) throws -> AudioObjectID {
-        let uid = "com.havokentity.mactools.audiorouter.monitor." + UUID().uuidString
+        let uid = aggregateUIDPrefix + UUID().uuidString
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "DMonte Monitor",
             kAudioAggregateDeviceUIDKey: uid,

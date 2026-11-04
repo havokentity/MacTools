@@ -132,7 +132,12 @@ public final class AudioRouterController: ObservableObject {
     }
 
     private func refreshMonitorDevices() {
-        let devices = AudioSwitcherKit.devices().filter { !$0.uid.isEmpty }
+        // A running monitor's private aggregate enumerates in this process and
+        // exposes both directions, so without this it would be offered as an
+        // input or output for the next monitor.
+        let devices = AudioSwitcherKit.devices().filter {
+            !$0.uid.isEmpty && !$0.uid.hasPrefix(AudioMonitorEngine.aggregateUIDPrefix)
+        }
         monitorInputs = devices.filter(\.hasInput)
         monitorOutputs = devices.filter(\.hasOutput)
         // Drop selections that vanished.
