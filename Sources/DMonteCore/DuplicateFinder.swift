@@ -194,10 +194,11 @@ public enum DuplicateFinderKit {
     /// natural "original" to keep. Falls back to path order when dates are
     /// unavailable so results are deterministic.
     private static func sortedByAge(_ urls: [URL]) -> [URL] {
-        urls.sorted { lhs, rhs in
-            let lhsDate = creationDate(of: lhs)
-            let rhsDate = creationDate(of: rhs)
-            switch (lhsDate, rhsDate) {
+        // Stat each file once up front: reading the date inside the comparator re-stats the
+        // same files on every comparison, O(n log n) times for a group of n copies.
+        let dated = urls.map { (url: $0, created: creationDate(of: $0)) }
+        return dated.sorted { lhs, rhs in
+            switch (lhs.created, rhs.created) {
             case let (l?, r?) where l != r:
                 return l < r
             case (.some, .none):
@@ -205,9 +206,9 @@ public enum DuplicateFinderKit {
             case (.none, .some):
                 return false
             default:
-                return lhs.path < rhs.path
+                return lhs.url.path < rhs.url.path
             }
-        }
+        }.map { $0.url }
     }
 
     private static func creationDate(of url: URL) -> Date? {

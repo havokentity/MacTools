@@ -319,7 +319,13 @@ public struct UninstallerPopoverView: View {
     }
 
     private var sidebar: some View {
-        VStack(spacing: 10) {
+        // Resolved once per render rather than once per row: `selectedApp` re-runs the search
+        // filter over the whole app list, so asking it from inside the ForEach made every
+        // visible row repeat that filter on each keystroke.
+        let visibleApps = filteredApps
+        let selectedID = UninstallerSelection.selectedApp(in: visibleApps, selectedID: selectedAppID)?.id
+
+        return VStack(spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
@@ -345,8 +351,8 @@ public struct UninstallerPopoverView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 4) {
-                        ForEach(filteredApps) { app in
-                            AppRow(app: app, isSelected: app.id == selectedApp?.id) {
+                        ForEach(visibleApps) { app in
+                            AppRow(app: app, isSelected: app.id == selectedID) {
                                 select(app)
                             }
                         }

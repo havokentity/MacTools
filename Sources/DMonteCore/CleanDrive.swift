@@ -224,7 +224,11 @@ public enum CleanDriveScanner {
         } catch {
             var isDirectory: ObjCBool = false
             let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            let children = exists && isDirectory.boolValue ? directoryContents(at: url) : []
+            // `fileExists` follows symlinks, so a link to a directory reads as a directory here.
+            // Never recurse through one: its children belong to the target, which may sit well
+            // outside the cache root we were asked to clean.
+            let isSymlink = (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+            let children = exists && isDirectory.boolValue && !isSymlink ? directoryContents(at: url) : []
 
             guard !children.isEmpty else {
                 return [CleanDriveSkip(path: url.path, reason: skipReason(for: error))]
@@ -288,7 +292,12 @@ public enum CleanDriveScanner {
             return 0
         }
 
-        if !isDirectory.boolValue {
+        // A symlink is removed as a link and never followed, so it is worth only its own few
+        // bytes. `fileExists` answers for the target, so without this a link to a directory
+        // elsewhere would be sized — and later reported as cleaned — at the target's full size.
+        let isSymlink = (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+
+        if !isDirectory.boolValue || isSymlink {
             let values = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
             return UInt64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
         }
