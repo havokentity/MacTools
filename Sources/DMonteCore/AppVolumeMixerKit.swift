@@ -767,7 +767,17 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
     }
 
     private static func routedOutputDevices(outputUIDs: [String]) -> [AppVolumeOutputDevice] {
-        let availableOutputs = AppVolumeMixerKit.outputDevices()
+        routedOutputDevices(outputUIDs: outputUIDs, availableOutputs: AppVolumeMixerKit.outputDevices())
+    }
+
+    /// The pure half of route resolution, over a device list the caller already
+    /// holds. The keep-alive check runs this on the main thread for every live
+    /// engine each poll — and on every slider tick for a processing app — so it
+    /// must not enumerate the HAL itself; `start()` still resolves live.
+    private static func routedOutputDevices(
+        outputUIDs: [String],
+        availableOutputs: [AppVolumeOutputDevice]
+    ) -> [AppVolumeOutputDevice] {
         if outputUIDs.isEmpty {
             return availableOutputs.filter(\.isDefault).prefix(1).map { $0 }
         }
@@ -785,6 +795,16 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
     /// changes or a routed device is plugged/unplugged.
     static func resolvedOutputUIDs(forRequestedOutputUIDs outputUIDs: [String]) -> [String] {
         routedOutputDevices(outputUIDs: outputUIDs).map(\.uid)
+    }
+
+    /// Same resolution against `availableOutputs` (as returned by
+    /// `AppVolumeMixerKit.outputDevices()`) instead of a fresh HAL enumeration,
+    /// for callers that already fetched the device list off the main thread.
+    static func resolvedOutputUIDs(
+        forRequestedOutputUIDs outputUIDs: [String],
+        availableOutputs: [AppVolumeOutputDevice]
+    ) -> [String] {
+        routedOutputDevices(outputUIDs: outputUIDs, availableOutputs: availableOutputs).map(\.uid)
     }
 
     private static func sourceOutputDevice() -> AppVolumeOutputDevice? {
@@ -1251,17 +1271,30 @@ public enum AppVolumeMixerKit {
             NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) },
             uniquingKeysWith: { _, latest in latest }
         )
+        // Indexed once per discovery: `applicationIdentity` looks every process's
+        // outer .app up by bundle URL, and a linear scan of all running apps per
+        // process (each comparison standardizing two URLs) made every 2-second
+        // poll quadratic in the number of running apps.
+        let appsByBundleURL: [URL: NSRunningApplication] = Dictionary(
+            appsByPID.values.compactMap { app -> (URL, NSRunningApplication)? in
+                guard let bundleURL = app.bundleURL else { return nil }
+                return (bundleURL.standardizedFileURL, app)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         let activeTargets = activeTargets(
             gains: gains,
             pinnedApps: pinnedApps,
-            appsByPID: appsByPID
+            appsByPID: appsByPID,
+            appsByBundleURL: appsByBundleURL
         )
         let activeKeys = Set(activeTargets.map(\.stableKey))
         let runningInactiveTargets = runningInactiveTargets(
             gains: gains,
             pinnedApps: pinnedApps,
             activeKeys: activeKeys,
-            appsByPID: appsByPID
+            appsByPID: appsByPID,
+            appsByBundleURL: appsByBundleURL
         )
         let runningInactiveKeys = Set(runningInactiveTargets.map(\.stableKey))
         let pinnedInactiveTargets = pinnedApps.values
@@ -1364,7 +1397,8 @@ public enum AppVolumeMixerKit {
     private static func activeTargets(
         gains: [String: Float],
         pinnedApps: [String: AppVolumePinnedAppInfo],
-        appsByPID: [pid_t: NSRunningApplication]
+        appsByPID: [pid_t: NSRunningApplication],
+        appsByBundleURL: [URL: NSRunningApplication]
     ) -> [AppVolumeTarget] {
         let myPID = ProcessInfo.processInfo.processIdentifier
         var discoveredByKey: [String: DiscoveredApp] = [:]
@@ -1380,7 +1414,7 @@ public enum AppVolumeMixerKit {
                 for: resolvedApp,
                 fallbackPID: pid,
                 fallbackBundleID: processBundleID(for: audioObjectID),
-                appsByPID: appsByPID
+                appsByBundleURL: appsByBundleURL
             )
 
             let parentPID = identity.processID
@@ -1445,7 +1479,8 @@ public enum AppVolumeMixerKit {
         gains: [String: Float],
         pinnedApps: [String: AppVolumePinnedAppInfo],
         activeKeys: Set<String>,
-        appsByPID: [pid_t: NSRunningApplication]
+        appsByPID: [pid_t: NSRunningApplication],
+        appsByBundleURL: [URL: NSRunningApplication]
     ) -> [AppVolumeTarget] {
         let myPID = ProcessInfo.processInfo.processIdentifier
         var targetsByKey: [String: AppVolumeTarget] = [:]
@@ -1460,7 +1495,7 @@ public enum AppVolumeMixerKit {
                 for: app,
                 fallbackPID: app.processIdentifier,
                 fallbackBundleID: app.bundleIdentifier,
-                appsByPID: appsByPID
+                appsByBundleURL: appsByBundleURL
             )
 
             let key = AppVolumeTarget.stableKey(
@@ -1830,7 +1865,7 @@ public enum AppVolumeMixerKit {
         for runningApp: NSRunningApplication?,
         fallbackPID: pid_t,
         fallbackBundleID: String?,
-        appsByPID: [pid_t: NSRunningApplication]
+        appsByBundleURL: [URL: NSRunningApplication]
     ) -> ApplicationIdentity {
         guard let runningApp else {
             let displayName = fallbackBundleID?.isEmpty == false ? fallbackBundleID! : "Process \(fallbackPID)"
@@ -1842,12 +1877,7 @@ public enum AppVolumeMixerKit {
         }
 
         let outerURL = runningApp.bundleURL.flatMap(outerApplicationURL(containing:))
-        let outerRunningApp = outerURL.flatMap { outerURL in
-            appsByPID.values.first { app in
-                guard let bundleURL = app.bundleURL else { return false }
-                return bundleURL.standardizedFileURL == outerURL.standardizedFileURL
-            }
-        }
+        let outerRunningApp = outerURL.flatMap { appsByBundleURL[$0.standardizedFileURL] }
         let bundle = outerURL.flatMap(Bundle.init(url:))
         let bundleID = outerRunningApp?.bundleIdentifier
             ?? bundle?.bundleIdentifier
