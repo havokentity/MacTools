@@ -260,6 +260,28 @@ final class ScratchpadControllerTests: XCTestCase {
                       "The warning must name the problem, got: \(controller.statusMessage ?? "nil")")
     }
 
+    /// Switching notes is a commit point and therefore a flush, and a flush that failed has to
+    /// leave its warning standing: the switch must not tidy the status line over the top of it.
+    func testSwitchingNotesKeepsAFailedSaveWarningVisible() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let blocker = directory.appendingPathComponent("blocker")
+        try Data("not a directory".utf8).write(to: blocker)
+
+        let controller = ScratchpadController(
+            directory: blocker.appendingPathComponent("notes", isDirectory: true),
+            defaults: defaults
+        )
+        let firstID = try XCTUnwrap(controller.selectedNoteID)
+        controller.addNote()
+        controller.updateText("typed into the second note")
+
+        controller.selectNote(firstID)
+
+        XCTAssertNotNil(controller.statusMessage, "The switch flushed, the flush failed, and the warning must survive")
+        XCTAssertTrue(controller.statusMessage?.contains("save") == true,
+                      "The warning must name the problem, got: \(controller.statusMessage ?? "nil")")
+    }
+
     // MARK: - Renaming
 
     func testRenamingDeduplicatesAgainstTheOtherNotes() throws {
