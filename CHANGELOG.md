@@ -6,7 +6,65 @@ adheres to [Semantic Versioning](https://semver.org) and the
 
 ## [Unreleased]
 
+### Fixed
+- **Audio Router** no longer lists a running input monitor's private aggregate as
+  one of your routing devices, nor offers it as an input or output for the next
+  monitor. A private aggregate is hidden from other processes but still
+  enumerates in the one that created it, so the monitor's own plumbing showed
+  up with a trash button that would have destroyed it from under its live IO
+  proc. **Volume Mixer** had the same hole: while an engine ran, its own
+  aggregate appeared in the route picker as an output to route into.
+- **Volume Mixer** cancelling or dragging a slider no longer stalls: the
+  keep-alive check enumerated every HAL device on the main thread for each
+  slider tick, and discovery was quadratic in the number of running apps.
+- **Video Downloader** cancel now actually reaches yt-dlp. The download ran in a
+  detached task, which inherits no cancellation, so the terminate-on-cancel
+  handler never fired. The stdout reader also spun at EOF until the process
+  exit was observed, and the duplicate-queue notice was dismissed by the very
+  field clearing that follows it.
+- **Video Splitter** reports ffmpeg's actual complaint for a failed clip rather
+  than "ffmpeg failed": the stderr drain ran independently of the exit wait and
+  was usually read before it had written anything. A failed launch also left
+  the drain thread blocked for the life of the app.
+- **Clean Drive** treats a symlink as a link. A link to a directory elsewhere was
+  sized at the target's full size and reported as cleaned when only the link
+  went, and the best-effort fallback after a failed remove could descend into
+  the target and delete its children outside the cache root.
+- **Calendar** refreshes every time the panel opens. The panel is built once, so
+  an event added in Calendar.app or access granted in System Settings after the
+  first open never showed until the helper relaunched. The first open also
+  queried EventKit twice.
+- **Focus Timer** Short and Long break steppers re-seed an unstarted break, so
+  raising a break length after Skip no longer runs the old length on Start.
+- **Scratchpad** keeps the "Couldn't save" warning when you switch or add a note;
+  both paths cleared the status line right after the flush that raised it.
+- **Color Picker** keeps the exact sampled colour. The hex field's change handler
+  fired for the eyedropper's own write and replaced the sample with its 8-bit
+  rounding, so the Swift literal row showed 0.502 for a sampled 0.500.
+- **Disk Usage Analyzer** can no longer leak a paused scan on close: a cancel
+  landing between the pause gate's entry check and its waiter registration left
+  the waiter sleeping for a resume that never came.
+- **Audio Switcher / Mic Control** device lists drop the phantom zero ids left
+  when a device unplugs between the HAL's size query and the read.
+
 ### Changed
+- **Disk Usage Analyzer** tree pane renders only the rows that are actually open.
+  It nested children in a plain stack under one lazy row, so expanding a large
+  folder built a view per descendant and every pointer move over the treemap
+  rebuilt them all.
+- **System Monitor** finds the die-temperature sensors once instead of walking
+  every HID service with one IPC each, once a second on the main thread, and no
+  longer asks the cache-deletion service for the purgeable-space estimate on
+  every tick.
+- **Clipboard History** bounds what the row label and preview pane lay out, so a
+  multi-megabyte copy no longer stalls the panel for seconds on every open.
+  Pasting is unchanged.
+- **Dev Tools** runs each transform once per render instead of three times, and
+  **QR Studio** shares one CIContext across renders instead of building a Metal
+  pipeline per keystroke.
+- **Duplicate Finder** stats each file once when ordering a group by age and
+  renders its results lazily; the **Uninstaller** sidebar no longer re-runs the
+  search filter from inside every row.
 - Relicensed all first-party D'Monte Tool Box code and documentation from
   GPL-3.0-only to Apache-2.0. Bundled third-party components retain their licenses.
 
