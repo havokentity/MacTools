@@ -9,6 +9,9 @@ final class SystemMetricsProvider {
     private var previousInterfaceCounters: [String: (down: UInt32, up: UInt32)] = [:]
     private var cumulativeNetwork: (down: UInt64, up: UInt64) = (down: 0, up: 0)
     private let thermalSensorReader = ThermalSensorReader()
+    /// Fetched once: every `mach_host_self()` call adds a reference to the host
+    /// port name that nothing here ever drops, and this class makes two per tick.
+    private let hostPort = mach_host_self()
 
     func sample() -> MetricSnapshot {
         let timestamp = Date()
@@ -39,7 +42,7 @@ final class SystemMetricsProvider {
         var processorCount: natural_t = 0
 
         let result = host_processor_info(
-            mach_host_self(),
+            hostPort,
             PROCESSOR_CPU_LOAD_INFO,
             &processorCount,
             &cpuInfo,
@@ -101,7 +104,7 @@ final class SystemMetricsProvider {
 
         let result = withUnsafeMutablePointer(to: &stats) { pointer in
             pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, reboundPointer, &count)
+                host_statistics64(hostPort, HOST_VM_INFO64, reboundPointer, &count)
             }
         }
 

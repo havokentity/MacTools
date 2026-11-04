@@ -735,7 +735,7 @@ public final class AppVolumeMixerAudioEngine: @unchecked Sendable {
         guard let primaryOutputUID = outputUIDs.first else {
             throw AppVolumeMixerError.noDefaultOutputDevice
         }
-        let aggregateUID = "com.havokentity.mactools.volumemixer.aggregate.\(UUID().uuidString)"
+        let aggregateUID = AppVolumeMixerKit.aggregateUIDPrefix + UUID().uuidString
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "DMonte Volume Mixer \(target.displayName)",
             kAudioAggregateDeviceUIDKey: aggregateUID,
@@ -1356,11 +1356,18 @@ public enum AppVolumeMixerKit {
         return smartPinNameTokens.contains { displayName.contains($0) }
     }
 
+    /// UID prefix of the private aggregates each engine builds around a tap. A
+    /// private aggregate is hidden from other processes but still enumerates in
+    /// the one that created it, so the route picker has to leave these out or a
+    /// running engine's own plumbing is offered as an output to route into.
+    static let aggregateUIDPrefix = "com.havokentity.mactools.volumemixer.aggregate."
+
     public static func outputDevices() -> [AppVolumeOutputDevice] {
         let defaultOutputID = AudioDeviceKit.defaultOutputDeviceID()
         return AudioDeviceKit.outputDevices()
             .compactMap { device in
-                guard let uid = AudioDeviceKit.uid(for: device.id), !uid.isEmpty else { return nil }
+                guard let uid = AudioDeviceKit.uid(for: device.id), !uid.isEmpty,
+                      !uid.hasPrefix(aggregateUIDPrefix) else { return nil }
                 return AppVolumeOutputDevice(
                     deviceID: device.id,
                     uid: uid,
