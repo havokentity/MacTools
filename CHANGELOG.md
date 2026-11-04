@@ -14,7 +14,7 @@ adheres to [Semantic Versioning](https://semver.org) and the
   up with a trash button that would have destroyed it from under its live IO
   proc. **Volume Mixer** had the same hole: while an engine ran, its own
   aggregate appeared in the route picker as an output to route into.
-- **Volume Mixer** cancelling or dragging a slider no longer stalls: the
+- **Volume Mixer** slider drags no longer stall: the
   keep-alive check enumerated every HAL device on the main thread for each
   slider tick, and discovery was quadratic in the number of running apps.
 - **Video Downloader** cancel now actually reaches yt-dlp. The download ran in a
