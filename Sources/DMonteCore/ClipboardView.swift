@@ -232,7 +232,7 @@ public struct ClipboardPopoverView: View {
                         .clipShape(RoundedRectangle(cornerRadius: s(6), style: .continuous))
                 } else {
                     ScrollView {
-                        Text(entry.fullText)
+                        Text(Self.previewBody(for: entry))
                             .font(.system(size: s(11.5), design: entry.kind == .file ? .monospaced : .default))
                             .foregroundStyle(.primary.opacity(0.9))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -256,6 +256,18 @@ public struct ClipboardPopoverView: View {
         } else {
             Color.clear.frame(height: s(80))
         }
+    }
+
+    /// How much of the selected entry the preview pane lays out. The pane is a few lines tall,
+    /// but a `ScrollView` sizes its content in full, so an unbounded `Text` shaped a whole copied
+    /// log file — seconds of main-thread work, and repeated on every open because the newest
+    /// entry is selected automatically. Only the preview is cut; the paste never is.
+    private static let previewCharacterLimit = 20_000
+
+    private static func previewBody(for entry: ClipboardEntry) -> String {
+        let full = entry.fullText
+        let capped = full.prefix(Self.previewCharacterLimit)
+        return capped.endIndex == full.endIndex ? full : String(capped) + "…"
     }
 
     private static func metaLine(for entry: ClipboardEntry) -> String {

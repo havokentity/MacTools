@@ -158,7 +158,9 @@ public struct DuplicateFinderWindowView: View {
 
     private var resultsList: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: layout.groupSpacing) {
+            // Lazy so a scan that returns thousands of groups builds rows as they scroll into
+            // view instead of materialising every row before the first one can be drawn.
+            LazyVStack(alignment: .leading, spacing: layout.groupSpacing) {
                 ForEach(controller.groups) { group in
                     DuplicateGroupView(
                         group: group,

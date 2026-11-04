@@ -259,6 +259,14 @@ public struct ColorPickerPopoverView: View {
 
     private func applyHex(_ raw: String) {
         guard let parsed = ColorKit.color(fromHex: raw) else { return }
+        // `select` writes `hexInput` itself, and `onChange` fires for that write just as it
+        // does for typing. Re-applying the hex it had just produced replaced the exact sampled
+        // colour with its 8-bit rounding, so the swatch and the Swift literal drifted on every
+        // pick (a sampled 0.500 read back as 0.502). Only a hex that names a different colour
+        // is an edit.
+        guard ColorKit.hexString(parsed, includeAlpha: true) != ColorKit.hexString(color, includeAlpha: true) else {
+            return
+        }
         color = parsed
         copiedRow = nil
     }

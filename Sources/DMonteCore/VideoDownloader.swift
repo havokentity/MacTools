@@ -830,7 +830,10 @@ enum VideoDownloaderRunner {
         preferences: VideoDownloaderPreferences,
         onProgress: @escaping @Sendable (Progress) -> Void
     ) async -> Result {
-        await Task.detached(priority: .userInitiated) {
+        // Detached so the blocking work leaves the main actor — but a detached task
+        // inherits no cancellation, so the caller's cancel is forwarded by hand or the
+        // `Task.isCancelled` checks below (and runAndWait's onCancel) never fire.
+        let worker = Task.detached(priority: .userInitiated) { () async -> Result in
             guard let command = findYTDLPCommand() else {
                 return Result(
                     title: "yt-dlp is required",
@@ -922,6 +925,13 @@ enum VideoDownloaderRunner {
                 let output = OutputBuffer()
                 pipe.fileHandleForReading.readabilityHandler = { handle in
                     let data = handle.availableData
+                    // Empty means EOF, and the handler keeps firing on EOF until it is
+                    // removed — a busy loop on the reader thread for as long as the
+                    // termination handler takes to arrive.
+                    guard !data.isEmpty else {
+                        handle.readabilityHandler = nil
+                        return
+                    }
                     output.append(data)
                     if let progress = parseProgress(from: data) {
                         onProgress(progress)
@@ -1042,7 +1052,13 @@ enum VideoDownloaderRunner {
             }
 
             return failureResult(from: firstAttempt, loginGated: true)
-        }.value
+        }
+
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     /// The process's exit status, or nil when the app is quitting and it was never
@@ -1177,8 +1193,8 @@ enum VideoDownloaderRunner {
                 return Progress(fraction: 1, detail: "Finishing")
             }
 
-            let speed = capture(in: line, pattern: #" at\s+(.+?)(?:\s+ETA|$)"#)
-            let eta = capture(in: line, pattern: #" ETA\s+([^\s]+)"#)
+            let speed = capture(in: line, regex: speedRegex)
+            let eta = capture(in: line, regex: etaRegex)
             let parts = [speed.map { "at \($0)" }, eta.map { "ETA \($0)" }].compactMap(\.self)
             return Progress(fraction: percent / 100, detail: parts.isEmpty ? "\(Int(percent))%" : parts.joined(separator: "  "))
         }
@@ -1195,8 +1211,13 @@ enum VideoDownloaderRunner {
         return Double(value)
     }
 
-    private static func capture(in text: String, pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
+    // Compiled once: these run against every progress chunk yt-dlp writes, and
+    // building an NSRegularExpression costs far more than matching one.
+    nonisolated(unsafe) private static let speedRegex = try? NSRegularExpression(pattern: #" at\s+(.+?)(?:\s+ETA|$)"#)
+    nonisolated(unsafe) private static let etaRegex = try? NSRegularExpression(pattern: #" ETA\s+([^\s]+)"#)
+
+    private static func capture(in text: String, regex: NSRegularExpression?) -> String? {
+        guard let regex,
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               match.numberOfRanges > 1,
               let range = Range(match.range(at: 1), in: text) else {
@@ -1246,18 +1267,19 @@ enum VideoDownloaderRunner {
         return nil
     }
 
-    private static func downloadedFilePathCandidates(in line: String) -> [String] {
-        let patterns = [
-            #"\[download\]\s+Destination:\s+(.+)$"#,
-            #"\[download\]\s+(.+)\s+has already been downloaded"#,
-            #"\[Merger\]\s+Merging formats into\s+\"(.+)\""#,
-            #"\[ExtractAudio\]\s+Destination:\s+(.+)$"#,
-            #"\[VideoConvertor\]\s+Converting video from .+ to \"(.+)\""#,
-            #"\[MoveFiles\]\s+Moving file \"(.+)\" to \"(.+)\""#
-        ]
+    // Compiled once rather than six times per line of a whole yt-dlp transcript.
+    nonisolated(unsafe) private static let downloadedFilePathRegexes: [NSRegularExpression] = [
+        #"\[download\]\s+Destination:\s+(.+)$"#,
+        #"\[download\]\s+(.+)\s+has already been downloaded"#,
+        #"\[Merger\]\s+Merging formats into\s+\"(.+)\""#,
+        #"\[ExtractAudio\]\s+Destination:\s+(.+)$"#,
+        #"\[VideoConvertor\]\s+Converting video from .+ to \"(.+)\""#,
+        #"\[MoveFiles\]\s+Moving file \"(.+)\" to \"(.+)\""#
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
 
-        return patterns
-            .flatMap { captures(in: line, pattern: $0) }
+    private static func downloadedFilePathCandidates(in line: String) -> [String] {
+        downloadedFilePathRegexes
+            .flatMap { captures(in: line, regex: $0) }
             .map {
                 $0.trimmingCharacters(
                     in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\""))
@@ -1266,11 +1288,7 @@ enum VideoDownloaderRunner {
             .filter { !$0.isEmpty }
     }
 
-    private static func captures(in text: String, pattern: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return []
-        }
-
+    private static func captures(in text: String, regex: NSRegularExpression) -> [String] {
         let range = NSRange(text.startIndex..., in: text)
         guard let match = regex.firstMatch(in: text, range: range),
               match.numberOfRanges > 1 else {
@@ -1422,8 +1440,13 @@ public struct VideoDownloaderWindowView: View {
                         .onSubmit {
                             model.startDownload()
                         }
-                        .onChange(of: model.urlText) { _, _ in
+                        .onChange(of: model.urlText) { _, newValue in
                             // Typing again means the user has moved on from the refusal.
+                            // The refusal itself empties the field, and that change lands
+                            // here too — so only text, not the clearing, dismisses it.
+                            guard !newValue.isEmpty else {
+                                return
+                            }
                             model.duplicateNotice = nil
                         }
 

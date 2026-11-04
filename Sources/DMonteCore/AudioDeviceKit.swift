@@ -226,7 +226,11 @@ public enum AudioDeviceKit {
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &ids
         )
         guard status == noErr else { return [] }
-        return ids
+        // The HAL rewrites `dataSize` to what it actually filled. A device that
+        // unplugs between the size query and the read leaves the tail of the
+        // buffer as id 0, which every per-device lookup would then fail on.
+        let filled = min(count, Int(dataSize) / MemoryLayout<AudioDeviceID>.size)
+        return Array(ids.prefix(filled))
     }
 
     private static func deviceName(_ deviceID: AudioDeviceID) -> String? {

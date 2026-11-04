@@ -30,6 +30,14 @@ final class CalendarAppDelegate: NSObject, NSApplicationDelegate {
         panelHost = host
         host.configure()
 
+        // The cached panel's `onAppear` fires only once, so re-check access and reload the
+        // events every time it opens.
+        host.onWillShow = {
+            NotificationCenter.default.post(
+                name: CalendarPopoverView.willShowNotification, object: nil
+            )
+        }
+
         let icon = NSImage(systemSymbolName: "calendar", accessibilityDescription: "Calendar") ?? NSImage()
         statusItem = HelperStatusItem(
             image: icon,

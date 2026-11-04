@@ -26,6 +26,11 @@ private struct VolumeMixerSnapshot: Sendable {
     /// tell "this process is gone" from "this row is merely hidden".
     let activeTargetIDs: Set<String>
     let ignoredApps: [AppVolumeIgnoredAppInfo]
+    /// Where each ignored app's bundle lives (keyed by `AppVolumeIgnoredAppInfo.id`),
+    /// for the "Show in Finder" button. Resolved here, off the main thread, once
+    /// per refresh: the Launch Services lookup per row per render otherwise ran
+    /// ~80 times on the main thread for every hover change on the Ignored tab.
+    let ignoredAppRevealURLs: [String: URL]
     let outputDevices: [AppVolumeOutputDevice]
     let outputRouteUIDsByTargetID: [String: [String]]
     let localIgnoredAppCount: Int
@@ -40,6 +45,7 @@ public final class AppVolumeMixerController: ObservableObject {
     @Published public private(set) var sessionState = AppVolumeMixerSessionState()
     @Published public private(set) var expandedTargetIDs: Set<String> = []
     @Published public private(set) var ignoredApps: [AppVolumeIgnoredAppInfo] = []
+    @Published public private(set) var ignoredAppRevealURLs: [String: URL] = [:]
     @Published public private(set) var outputDevices: [AppVolumeOutputDevice] = []
     @Published public private(set) var outputRouteUIDsByTargetID: [String: [String]] = [:]
     @Published public private(set) var localIgnoredAppCount = 0
@@ -152,13 +158,25 @@ public final class AppVolumeMixerController: ObservableObject {
                 hideIgnoredApps: false,
                 smartFilter: smartFilter
             )
+            let ignoredApps = AppVolumeMixerKit.ignoredApps(defaults: defaults, smartFilter: smartFilter)
+            let ignoredAppRevealURLs: [String: URL] = Dictionary(
+                ignoredApps.compactMap { ignoredApp -> (String, URL)? in
+                    guard let bundleIdentifier = ignoredApp.bundleIdentifier,
+                          let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
+                        return nil
+                    }
+                    return (ignoredApp.id, url)
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
             let snapshot = VolumeMixerSnapshot(
                 engineState: AppVolumeMixerKit.engineState(),
                 masterVolumeState: AppVolumeMixerKit.masterVolumeState(),
                 targets: hideIgnoredApps ? discoveredTargets.filter { !$0.isIgnored } : discoveredTargets,
                 allTargets: discoveredTargets,
                 activeTargetIDs: Set(discoveredTargets.filter(\.isActive).map(\.id)),
-                ignoredApps: AppVolumeMixerKit.ignoredApps(defaults: defaults, smartFilter: smartFilter),
+                ignoredApps: ignoredApps,
+                ignoredAppRevealURLs: ignoredAppRevealURLs,
                 outputDevices: AppVolumeMixerKit.outputDevices(),
                 outputRouteUIDsByTargetID: AppVolumeMixerKit.persistedOutputRoutes(defaults: defaults),
                 localIgnoredAppCount: AppVolumeMixerKit.persistedIgnoredApps(defaults: defaults).count,
@@ -179,6 +197,7 @@ public final class AppVolumeMixerController: ObservableObject {
         let refreshedTargets = applyingPendingGains(snapshot.targets)
         let refreshedAllTargets = applyingPendingGains(snapshot.allTargets)
         ignoredApps = snapshot.ignoredApps
+        ignoredAppRevealURLs = snapshot.ignoredAppRevealURLs
         outputDevices = snapshot.outputDevices
         outputRouteUIDsByTargetID = snapshot.outputRouteUIDsByTargetID
         localIgnoredAppCount = snapshot.localIgnoredAppCount
@@ -520,10 +539,23 @@ public final class AppVolumeMixerController: ObservableObject {
         // here is what picks up default-output switches and plug/unplug events
         // (there are no HAL property listeners; everything rides this poll) —
         // a changed resolution forces a restart within one refresh cycle.
+        // It resolves against `outputDevices`, the list the last poll fetched
+        // off the main thread (`applyRefreshSnapshot` publishes it before
+        // reconciling), not a fresh HAL enumeration: this runs on the main
+        // thread for every live engine each poll and on every slider tick of
+        // a processing app. Only when that list disagrees with the engine is
+        // the HAL asked live, so an engine started after a device change —
+        // before the next poll caught up — is not torn down and rebuilt on
+        // every slider tick for up to 2s; the genuine change still restarts.
         if let engine = audioEngines[target.id],
            engine.activeAudioObjectIDs == target.audioObjectIDs,
            engine.requestedOutputUIDs == routeUIDs,
-           engine.activeOutputUIDs == AppVolumeMixerAudioEngine.resolvedOutputUIDs(forRequestedOutputUIDs: routeUIDs) {
+           engine.activeOutputUIDs == AppVolumeMixerAudioEngine.resolvedOutputUIDs(
+               forRequestedOutputUIDs: routeUIDs,
+               availableOutputs: outputDevices
+           ) || engine.activeOutputUIDs == AppVolumeMixerAudioEngine.resolvedOutputUIDs(
+               forRequestedOutputUIDs: routeUIDs
+           ) {
             engine.setGain(target.gain)
             return
         }
@@ -1148,8 +1180,7 @@ public struct VolumeMixerPopoverView: View {
     }
 
     private func ignoredAppURL(for ignoredApp: AppVolumeIgnoredAppInfo) -> URL? {
-        guard let bundleIdentifier = ignoredApp.bundleIdentifier else { return nil }
-        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        controller.ignoredAppRevealURLs[ignoredApp.id]
     }
 
     private func revealIgnoredAppInFinder(_ ignoredApp: AppVolumeIgnoredAppInfo) {

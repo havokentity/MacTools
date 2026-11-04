@@ -123,6 +123,10 @@ public final class ScratchpadController: ObservableObject {
     public func selectNote(_ id: UUID) {
         guard id != selectedNoteID, notes.contains(where: { $0.id == id }) else { return }
 
+        // Cleared before the flush, not after: the flush is the one thing here that can fail, and
+        // its warning must survive the switch rather than be wiped by the line below it.
+        statusMessage = nil
+
         // Switching is a natural commit point, and the note being left may still be sitting on an
         // unfired debounce.
         flushPendingSaves()
@@ -130,13 +134,15 @@ public final class ScratchpadController: ObservableObject {
         selectedNoteID = id
         defaults.set(id.uuidString, forKey: DefaultsKey.scratchpadSelectedNoteID)
         pendingDeleteNoteID = nil
-        statusMessage = nil
         canUndoClear = clearedBodies[id] != nil
         refreshCounts()
     }
 
     /// Adds an empty note and selects it.
     public func addNote() {
+        // Cleared before the flush for the same reason as in `selectNote`: a flush that could not
+        // reach disk must keep its warning on screen.
+        statusMessage = nil
         flushPendingSaves()
 
         let note = ScratchpadNote(title: ScratchpadKit.uniqueTitle(
@@ -148,7 +154,6 @@ public final class ScratchpadController: ObservableObject {
         defaults.set(note.id.uuidString, forKey: DefaultsKey.scratchpadSelectedNoteID)
         pendingDeleteNoteID = nil
         canUndoClear = false
-        statusMessage = nil
         refreshCounts()
 
         // Written immediately rather than debounced: an empty new note has nothing to lose to a

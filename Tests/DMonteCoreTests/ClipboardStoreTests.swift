@@ -139,4 +139,16 @@ final class ClipboardStoreTests: XCTestCase {
 
         XCTAssertEqual(editorHash, terminalHash)
     }
+
+    // MARK: - Row label
+
+    /// The row label is single-line, so an entry holding a whole copied document must not hand
+    /// a megabyte of text to a `lineLimit(1)` label — that shaped the whole string on every open.
+    func testRowLabelIsBoundedForAHugeCopy() {
+        let huge = String(repeating: "a", count: 2_000_000)
+        let entry = ClipboardEntry(kind: .text, text: "  \n" + huge, contentHash: "huge")
+
+        XCTAssertLessThanOrEqual(entry.previewText.count, 2_000)
+        XCTAssertTrue(entry.previewText.hasPrefix("aaa"))
+    }
 }

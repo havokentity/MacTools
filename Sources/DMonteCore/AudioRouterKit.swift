@@ -104,7 +104,11 @@ public enum AudioRouterKit {
     /// can be listed for editing or removal. Survives relaunches because the
     /// devices are persisted by CoreAudio, not by the app.
     public static func routerDevices() -> [AudioDevice] {
-        AudioSwitcherKit.devices().filter { $0.uid.hasPrefix(uidPrefix) }
+        AudioSwitcherKit.devices().filter {
+            // An input monitor's private aggregate shares the prefix but is
+            // internal plumbing, not a routing device the user created.
+            $0.uid.hasPrefix(uidPrefix) && !$0.uid.hasPrefix(AudioMonitorEngine.aggregateUIDPrefix)
+        }
     }
 
     /// Candidate sub-devices a router can bundle: every real device plus any

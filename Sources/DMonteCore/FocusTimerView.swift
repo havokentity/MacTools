@@ -258,9 +258,15 @@ private struct FocusTimerSettingsView: View {
                 controller.refreshDurationIfUnstarted()
             }
 
-            stepperRow(title: "Short break", value: $shortBreakMinutes, range: 1...60, unit: "min") { }
+            // Same refresh for the break lengths: a skip from an idle focus lands on an unstarted
+            // break, and without it the old length would stay on screen and run on Start.
+            stepperRow(title: "Short break", value: $shortBreakMinutes, range: 1...60, unit: "min") {
+                controller.refreshDurationIfUnstarted()
+            }
 
-            stepperRow(title: "Long break", value: $longBreakMinutes, range: 1...90, unit: "min") { }
+            stepperRow(title: "Long break", value: $longBreakMinutes, range: 1...90, unit: "min") {
+                controller.refreshDurationIfUnstarted()
+            }
 
             stepperRow(title: "Long break every", value: $longBreakInterval, range: 1...12, unit: "focus") { }
 
